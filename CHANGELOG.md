@@ -8,6 +8,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.10.5` - November 16th, 2025
+
+### Added
+
+- Added a `--no-update-luaurc` flag to the `setup` command
+
 ## `0.10.4` - October 14th, 2025
 
 ### Added
