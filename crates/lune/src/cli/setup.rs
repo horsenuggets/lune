@@ -12,7 +12,11 @@ const LUAURC_PATH: &str = ".luaurc";
 
 /// Set up type definitions for your editor
 #[derive(Debug, Clone, Parser)]
-pub struct SetupCommand {}
+pub struct SetupCommand {
+    // Skip updating the .luaurc file
+    #[arg(long = "no-update-luaurc")]
+    pub no_update_luaurc: bool,
+}
 
 impl SetupCommand {
     pub async fn run(self) -> Result<ExitCode> {
@@ -20,11 +24,13 @@ impl SetupCommand {
             .await
             .expect("Failed to generate typedef files");
 
-        let mut luaurc = read_or_create_luaurc().await?;
+        if !self.no_update_luaurc {
+            let mut luaurc = read_or_create_luaurc().await?;
 
-        add_values_to_luaurc(&mut luaurc);
+            add_values_to_luaurc(&mut luaurc);
 
-        write_luaurc(luaurc).await?;
+            write_luaurc(luaurc).await?;
+        }
 
         println!(
             "Type definitions for Lune v{} have been set up successfully.\
