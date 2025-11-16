@@ -102,6 +102,7 @@ jobs:
           --target ${{ matrix.cargo-target }}
 
       - name: Lint
+        if: github.repository == 'lune-org/lune'
         run: |
           cargo clippy --workspace \
           --locked --all-features \
