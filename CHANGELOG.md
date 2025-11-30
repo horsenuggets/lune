@@ -8,7 +8,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## `0.10.5` - November 16th, 2025
+## `0.10.4+horse.0.2` - November 29th, 2025
+
+### Changed
+
+- Changed the `serde_json` dependency to point to a forked version that defaults to 4-space indentation instead of 2-space indentation
+
+## `0.10.4+horse.0.1` - November 16th, 2025
 
 ### Added
 
