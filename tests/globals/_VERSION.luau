@@ -9,7 +9,7 @@
 	Lune 0.10.4-horse.0.1
 	Lune 0.10.4-horse.0.3
 
-	Note: This fork uses "-" instead of "+" for Wally compatibility.
+	Note: This fork uses "-" instead of "+" for compatibility with common tooling.
 ]]
 
 assert(_VERSION ~= nil, "_VERSION global is missing")

@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Changed version format from `+` to `-` (e.g., `0.10.4-horse.0.3` instead of `0.10.4+horse.0.3`) for Wally package manager compatibility
+- Changed version format from `+` to `-` (e.g., `0.10.4-horse.0.3` instead of `0.10.4+horse.0.3`) for compatibility with common tooling
 
 ## `0.10.4+horse.0.2` - November 29th, 2025
 
