@@ -8,6 +8,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.10.4-horse.0.3` - January 12th, 2026
+
+### Added
+
+- Added a `script` global for Roblox-like script path access. The `script` global provides access to the currently executing script's path and supports navigation similar to Roblox's `script` object:
+  - `tostring(script)` or string concatenation returns the full script path
+  - `script.Name` returns the file name
+  - `script.Path` returns the full path (same as `tostring(script)`)
+  - `script.Parent` returns a `ScriptReference` to the parent directory
+  - `script.Parent.SomeName` returns a `ScriptReference` to a sibling file or directory
+
+### Changed
+
+- Changed version format from `+` to `-` (e.g., `0.10.4-horse.0.3` instead of `0.10.4+horse.0.3`) for Wally package manager compatibility
+
 ## `0.10.4+horse.0.2` - November 29th, 2025
 
 ### Changed

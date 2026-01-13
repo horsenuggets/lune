@@ -10,6 +10,7 @@ pub enum LuneStandardGlobal {
     GTable,
     Print,
     Require,
+    Script,
     Version,
     Warn,
 }
@@ -22,6 +23,7 @@ impl LuneStandardGlobal {
         Self::GTable,
         Self::Print,
         Self::Require,
+        Self::Script,
         Self::Version,
         Self::Warn,
     ];
@@ -35,6 +37,7 @@ impl LuneStandardGlobal {
             Self::GTable => "_G",
             Self::Print => "print",
             Self::Require => "require",
+            Self::Script => "script",
             Self::Version => "_VERSION",
             Self::Warn => "warn",
         }
@@ -54,6 +57,7 @@ impl LuneStandardGlobal {
             Self::GTable => crate::globals::g_table::create(lua),
             Self::Print => crate::globals::print::create(lua),
             Self::Require => crate::globals::require::create(lua),
+            Self::Script => crate::globals::script::create(lua),
             Self::Version => crate::globals::version::create(lua),
             Self::Warn => crate::globals::warn::create(lua),
         };
@@ -75,6 +79,7 @@ impl FromStr for LuneStandardGlobal {
             "_g" => Self::GTable,
             "print" => Self::Print,
             "require" => Self::Require,
+            "script" => Self::Script,
             "_version" => Self::Version,
             "warn" => Self::Warn,
             _ => {

@@ -371,6 +371,30 @@ impl Runtime {
         // Enable / disable the JIT as requested, before loading anything
         self.lua.enable_jit(self.jit.enabled());
 
+        // Set the current script path for the script global
+        #[cfg(any(
+            feature = "std-datetime",
+            feature = "std-fs",
+            feature = "std-luau",
+            feature = "std-net",
+            feature = "std-process",
+            feature = "std-regex",
+            feature = "std-roblox",
+            feature = "std-serde",
+            feature = "std-stdio",
+            feature = "std-task",
+        ))]
+        {
+            // Extract the path from the chunk name (removing @ or = prefix)
+            let script_path = chunk_name.as_ref();
+            let script_path = if script_path.starts_with('@') || script_path.starts_with('=') {
+                &script_path[1..]
+            } else {
+                script_path
+            };
+            lune_std::push_script_path(&self.lua, script_path)?;
+        }
+
         // Load our "main" thread
         let main = self
             .lua
