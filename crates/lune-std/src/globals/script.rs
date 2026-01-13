@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use mlua::prelude::*;
@@ -39,19 +41,151 @@ impl ScriptReference {
     }
 
     /// Get a child by name (file or folder)
+    /// First checks default.project.json for path mappings, then falls back to direct child
     pub fn child(&self, name: &str) -> ScriptReference {
-        let mut child_path = self.path.clone();
+        let base_dir = if self.path.is_file() {
+            self.path.parent().map(|p| p.to_path_buf())
+        } else {
+            Some(self.path.clone())
+        };
 
-        // If current path points to a file, get its parent directory first
-        if self.path.is_file() {
-            if let Some(parent) = self.path.parent() {
-                child_path = parent.to_path_buf();
+        if let Some(base) = &base_dir {
+            // Try to resolve through project.json first
+            if let Some(resolved) = resolve_through_project(base, name) {
+                return ScriptReference::new(resolved);
             }
         }
 
+        // Fall back to direct child lookup
+        let mut child_path = base_dir.unwrap_or_else(|| self.path.clone());
         child_path.push(name);
         ScriptReference::new(child_path)
     }
+}
+
+/// Find the project root by searching up from the given path for default.project.json
+fn find_project_root(start_path: &Path) -> Option<PathBuf> {
+    let mut current = if start_path.is_file() {
+        start_path.parent()?.to_path_buf()
+    } else {
+        start_path.to_path_buf()
+    };
+
+    loop {
+        let project_file = current.join("default.project.json");
+        if project_file.exists() {
+            return Some(current);
+        }
+
+        match current.parent() {
+            Some(parent) => current = parent.to_path_buf(),
+            None => return None,
+        }
+    }
+}
+
+/// Represents a node in the project tree
+#[derive(Debug, Clone)]
+struct ProjectNode {
+    /// The $path if specified
+    path: Option<String>,
+    /// Child nodes
+    children: HashMap<String, ProjectNode>,
+}
+
+impl ProjectNode {
+    fn new() -> Self {
+        Self {
+            path: None,
+            children: HashMap::new(),
+        }
+    }
+
+    fn from_json(value: &serde_json::Value) -> Option<Self> {
+        let obj = value.as_object()?;
+        let mut node = ProjectNode::new();
+
+        // Check for $path
+        if let Some(path_val) = obj.get("$path") {
+            node.path = path_val.as_str().map(|s| s.to_string());
+        }
+
+        // Process children (skip $ prefixed keys)
+        for (key, child_value) in obj.iter() {
+            if !key.starts_with('$') {
+                if let Some(child_node) = ProjectNode::from_json(child_value) {
+                    node.children.insert(key.clone(), child_node);
+                }
+            }
+        }
+
+        Some(node)
+    }
+}
+
+/// Parse a default.project.json file and return the tree
+fn parse_project_json(project_root: &Path) -> Option<ProjectNode> {
+    let project_file = project_root.join("default.project.json");
+    let content = fs::read_to_string(&project_file).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    // Get the tree from the JSON
+    let tree = json.get("tree")?;
+    ProjectNode::from_json(tree)
+}
+
+/// Try to resolve a child name through the project.json tree
+fn resolve_through_project(base_path: &Path, child_name: &str) -> Option<PathBuf> {
+    // Find project root
+    let project_root = find_project_root(base_path)?;
+
+    // Parse project.json
+    let tree = parse_project_json(&project_root)?;
+
+    // Calculate relative path from project root to base_path
+    let relative_to_root = base_path.strip_prefix(&project_root).ok()?;
+
+    // Navigate the tree to find current position
+    let mut current_node = &tree;
+
+    // Navigate through the relative path to find current node
+    for component in relative_to_root.components() {
+        let name = component.as_os_str().to_string_lossy();
+
+        // First, check if there's a direct child with this name
+        if let Some(child) = current_node.children.get(name.as_ref()) {
+            current_node = child;
+            continue;
+        }
+
+        // Check if any child has a $path that matches
+        let mut found = false;
+        for (_, child) in &current_node.children {
+            if let Some(ref path) = child.path {
+                let resolved_path = project_root.join(path);
+                if resolved_path == base_path.join(component.as_os_str()) {
+                    current_node = child;
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        if !found {
+            // Can't navigate further in the tree
+            return None;
+        }
+    }
+
+    // Now look for the child_name in the current node
+    if let Some(child_node) = current_node.children.get(child_name) {
+        if let Some(ref path) = child_node.path {
+            // Return the resolved path
+            return Some(project_root.join(path));
+        }
+    }
+
+    None
 }
 
 impl UserData for ScriptReference {
@@ -85,6 +219,69 @@ impl UserData for ScriptReference {
                 }
             }
         });
+
+        // Add RequirePath method that returns a relative path string for use with require()
+        // Usage: require(script.Parent.Module:RequirePath())
+        methods.add_method("RequirePath", |lua, this, ()| {
+            // Get current script path to calculate relative path
+            if let Some(current_script) = get_current_script_path(lua)? {
+                let relative = make_relative_path(&current_script, &this.path_string());
+                Ok(relative)
+            } else {
+                // Fallback: just use ./ prefix with the path
+                Ok(format!("./{}", this.path_string()))
+            }
+        });
+    }
+}
+
+/// Convert an absolute target path to a relative path from the current script.
+/// Returns a path starting with "./" or "../" as required by the require system.
+fn make_relative_path(current_script: &str, target_path: &str) -> String {
+    let current = Path::new(current_script);
+    let target = Path::new(target_path);
+
+    // Get the directory of the current script
+    let current_dir = current.parent().unwrap_or(current);
+
+    // Try to make target relative to current_dir
+    if let Ok(relative) = target.strip_prefix(current_dir) {
+        // Target is inside current directory
+        format!("./{}", relative.display())
+    } else {
+        // Need to go up directories - find common ancestor
+        let current_parts: Vec<_> = current_dir.components().collect();
+        let target_parts: Vec<_> = target.components().collect();
+
+        // Find how many components match
+        let common_len = current_parts
+            .iter()
+            .zip(target_parts.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+
+        // Calculate how many ".." we need
+        let ups_needed = current_parts.len() - common_len;
+
+        // Build the relative path
+        let mut result = String::new();
+        if ups_needed == 0 {
+            result.push_str("./");
+        } else {
+            for _ in 0..ups_needed {
+                result.push_str("../");
+            }
+        }
+
+        // Add the remaining target path components
+        for (i, part) in target_parts.iter().skip(common_len).enumerate() {
+            if i > 0 {
+                result.push('/');
+            }
+            result.push_str(&part.as_os_str().to_string_lossy());
+        }
+
+        result
     }
 }
 

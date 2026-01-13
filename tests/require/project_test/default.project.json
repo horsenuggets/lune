@@ -1,0 +1,12 @@
+{
+    "name": "TestProject",
+    "tree": {
+        "$className": "DataModel",
+        "Shared": {
+            "$path": "src/shared"
+        },
+        "Server": {
+            "$path": "src/server"
+        }
+    }
+}

@@ -8,6 +8,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.10.4-horse.0.4` - January 13th, 2026
+
+### Added
+
+- Added `ScriptReference:RequirePath()` method that returns a require-compatible relative path string
+  - Usage: `require(script.Parent.Module:RequirePath())`
+  - Automatically calculates relative path from current script to target
+- Added support for `default.project.json` (Rojo project files) path resolution
+  - Navigation like `script.Parent.Shared` now resolves through project tree definitions
+  - Supports `$path` entries in project.json to map virtual names to filesystem paths
+
 ## `0.10.4-horse.0.3` - January 12th, 2026
 
 ### Added
