@@ -31,7 +31,9 @@ pub async fn run(patched_bin: impl AsRef<[u8]>) -> Result<ExitCode> {
 
     let mut rt = Runtime::new()?.with_args(args);
 
-    let result = rt.run_custom("STANDALONE", meta.bytecode).await;
+    // Compile and run the source with the original entry path.
+    // This ensures the chunk name is set correctly for require resolution.
+    let result = rt.run_source(&meta.entry_path, meta.source).await;
 
     Ok(match result {
         Err(err) => {

@@ -69,6 +69,18 @@ impl RequireResolver {
 
         Ok(())
     }
+
+    /// Navigate to a path without requiring it to exist on disk.
+    /// Used for standalone executables where the entry point doesn't exist.
+    fn navigate_to_virtual(
+        &mut self,
+        relative: PathBuf,
+        absolute: PathBuf,
+    ) {
+        self.absolute = absolute;
+        self.relative = relative;
+        self.resolved = None;
+    }
 }
 
 impl LuaRequire for RequireResolver {
@@ -87,7 +99,17 @@ impl LuaRequire for RequireResolver {
             let rel = relative_path_normalize(Path::new(path));
             let abs = clean_path_and_make_absolute(&rel);
 
-            self.navigate_to(rel, abs)
+            // Try to navigate normally first. If it fails (e.g., standalone binary
+            // where entry doesn't exist on disk), use virtual navigation to still
+            // set the paths for relative requires to work.
+            match self.navigate_to(rel.clone(), abs.clone()) {
+                Ok(()) => Ok(()),
+                Err(LuaNavigateError::NotFound) => {
+                    self.navigate_to_virtual(rel, abs);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
         } else {
             Err(LuaNavigateError::Other(LuaError::runtime(
                 "cannot reset require state from non-file chunk",

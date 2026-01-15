@@ -280,6 +280,27 @@ impl Runtime {
     }
 
     /**
+        Runs source code with file-based semantics, enabling require support.
+
+        This is used by standalone executables to run bundled source while
+        preserving the original entry path for require resolution.
+
+        # Errors
+
+        Returns an error if:
+
+        - The script fails to run (not if the script itself errors)
+    */
+    pub async fn run_source(
+        &mut self,
+        module_path: impl AsRef<str>,
+        source: impl AsRef<[u8]>,
+    ) -> RuntimeResult<RuntimeReturnValues> {
+        let module_name = format!("{FILE_CHUNK_PREFIX}{}", module_path.as_ref());
+        self.run_inner(module_name, source).await
+    }
+
+    /**
         Runs a file at the given file or module path, inside of the current runtime.
 
         # Errors
