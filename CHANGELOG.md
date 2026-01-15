@@ -8,6 +8,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.10.4-horse.2.0` - January 14th, 2026
+
+### Fixed
+
+- Fixed `@self` resolution in standalone executables built with `lune build`
+  - Standalone binaries now store source code instead of bytecode, compiling at runtime with the correct entry path
+  - This ensures require resolution (especially `@self` for init.luau modules) works properly in compiled executables
+
 ## `0.10.4-horse.1.0` - January 12th, 2026
 
 ### Added
