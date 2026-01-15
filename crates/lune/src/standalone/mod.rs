@@ -29,7 +29,10 @@ pub async fn run(patched_bin: impl AsRef<[u8]>) -> Result<ExitCode> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     let meta = Metadata::from_bytes(patched_bin).expect("must be a standalone binary");
 
-    let mut rt = Runtime::new()?.with_args(args);
+    let mut rt = Runtime::new()?
+        .with_args(args)
+        .with_bundled_files(meta.files)
+        .with_bundled_aliases(meta.aliases);
 
     // Compile and run the source with the original entry path.
     // This ensures the chunk name is set correctly for require resolution.

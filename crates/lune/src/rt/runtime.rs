@@ -1,6 +1,7 @@
 #![allow(clippy::missing_panics_doc)]
 
 use std::{
+    collections::HashMap,
     ffi::OsString,
     path::PathBuf,
     sync::{
@@ -60,6 +61,12 @@ impl RuntimeReturnValues {
     }
 }
 
+/// Bundled files for standalone executables: path -> source
+pub type BundledFiles = HashMap<String, Vec<u8>>;
+
+/// Bundled aliases for standalone executables: alias -> canonical path
+pub type BundledAliases = HashMap<String, String>;
+
 /**
     A Lune runtime.
 */
@@ -69,6 +76,8 @@ pub struct Runtime {
     args: ProcessArgs,
     env: ProcessEnv,
     jit: ProcessJitEnablement,
+    bundled_files: BundledFiles,
+    bundled_aliases: BundledAliases,
 }
 
 impl Runtime {
@@ -144,6 +153,8 @@ impl Runtime {
             args,
             env,
             jit,
+            bundled_files: HashMap::new(),
+            bundled_aliases: HashMap::new(),
         })
     }
 
@@ -187,6 +198,28 @@ impl Runtime {
         J: Into<ProcessJitEnablement>,
     {
         self.jit = jit_status.into();
+        self
+    }
+
+    /**
+        Sets bundled files for standalone executables.
+
+        These files will be available to require without reading from the filesystem.
+    */
+    #[must_use]
+    pub fn with_bundled_files(mut self, files: BundledFiles) -> Self {
+        self.bundled_files = files;
+        self
+    }
+
+    /**
+        Sets bundled aliases for standalone executables.
+
+        These aliases will be used to resolve alias paths without needing .luaurc files.
+    */
+    #[must_use]
+    pub fn with_bundled_aliases(mut self, aliases: BundledAliases) -> Self {
+        self.bundled_aliases = aliases;
         self
     }
 
@@ -366,10 +399,12 @@ impl Runtime {
             eprintln!("{}", RuntimeError::from(e));
         });
 
-        // Store the provided args, environment variables, and jit enablement as AppData
+        // Store the provided args, environment variables, jit enablement, and bundled files/aliases as AppData
         self.lua.set_app_data(self.args.clone());
         self.lua.set_app_data(self.env.clone());
         self.lua.set_app_data(self.jit);
+        self.lua.set_app_data(self.bundled_files.clone());
+        self.lua.set_app_data(self.bundled_aliases.clone());
 
         // Inject all the standard libraries that are enabled - this needs to be done after
         // storing the args/env, since some standard libraries use those during initialization

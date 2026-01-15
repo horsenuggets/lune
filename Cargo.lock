@@ -1539,7 +1539,7 @@ dependencies = [
 
 [[package]]
 name = "lune"
-version = "0.10.4-horse.2.0"
+version = "0.10.4-horse.3.0"
 dependencies = [
  "anyhow",
  "async-fs",
@@ -1555,6 +1555,7 @@ dependencies = [
  "lune-utils",
  "mlua",
  "mlua-luau-scheduler",
+ "regex",
  "rustyline",
  "serde",
  "serde_json",

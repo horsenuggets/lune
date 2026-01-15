@@ -1,6 +1,6 @@
 [package]
 name = "lune"
-version = "0.10.4-horse.2.0"
+version = "0.10.4-horse.3.0"
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/lune-org/lune"
@@ -57,6 +57,7 @@ anyhow = "1.0"
 console = "0.16"
 dialoguer = "0.12"
 directories = "6.0"
+regex = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"

@@ -8,13 +8,26 @@ use console::style;
 use crate::standalone::metadata::Metadata;
 
 mod base_exe;
+mod bundler;
 mod files;
 mod result;
 mod target;
 
 use self::base_exe::get_or_download_base_executable;
+use self::bundler::Bundler;
 use self::files::{remove_source_file_ext, write_executable_file_to};
 use self::target::BuildTarget;
+
+/// Strip shebang line from source code if present
+fn strip_shebang(mut contents: Vec<u8>) -> Vec<u8> {
+    if contents.starts_with(b"#!") {
+        if let Some(idx) = contents.iter().position(|&c| c == b'\n') {
+            // Keep the newline to preserve line numbers
+            contents.drain(..idx);
+        }
+    }
+    contents
+}
 
 /// Build a standalone executable
 #[derive(Debug, Clone, Parser)]
@@ -54,12 +67,28 @@ impl BuildCommand {
             );
         }
 
-        // Try to read the given input file
-        // FUTURE: We should try and resolve a full require file graph using the input
-        // path here instead, see the notes in the `standalone` module for more details
-        let source_code = fs::read(&self.input)
-            .await
-            .context("failed to read input file")?;
+        // Try to read the given input file and strip shebang
+        let source_code = strip_shebang(
+            fs::read(&self.input)
+                .await
+                .context("failed to read input file")?,
+        );
+
+        // Bundle all dependencies
+        println!(
+            "Bundling dependencies for {}",
+            style(self.input.display()).green()
+        );
+        let mut bundler = Bundler::new(&self.input)
+            .context("failed to initialize bundler")?;
+        let bundle_result = bundler
+            .bundle(&self.input)
+            .context("failed to bundle dependencies")?;
+        println!(
+            "Bundled {} files, {} aliases",
+            style(bundle_result.files.len()).cyan(),
+            style(bundle_result.aliases.len()).cyan()
+        );
 
         // Derive the base executable path based on the arguments provided
         let base_exe_path = get_or_download_base_executable(target).await?;
@@ -69,8 +98,19 @@ impl BuildCommand {
             "Compiling standalone binary from {}",
             style(self.input.display()).green()
         );
-        let entry_path = self.input.display().to_string();
-        let patched_bin = Metadata::create_env_patched_bin(base_exe_path, source_code, entry_path)
+        // Use canonical path so relative requires resolve correctly when running from any directory
+        let entry_path = self.input
+            .canonicalize()
+            .unwrap_or_else(|_| self.input.clone())
+            .display()
+            .to_string();
+        let patched_bin = Metadata::create_env_patched_bin(
+            base_exe_path,
+            source_code,
+            entry_path,
+            bundle_result.files,
+            bundle_result.aliases,
+        )
             .await
             .context("failed to create patched binary")?;
 
