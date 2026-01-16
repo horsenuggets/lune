@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `executable` global that returns the path to the current executable for standalone binaries, or `nil` when running as a regular Lune script
   - Enables self-install mechanisms where the executable can copy itself to a known location
 
+## `0.10.4-horse.4.0` - January 16th, 2026
+
+### Changed
+
+- Use horsenuggets/lune for cross-compile base executable downloads
+
+## `0.10.4-horse.3.0` - January 15th, 2026
+
+### Added
+
+- Bundle dependencies and aliases into standalone executables
+  - Standalone binaries now include all required modules and alias mappings
+  - Removes need for external files when distributing compiled executables
+
 ## `0.10.4-horse.2.0` - January 14th, 2026
 
 ### Fixed
