@@ -51,7 +51,7 @@ pub async fn get_or_download_base_executable(target: BuildTarget) -> BuildResult
 
     let release_url = format!(
         "{base_url}/v{version}/{target_triple}.zip",
-        base_url = "https://github.com/lune-org/lune/releases/download",
+        base_url = "https://github.com/horsenuggets/lune/releases/download",
     );
 
     // NOTE: This is not entirely accurate, but it is clearer for a user
