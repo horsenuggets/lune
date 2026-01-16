@@ -6,8 +6,9 @@
   "lintErrors": false,
   "typeErrors": true,
   "globals": [
-    "warn",
-    "script"
+    "executable",
+    "script",
+    "warn"
   ],
   "aliases": {
     "lune": "./types/",

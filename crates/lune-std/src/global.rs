@@ -7,6 +7,7 @@ use mlua::prelude::*;
 */
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum LuneStandardGlobal {
+    Executable,
     GTable,
     Print,
     Require,
@@ -18,6 +19,9 @@ pub enum LuneStandardGlobal {
 impl LuneStandardGlobal {
     /**
         All available standard globals.
+
+        Note: `Executable` is not included here because it needs to be injected
+        after app_data is set (it reads the executable path from app_data).
     */
     pub const ALL: &'static [Self] = &[
         Self::GTable,
@@ -34,6 +38,7 @@ impl LuneStandardGlobal {
     #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
+            Self::Executable => "executable",
             Self::GTable => "_G",
             Self::Print => "print",
             Self::Require => "require",
@@ -54,6 +59,7 @@ impl LuneStandardGlobal {
     #[allow(unreachable_patterns)]
     pub fn create(&self, lua: Lua) -> LuaResult<LuaValue> {
         let res = match self {
+            Self::Executable => crate::globals::executable::create(lua),
             Self::GTable => crate::globals::g_table::create(lua),
             Self::Print => crate::globals::print::create(lua),
             Self::Require => crate::globals::require::create(lua),
@@ -76,6 +82,7 @@ impl FromStr for LuneStandardGlobal {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let low = s.trim().to_ascii_lowercase();
         Ok(match low.as_str() {
+            "executable" => Self::Executable,
             "_g" => Self::GTable,
             "print" => Self::Print,
             "require" => Self::Require,

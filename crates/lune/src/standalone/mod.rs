@@ -32,7 +32,8 @@ pub async fn run(patched_bin: impl AsRef<[u8]>) -> Result<ExitCode> {
     let mut rt = Runtime::new()?
         .with_args(args)
         .with_bundled_files(meta.files)
-        .with_bundled_aliases(meta.aliases);
+        .with_bundled_aliases(meta.aliases)
+        .with_executable_path(metadata::CURRENT_EXE.clone());
 
     // Compile and run the source with the original entry path.
     // This ensures the chunk name is set correctly for require resolution.

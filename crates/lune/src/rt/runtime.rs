@@ -67,6 +67,9 @@ pub type BundledFiles = HashMap<String, Vec<u8>>;
 /// Bundled aliases for standalone executables: alias -> canonical path
 pub type BundledAliases = HashMap<String, String>;
 
+/// Path to the current executable for standalone binaries
+pub type ExecutablePath = Option<PathBuf>;
+
 /**
     A Lune runtime.
 */
@@ -78,6 +81,7 @@ pub struct Runtime {
     jit: ProcessJitEnablement,
     bundled_files: BundledFiles,
     bundled_aliases: BundledAliases,
+    executable_path: ExecutablePath,
 }
 
 impl Runtime {
@@ -155,6 +159,7 @@ impl Runtime {
             jit,
             bundled_files: HashMap::new(),
             bundled_aliases: HashMap::new(),
+            executable_path: None,
         })
     }
 
@@ -220,6 +225,18 @@ impl Runtime {
     #[must_use]
     pub fn with_bundled_aliases(mut self, aliases: BundledAliases) -> Self {
         self.bundled_aliases = aliases;
+        self
+    }
+
+    /**
+        Sets the executable path for standalone executables.
+
+        When set, the `executable` global will return this path.
+        This should only be set when running as a standalone executable.
+    */
+    #[must_use]
+    pub fn with_executable_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.executable_path = Some(path.into());
         self
     }
 
@@ -399,12 +416,31 @@ impl Runtime {
             eprintln!("{}", RuntimeError::from(e));
         });
 
-        // Store the provided args, environment variables, jit enablement, and bundled files/aliases as AppData
+        // Store the provided args, environment variables, jit enablement, bundled files/aliases, and executable path as AppData
         self.lua.set_app_data(self.args.clone());
         self.lua.set_app_data(self.env.clone());
         self.lua.set_app_data(self.jit);
         self.lua.set_app_data(self.bundled_files.clone());
         self.lua.set_app_data(self.bundled_aliases.clone());
+        self.lua.set_app_data(self.executable_path.clone());
+
+        // Inject the executable global now that app_data is set
+        #[cfg(any(
+            feature = "std-datetime",
+            feature = "std-fs",
+            feature = "std-luau",
+            feature = "std-net",
+            feature = "std-process",
+            feature = "std-regex",
+            feature = "std-roblox",
+            feature = "std-serde",
+            feature = "std-stdio",
+            feature = "std-task",
+        ))]
+        {
+            let executable_value = lune_std::create_executable_global(self.lua.clone())?;
+            self.lua.globals().set("executable", executable_value)?;
+        }
 
         // Inject all the standard libraries that are enabled - this needs to be done after
         // storing the args/env, since some standard libraries use those during initialization
