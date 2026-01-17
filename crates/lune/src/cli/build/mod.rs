@@ -98,12 +98,15 @@ impl BuildCommand {
             "Compiling standalone binary from {}",
             style(self.input.display()).green()
         );
-        // Use canonical path so relative requires resolve correctly when running from any directory
-        let entry_path = self.input
+        // Use relative path from project root for portability
+        let canonical_input = self.input
             .canonicalize()
-            .unwrap_or_else(|_| self.input.clone())
-            .display()
-            .to_string();
+            .unwrap_or_else(|_| self.input.clone());
+        let entry_path = if let Ok(relative) = canonical_input.strip_prefix(bundler.base_dir()) {
+            format!("/{}", relative.display())
+        } else {
+            canonical_input.display().to_string()
+        };
         let patched_bin = Metadata::create_env_patched_bin(
             base_exe_path,
             source_code,

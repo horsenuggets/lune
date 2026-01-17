@@ -21,37 +21,122 @@ pub struct BundleResult {
 
 /// A bundler that resolves all dependencies of a Luau file
 pub struct Bundler {
+    /// Base directory for computing relative paths (project root)
+    /// This may be expanded as we discover files outside the initial base
+    base_dir: PathBuf,
     /// Cached .luaurc configs by directory
     configs: HashMap<PathBuf, Option<LuauConfig>>,
     /// Already processed files to avoid cycles
     processed: HashSet<PathBuf>,
-    /// The bundled files: path -> source
-    files: HashMap<String, Vec<u8>>,
-    /// Alias mappings: alias path -> canonical path
-    aliases: HashMap<String, String>,
+    /// The bundled files: canonical path -> source (relativized at the end)
+    files_canonical: HashMap<PathBuf, Vec<u8>>,
+    /// Alias mappings: alias -> canonical path (relativized at the end)
+    aliases_canonical: HashMap<String, PathBuf>,
     /// Regex to find require calls
     require_regex: Regex,
 }
 
 impl Bundler {
-    pub fn new(_entry_path: &Path) -> Result<Self> {
+    pub fn new(entry_path: &Path) -> Result<Self> {
+        // Find the project root by searching upward for .luaurc files
+        let base_dir = Self::find_project_root(entry_path);
         Ok(Self {
+            base_dir,
             configs: HashMap::new(),
             processed: HashSet::new(),
-            files: HashMap::new(),
-            aliases: HashMap::new(),
+            files_canonical: HashMap::new(),
+            aliases_canonical: HashMap::new(),
             // Match require("...") or require('...')
             require_regex: Regex::new(r#"require\s*\(\s*["']([^"']+)["']\s*\)"#)?,
         })
     }
 
+    /// Get the base directory (project root) for making paths relative
+    pub fn base_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
+    /// Find the project root by searching upward for .luaurc files.
+    /// Returns the directory containing the highest-level .luaurc,
+    /// or the entry file's parent directory if no .luaurc is found.
+    fn find_project_root(entry_path: &Path) -> PathBuf {
+        let start_dir = entry_path
+            .canonicalize()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| {
+                entry_path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            });
+
+        let mut highest_luaurc_dir: Option<PathBuf> = None;
+        let mut search_dir = start_dir.clone();
+
+        loop {
+            let config_path = search_dir.join(".luaurc");
+            if config_path.exists() {
+                highest_luaurc_dir = Some(search_dir.clone());
+            }
+
+            if !search_dir.pop() {
+                break;
+            }
+        }
+
+        highest_luaurc_dir.unwrap_or(start_dir)
+    }
+
+    /// Find the common ancestor directory of two paths
+    fn common_ancestor(path1: &Path, path2: &Path) -> PathBuf {
+        let components1: Vec<_> = path1.components().collect();
+        let components2: Vec<_> = path2.components().collect();
+
+        let mut common = PathBuf::new();
+        for (c1, c2) in components1.iter().zip(components2.iter()) {
+            if c1 == c2 {
+                common.push(c1);
+            } else {
+                break;
+            }
+        }
+
+        // Ensure we return at least the root
+        if common.as_os_str().is_empty() {
+            PathBuf::from("/")
+        } else {
+            common
+        }
+    }
+
+    /// Expand base_dir to include a new path if needed
+    fn expand_base_dir(&mut self, path: &Path) {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if !canonical.starts_with(&self.base_dir) {
+            self.base_dir = Self::common_ancestor(&self.base_dir, &canonical);
+        }
+    }
+
     /// Bundle all dependencies starting from the entry file
     pub fn bundle(&mut self, entry_path: &Path) -> Result<BundleResult> {
+        // First pass: collect all files with canonical paths
         self.process_file(entry_path)?;
-        Ok(BundleResult {
-            files: self.files.clone(),
-            aliases: self.aliases.clone(),
-        })
+
+        // Now relativize all paths using the (possibly expanded) base_dir
+        let mut files = HashMap::new();
+        for (canonical_path, source) in &self.files_canonical {
+            let key = self.normalize_path(canonical_path);
+            files.insert(key, source.clone());
+        }
+
+        let mut aliases = HashMap::new();
+        for (alias, canonical_path) in &self.aliases_canonical {
+            let relative_path = self.normalize_path(canonical_path);
+            aliases.insert(alias.clone(), relative_path);
+        }
+
+        Ok(BundleResult { files, aliases })
     }
 
     /// Process a single file and its dependencies
@@ -65,13 +150,15 @@ impl Bundler {
         }
         self.processed.insert(canonical.clone());
 
+        // Expand base_dir if this file is outside the current base
+        self.expand_base_dir(&canonical);
+
         // Read the file
         let source = fs::read(file_path)
             .with_context(|| format!("failed to read file: {}", file_path.display()))?;
 
-        // Store the file with a normalized path key
-        let key = self.normalize_path(file_path);
-        self.files.insert(key, source.clone());
+        // Store the file with its canonical path (will be relativized at the end)
+        self.files_canonical.insert(canonical.clone(), source.clone());
 
         // Find all require paths first (to avoid borrow issues)
         let source_str = String::from_utf8_lossy(&source);
@@ -99,11 +186,21 @@ impl Bundler {
         Ok(())
     }
 
-    /// Normalize a path for use as a bundle key (always use canonical/absolute paths)
+    /// Normalize a path for use as a bundle key.
+    /// Returns a path relative to the base directory, starting with '/'.
+    /// This ensures bundled binaries are portable across machines.
     fn normalize_path(&self, path: &Path) -> String {
-        path.canonicalize()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| path.display().to_string())
+        let canonical = path
+            .canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf());
+
+        // Make path relative to base_dir
+        if let Ok(relative) = canonical.strip_prefix(&self.base_dir) {
+            format!("/{}", relative.display())
+        } else {
+            // Path is outside base_dir - use the full canonical path as fallback
+            canonical.display().to_string()
+        }
     }
 
     /// Find the actual module file (handles init.luau pattern)
@@ -188,12 +285,12 @@ impl Bundler {
                     }
 
                     // Record the alias mapping for runtime resolution
-                    // Find the actual module file to get canonical path
+                    // Store canonical path (will be relativized at the end)
                     if let Some(actual_file) = self.find_module_file(&resolved) {
                         if let Ok(canonical) = actual_file.canonicalize() {
-                            self.aliases.insert(
+                            self.aliases_canonical.insert(
                                 format!("@{}", alias_path),
-                                canonical.display().to_string(),
+                                canonical,
                             );
                         }
                     }

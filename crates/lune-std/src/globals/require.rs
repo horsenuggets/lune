@@ -31,7 +31,13 @@ type BundledAliases = HashMap<String, String>;
 fn get_bundled_source(lua: &Lua, path: &Path) -> Option<Vec<u8>> {
     let bundled = lua.app_data_ref::<BundledFiles>()?;
 
-    // Try canonical path first
+    // Try the path as-is first (handles virtual paths like /Source/Module.luau)
+    let key = path.display().to_string();
+    if let Some(source) = bundled.get(&key) {
+        return Some(source.clone());
+    }
+
+    // Try canonical path (handles real filesystem paths)
     if let Ok(canonical) = path.canonicalize() {
         let key = canonical.display().to_string();
         if let Some(source) = bundled.get(&key) {
@@ -39,9 +45,46 @@ fn get_bundled_source(lua: &Lua, path: &Path) -> Option<Vec<u8>> {
         }
     }
 
-    // Try the path as-is
-    let key = path.display().to_string();
-    bundled.get(&key).cloned()
+    None
+}
+
+/// Try to resolve a module path in bundled files.
+/// Returns the resolved path if found in bundled files.
+/// This handles .luau/.lua extensions and init.luau patterns.
+fn resolve_bundled_module(lua: &Lua, module_path: &Path) -> Option<PathBuf> {
+    let bundled = lua.app_data_ref::<BundledFiles>()?;
+    let base = module_path.display().to_string();
+
+    // Try exact path first
+    if bundled.contains_key(&base) {
+        return Some(module_path.to_path_buf());
+    }
+
+    // Try with .luau extension
+    let with_luau = format!("{}.luau", base);
+    if bundled.contains_key(&with_luau) {
+        return Some(PathBuf::from(&with_luau));
+    }
+
+    // Try with .lua extension
+    let with_lua = format!("{}.lua", base);
+    if bundled.contains_key(&with_lua) {
+        return Some(PathBuf::from(&with_lua));
+    }
+
+    // Try as directory with init.luau
+    let init_luau = format!("{}/init.luau", base);
+    if bundled.contains_key(&init_luau) {
+        return Some(PathBuf::from(&init_luau));
+    }
+
+    // Try as directory with init.lua
+    let init_lua = format!("{}/init.lua", base);
+    if bundled.contains_key(&init_lua) {
+        return Some(PathBuf::from(&init_lua));
+    }
+
+    None
 }
 
 /// Try to resolve an alias from bundled aliases
@@ -390,31 +433,33 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
                     // For standalone executables, try bundled aliases first
-                    // Bundled aliases return canonical paths that don't need filesystem resolution
-                    let (resolved_path, _from_bundled) = if let Some(bundled_path) = get_bundled_alias(&lua, &alias) {
-                        (bundled_path, true)
+                    // Bundled aliases return paths that don't need filesystem resolution
+                    let resolved_path: PathBuf = if let Some(bundled_path) = get_bundled_alias(&lua, &alias) {
+                        bundled_path
                     } else if let Some(alias_path) = resolve_alias(&alias, &caller_dir) {
-                        // Resolve to actual filesystem path (handling .luau/.lua extensions)
-                        let resolved = LuauModulePath::resolve(&alias_path).map_err(|e| {
-                            LuaError::runtime(format!(
-                                "cannot find module '{}': {:?}",
-                                alias_path.display(),
-                                e
-                            ))
-                        })?;
+                        // Try bundled files first (for standalone executables with virtual paths)
+                        if let Some(bundled_path) = resolve_bundled_module(&lua, &alias_path) {
+                            bundled_path
+                        } else {
+                            // Fall back to filesystem resolution
+                            let resolved = LuauModulePath::resolve(&alias_path).map_err(|e| {
+                                LuaError::runtime(format!(
+                                    "cannot find module '{}': {:?}",
+                                    alias_path.display(),
+                                    e
+                                ))
+                            })?;
 
-                        let file_path = resolved.target().as_file().ok_or_else(|| {
-                            LuaError::runtime(format!(
-                                "cannot require directory '{}'",
-                                alias_path.display()
-                            ))
-                        })?;
-                        (file_path.to_path_buf(), false)
+                            resolved.target().as_file().ok_or_else(|| {
+                                LuaError::runtime(format!(
+                                    "cannot require directory '{}'",
+                                    alias_path.display()
+                                ))
+                            })?.to_path_buf()
+                        }
                     } else {
                         return Err(LuaError::runtime(format!("cannot find alias '{}'", alias)));
                     };
-
-                    let resolved_path = &resolved_path;
 
                     let cache_key = resolved_path.to_string_lossy().to_string();
 
@@ -427,7 +472,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                     }
 
                     // Check if already being loaded (concurrent require)
-                    if let Some(rx) = state.get_pending(resolved_path) {
+                    if let Some(rx) = state.get_pending(&resolved_path) {
                         return rx
                             .recv()
                             .await
@@ -435,16 +480,16 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                             .context("require interrupted")?;
                     }
 
-                    let tx = state.create_pending(resolved_path);
+                    let tx = state.create_pending(&resolved_path);
 
                     // Load and execute the module
                     let chunk_name = format!("{FILE_CHUNK_PREFIX}{}", resolved_path.display());
 
                     // Try bundled source first, then filesystem
-                    let chunk_bytes = if let Some(bundled) = get_bundled_source(&lua, resolved_path) {
+                    let chunk_bytes = if let Some(bundled) = get_bundled_source(&lua, &resolved_path) {
                         bundled
                     } else {
-                        read_file(resolved_path).await.map_err(|e| {
+                        read_file(&resolved_path).await.map_err(|e| {
                             LuaError::runtime(format!(
                                 "cannot read '{}': {}",
                                 resolved_path.display(),
@@ -476,26 +521,32 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                         tx.close();
                     }
 
-                    state.remove_pending(resolved_path);
+                    state.remove_pending(&resolved_path);
 
                     result
                 }
                 ResolveResult::FilePath(_relative_path, absolute_path) => {
-                    // Resolve to actual filesystem path (handling .luau/.lua extensions)
-                    let resolved = LuauModulePath::resolve(&absolute_path).map_err(|e| {
-                        LuaError::runtime(format!(
-                            "cannot find module '{}': {:?}",
-                            absolute_path.display(),
-                            e
-                        ))
-                    })?;
+                    // Try bundled files first (for standalone executables with virtual paths)
+                    // Then fall back to filesystem resolution
+                    let resolved_path: PathBuf = if let Some(bundled_path) = resolve_bundled_module(&lua, &absolute_path) {
+                        bundled_path
+                    } else {
+                        // Resolve to actual filesystem path (handling .luau/.lua extensions)
+                        let resolved = LuauModulePath::resolve(&absolute_path).map_err(|e| {
+                            LuaError::runtime(format!(
+                                "cannot find module '{}': {:?}",
+                                absolute_path.display(),
+                                e
+                            ))
+                        })?;
 
-                    let resolved_path = resolved.target().as_file().ok_or_else(|| {
-                        LuaError::runtime(format!(
-                            "cannot require directory '{}'",
-                            absolute_path.display()
-                        ))
-                    })?;
+                        resolved.target().as_file().ok_or_else(|| {
+                            LuaError::runtime(format!(
+                                "cannot require directory '{}'",
+                                absolute_path.display()
+                            ))
+                        })?.to_path_buf()
+                    };
 
                     let cache_key = resolved_path.to_string_lossy().to_string();
 
@@ -508,7 +559,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                     }
 
                     // Check if already being loaded (concurrent require)
-                    if let Some(rx) = state.get_pending(resolved_path) {
+                    if let Some(rx) = state.get_pending(&resolved_path) {
                         return rx
                             .recv()
                             .await
@@ -516,17 +567,17 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                             .context("require interrupted")?;
                     }
 
-                    let tx = state.create_pending(resolved_path);
+                    let tx = state.create_pending(&resolved_path);
 
                     // Load and execute the module
                     // Use absolute path for chunk name so nested requires can resolve correctly
                     let chunk_name = format!("{FILE_CHUNK_PREFIX}{}", resolved_path.display());
 
                     // Try bundled source first, then filesystem
-                    let chunk_bytes = if let Some(bundled) = get_bundled_source(&lua, resolved_path) {
+                    let chunk_bytes = if let Some(bundled) = get_bundled_source(&lua, &resolved_path) {
                         bundled
                     } else {
-                        read_file(resolved_path).await.map_err(|e| {
+                        read_file(&resolved_path).await.map_err(|e| {
                             LuaError::runtime(format!(
                                 "cannot read '{}': {}",
                                 resolved_path.display(),
@@ -558,7 +609,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                         tx.close();
                     }
 
-                    state.remove_pending(resolved_path);
+                    state.remove_pending(&resolved_path);
 
                     result
                 }
