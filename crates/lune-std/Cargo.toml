@@ -32,7 +32,7 @@ luau = ["dep:lune-std-luau"]
 net = ["dep:lune-std-net"]
 process = ["dep:lune-std-process"]
 regex = ["dep:lune-std-regex"]
-roblox = ["dep:lune-std-roblox"]
+roblox = ["dep:lune-std-roblox", "dep:lune-roblox"]
 serde = ["dep:lune-std-serde"]
 stdio = ["dep:lune-std-stdio"]
 task = ["dep:lune-std-task"]
@@ -56,6 +56,7 @@ lune-std-luau = { optional = true, version = "0.3.4", path = "../lune-std-luau" 
 lune-std-net = { optional = true, version = "0.3.4", path = "../lune-std-net" }
 lune-std-process = { optional = true, version = "0.3.4", path = "../lune-std-process" }
 lune-std-regex = { optional = true, version = "0.3.4", path = "../lune-std-regex" }
+lune-roblox = { optional = true, version = "0.3.4", path = "../lune-roblox" }
 lune-std-roblox = { optional = true, version = "0.3.4", path = "../lune-std-roblox" }
 lune-std-serde = { optional = true, version = "0.3.4", path = "../lune-std-serde" }
 lune-std-stdio = { optional = true, version = "0.3.4", path = "../lune-std-stdio" }

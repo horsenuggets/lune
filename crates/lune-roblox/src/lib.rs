@@ -12,7 +12,7 @@ pub mod instance;
 pub mod reflection;
 
 #[cfg(feature = "mlua")]
-pub(crate) mod exports;
+pub mod exports;
 pub(crate) mod shared;
 
 #[cfg(feature = "mlua")]

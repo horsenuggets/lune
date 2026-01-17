@@ -1588,6 +1588,7 @@ dependencies = [
  "async-channel",
  "async-fs",
  "async-lock",
+ "lune-roblox",
  "lune-std-datetime",
  "lune-std-fs",
  "lune-std-luau",

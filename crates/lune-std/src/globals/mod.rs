@@ -2,6 +2,8 @@ pub mod executable;
 pub mod g_table;
 pub mod print;
 pub mod require;
+#[cfg(feature = "roblox")]
+pub mod roblox_globals;
 pub mod script;
 pub mod version;
 pub mod warn;
