@@ -8,6 +8,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.10.4-horse.6.0` - January 16th, 2026
+
+### Added
+
+- Added native Roblox type globals: `Color3`, `Vector2`, `Vector3`, `CFrame`, and `NumberRange` are now available as globals without requiring `@lune/roblox`
+
+### Fixed
+
+- Fixed TCP tests failing when server uses chunked transfer encoding instead of Content-Length header
+- Fixed TCP info test failing when server resolves to IPv6 address
+- Fixed JSON encode tests expecting 2-space indentation when encoder uses 4-space
+
 ## `0.10.4-horse.5.0` - January 16th, 2026
 
 ### Added
