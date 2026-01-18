@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::{Error, Result},
     net::SocketAddr,
     pin::Pin,
@@ -9,7 +10,10 @@ use std::{
 use async_net::TcpStream;
 use async_tungstenite::{
     WebSocketStream as TungsteniteStream,
-    tungstenite::{Error as TungsteniteError, Message, Result as TungsteniteResult},
+    tungstenite::{
+        Error as TungsteniteError, Message, Result as TungsteniteResult,
+        http::{Request, Uri},
+    },
 };
 use futures::Sink;
 use futures_lite::prelude::*;
@@ -182,20 +186,102 @@ pub struct WsStream {
 
 impl WsStream {
     /**
-       Connects to the given URL.
+       Connects to the given URL with optional headers.
 
        Automatically determines whether or not to use TLS based on the URL scheme.
     */
-    pub async fn connect_url(url: Url) -> Result<Self> {
-        let url_str = url.to_string();
+    pub async fn connect_url(url: Url, headers: Option<HashMap<String, String>>) -> Result<Self> {
+        let stream = MaybeTlsStream::connect_url(url.clone()).await?;
 
-        let stream = MaybeTlsStream::connect_url(url).await?;
-        let (inner, _) = async_tungstenite::client_async(url_str, stream)
-            .await
-            .map_err(Error::other)?;
+        let inner = if let Some(headers) = headers {
+            // Build a custom HTTP request with headers
+            // We need to include the required WebSocket headers manually
+            let uri: Uri = url.to_string().parse().map_err(Error::other)?;
+
+            // Generate a random key for Sec-WebSocket-Key
+            let key = generate_websocket_key();
+
+            // Build host header from URL
+            let host = match (url.host_str(), url.port()) {
+                (Some(h), Some(p)) => format!("{h}:{p}"),
+                (Some(h), None) => h.to_string(),
+                _ => return Err(Error::other("missing host")),
+            };
+
+            let mut builder = Request::builder()
+                .uri(uri)
+                .header("Host", host)
+                .header("Connection", "Upgrade")
+                .header("Upgrade", "websocket")
+                .header("Sec-WebSocket-Version", "13")
+                .header("Sec-WebSocket-Key", key);
+
+            // Add custom headers
+            for (key, value) in headers {
+                builder = builder.header(key, value);
+            }
+
+            let request = builder.body(()).map_err(Error::other)?;
+            let (inner, _) = async_tungstenite::client_async(request, stream)
+                .await
+                .map_err(Error::other)?;
+            inner
+        } else {
+            let url_str = url.to_string();
+            let (inner, _) = async_tungstenite::client_async(url_str, stream)
+                .await
+                .map_err(Error::other)?;
+            inner
+        };
 
         Ok(Self { inner })
     }
+}
+
+/// Generates a random base64-encoded key for WebSocket handshake
+fn generate_websocket_key() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Generate 16 random bytes using time-based seed
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+
+    let mut bytes = [0u8; 16];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = ((seed >> (i * 8)) & 0xFF) as u8;
+    }
+
+    // Base64 encode
+    const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity(24);
+
+    for chunk in bytes.chunks(3) {
+        let n = match chunk.len() {
+            3 => ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8) | (chunk[2] as u32),
+            2 => ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8),
+            1 => (chunk[0] as u32) << 16,
+            _ => continue,
+        };
+
+        result.push(BASE64_CHARS[((n >> 18) & 0x3F) as usize] as char);
+        result.push(BASE64_CHARS[((n >> 12) & 0x3F) as usize] as char);
+
+        if chunk.len() > 1 {
+            result.push(BASE64_CHARS[((n >> 6) & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+
+        if chunk.len() > 2 {
+            result.push(BASE64_CHARS[(n & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+
+    result
 }
 
 impl Sink<Message> for WsStream {

@@ -373,9 +373,10 @@ end
 	web sockets, or if a miscellaneous network or I/O error occurs.
 
 	@param url The URL to connect to
+	@param config Optional configuration with headers
 	@return A web socket handle
 ]=]
-function net.socket(url: string): WebSocket
+function net.socket(url: string, config: { headers: { [string]: string }? }?): WebSocket
 	return nil :: any
 end
 

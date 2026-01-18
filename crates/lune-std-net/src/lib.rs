@@ -78,9 +78,28 @@ async fn net_tcp_connect(_: Lua, (host, port, config): (String, u16, TcpConfig))
     self::client::connect_tcp(host, port, config).await
 }
 
-async fn net_ws_connect(_: Lua, url: String) -> LuaResult<Websocket<WsStream>> {
+async fn net_ws_connect(
+    _: Lua,
+    (url, config): (String, Option<LuaTable>),
+) -> LuaResult<Websocket<WsStream>> {
     let url = url.parse().into_lua_err()?;
-    self::client::connect_ws(url).await
+
+    let headers = if let Some(config) = config {
+        if let Ok(headers_table) = config.get::<LuaTable>("headers") {
+            let mut headers = std::collections::HashMap::new();
+            for pair in headers_table.pairs::<String, String>() {
+                let (key, value) = pair?;
+                headers.insert(key, value);
+            }
+            Some(headers)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    self::client::connect_ws(url, headers).await
 }
 
 fn net_url_encode(

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use hyper::{Method, Response as HyperResponse, Uri, body::Incoming, header::LOCATION};
 
 use mlua::prelude::*;
@@ -25,10 +27,13 @@ pub use self::send::send;
 const MAX_REDIRECTS: usize = 10;
 
 /**
-    Connects to a websocket at the given URL.
+    Connects to a websocket at the given URL with optional headers.
 */
-pub async fn connect_ws(url: Url) -> LuaResult<Websocket<WsStream>> {
-    let stream = WsStream::connect_url(url).await?;
+pub async fn connect_ws(
+    url: Url,
+    headers: Option<HashMap<String, String>>,
+) -> LuaResult<Websocket<WsStream>> {
+    let stream = WsStream::connect_url(url, headers).await?;
     Ok(Websocket::from(stream))
 }
 
