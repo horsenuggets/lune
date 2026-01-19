@@ -5,13 +5,52 @@
 use std::{
     ffi::OsStr,
     fmt,
+    fs,
     path::{Path, PathBuf},
 };
 
 use mlua::prelude::*;
+use serde::Deserialize;
 
 use super::constants::{FILE_EXTENSIONS, FILE_NAME_INIT};
 use super::std::append_extension;
+
+/// Name of the project file used for path mapping
+const PROJECT_FILE_NAME: &str = "default.project.json";
+
+/// Structure representing a minimal default.project.json tree
+#[derive(Debug, Deserialize)]
+struct ProjectTree {
+    #[serde(rename = "$path")]
+    path: Option<String>,
+}
+
+/// Structure representing a minimal default.project.json file
+#[derive(Debug, Deserialize)]
+struct ProjectJson {
+    tree: Option<ProjectTree>,
+}
+
+/// Read and parse a default.project.json file to get the root $path mapping
+fn read_project_json_path(dir: &Path) -> Option<PathBuf> {
+    let project_file = dir.join(PROJECT_FILE_NAME);
+    if !project_file.exists() {
+        return None;
+    }
+
+    let content = fs::read_to_string(&project_file).ok()?;
+    let project: ProjectJson = serde_json::from_str(&content).ok()?;
+
+    // Check if the root tree has a $path mapping
+    if let Some(tree) = project.tree {
+        if let Some(path) = tree.path {
+            // Resolve the path relative to the project file's directory
+            return Some(dir.join(path));
+        }
+    }
+
+    None
+}
 
 /**
     A file path for Luau, which has been resolved to either a valid file or directory.
@@ -29,8 +68,10 @@ pub enum LuauFilePath {
 
 impl LuauFilePath {
     fn resolve(module: impl AsRef<Path>) -> Result<Self, LuaNavigateError> {
-        let module = module.as_ref();
+        Self::resolve_inner(module.as_ref(), true)
+    }
 
+    fn resolve_inner(module: &Path, check_project_json: bool) -> Result<Self, LuaNavigateError> {
         // Modules named "init" are ambiguous and not allowed
         if module
             .file_name()
@@ -51,6 +92,16 @@ impl LuauFilePath {
 
         // Try directories with init files in them
         if module.is_dir() {
+            // Check for default.project.json with $path mapping
+            // This supports Roblox-style project files used by Wally packages
+            if check_project_json {
+                if let Some(mapped_path) = read_project_json_path(module) {
+                    // Recursively resolve the mapped path, but don't check project.json again
+                    // to avoid infinite loops
+                    return Self::resolve_inner(&mapped_path, false);
+                }
+            }
+
             let init = Path::new(FILE_NAME_INIT);
             for ext in FILE_EXTENSIONS {
                 let candidate = module.join(append_extension(init, ext));

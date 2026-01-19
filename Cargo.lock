@@ -1771,6 +1771,8 @@ dependencies = [
  "parking_lot",
  "path-clean",
  "semver 1.0.27",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
