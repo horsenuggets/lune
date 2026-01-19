@@ -18,6 +18,8 @@ pub enum LuneStandardGlobal {
     Print,
     Require,
     Script,
+    #[cfg(feature = "task")]
+    Task,
     #[cfg(feature = "roblox")]
     Vector2,
     #[cfg(feature = "roblox")]
@@ -44,6 +46,8 @@ impl LuneStandardGlobal {
         Self::Print,
         Self::Require,
         Self::Script,
+        #[cfg(feature = "task")]
+        Self::Task,
         #[cfg(feature = "roblox")]
         Self::Vector2,
         #[cfg(feature = "roblox")]
@@ -69,6 +73,8 @@ impl LuneStandardGlobal {
             Self::Print => "print",
             Self::Require => "require",
             Self::Script => "script",
+            #[cfg(feature = "task")]
+            Self::Task => "task",
             #[cfg(feature = "roblox")]
             Self::Vector2 => "Vector2",
             #[cfg(feature = "roblox")]
@@ -100,6 +106,8 @@ impl LuneStandardGlobal {
             Self::Print => crate::globals::print::create(lua),
             Self::Require => crate::globals::require::create(lua),
             Self::Script => crate::globals::script::create(lua),
+            #[cfg(feature = "task")]
+            Self::Task => crate::globals::task::create(lua),
             #[cfg(feature = "roblox")]
             Self::Vector2 => crate::globals::roblox_globals::create_vector2(lua),
             #[cfg(feature = "roblox")]
@@ -133,6 +141,8 @@ impl FromStr for LuneStandardGlobal {
             "print" => Self::Print,
             "require" => Self::Require,
             "script" => Self::Script,
+            #[cfg(feature = "task")]
+            "task" => Self::Task,
             #[cfg(feature = "roblox")]
             "vector2" => Self::Vector2,
             #[cfg(feature = "roblox")]

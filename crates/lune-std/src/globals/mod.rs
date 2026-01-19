@@ -5,5 +5,7 @@ pub mod require;
 #[cfg(feature = "roblox")]
 pub mod roblox_globals;
 pub mod script;
+#[cfg(feature = "task")]
+pub mod task;
 pub mod version;
 pub mod warn;
