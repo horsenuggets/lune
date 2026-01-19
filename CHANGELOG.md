@@ -8,6 +8,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.10.4-horse.7.0` - January 18th, 2026
+
+### Added
+
+- Added support for building directories with `init.luau` as executables using `lune build`
+  - `lune build Source/Module/` now works when the directory contains an `init.luau` file
+  - The output is named after the directory, not "init"
+
+### Changed
+
+- Improved `script` global to properly track module context in required modules
+  - `typeof(script)` now returns `"ScriptReference"` instead of `"table"`
+  - Functions defined in a module now correctly refer to that module's script
+  - Added `script:GetFullName()` method for Roblox API compatibility
+- Changed `warn` output to display `[WARN]` prefix on the same line as the message, with the entire output in yellow
+
 ## `0.10.4-horse.6.0` - January 16th, 2026
 
 ### Added
@@ -80,15 +96,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Changed version format from `+` to `-` (e.g., `0.10.4-horse.0.3` instead of `0.10.4+horse.0.3`) for compatibility with common tooling
+- Changed version format from `+` to `-` (e.g., `0.10.4-horse.0.3` instead of `0.10.4-horse.0.3`) for compatibility with common tooling
 
-## `0.10.4+horse.0.2` - November 29th, 2025
+## `0.10.4-horse.0.2` - November 29th, 2025
 
 ### Changed
 
 - Changed the `serde_json` dependency to point to a forked version that defaults to 4-space indentation instead of 2-space indentation
 
-## `0.10.4+horse.0.1` - November 16th, 2025
+## `0.10.4-horse.0.1` - November 16th, 2025
 
 ### Added
 
