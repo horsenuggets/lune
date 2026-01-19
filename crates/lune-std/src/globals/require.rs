@@ -9,7 +9,7 @@ use mlua::prelude::*;
 use mlua_luau_scheduler::LuaSchedulerExt;
 use serde::Deserialize;
 
-use crate::globals::script::ScriptReference;
+use crate::globals::script::{ScriptReference, pop_script_path, push_script_path};
 use crate::require::RequireResolver;
 use lune_utils::path::{
     LuauModulePath, clean_path_and_make_absolute,
@@ -498,7 +498,23 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                         })?
                     };
 
-                    let chunk = lua.load(chunk_bytes).set_name(chunk_name);
+                    // Create a custom environment for this module with a static script reference
+                    let module_env = lua.create_table()?;
+                    let module_script = ScriptReference::new(&resolved_path);
+                    module_env.set("script", module_script)?;
+
+                    // Set metatable to inherit from globals
+                    let env_mt = lua.create_table()?;
+                    env_mt.set("__index", lua.globals())?;
+                    env_mt.set("__newindex", lua.globals())?;
+                    module_env.set_metatable(Some(env_mt))?;
+
+                    let chunk = lua.load(chunk_bytes)
+                        .set_name(chunk_name)
+                        .set_environment(module_env);
+
+                    // Push the script path before executing the module (for dynamic fallback)
+                    push_script_path(&lua, &resolved_path.display().to_string())?;
 
                     let thread_id = lua.push_thread_back(chunk, ())?;
                     lua.track_thread(thread_id);
@@ -507,6 +523,9 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                     let result = lua
                         .get_thread_result(thread_id)
                         .expect("thread tracked and waited");
+
+                    // Pop the script path after module execution
+                    pop_script_path(&lua)?;
 
                     // Cache the result
                     if let Ok(ref res) = result {
@@ -586,7 +605,23 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                         })?
                     };
 
-                    let chunk = lua.load(chunk_bytes).set_name(chunk_name);
+                    // Create a custom environment for this module with a static script reference
+                    let module_env = lua.create_table()?;
+                    let module_script = ScriptReference::new(&resolved_path);
+                    module_env.set("script", module_script)?;
+
+                    // Set metatable to inherit from globals
+                    let env_mt = lua.create_table()?;
+                    env_mt.set("__index", lua.globals())?;
+                    env_mt.set("__newindex", lua.globals())?;
+                    module_env.set_metatable(Some(env_mt))?;
+
+                    let chunk = lua.load(chunk_bytes)
+                        .set_name(chunk_name)
+                        .set_environment(module_env);
+
+                    // Push the script path before executing the module (for dynamic fallback)
+                    push_script_path(&lua, &resolved_path.display().to_string())?;
 
                     let thread_id = lua.push_thread_back(chunk, ())?;
                     lua.track_thread(thread_id);
@@ -595,6 +630,9 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                     let result = lua
                         .get_thread_result(thread_id)
                         .expect("thread tracked and waited");
+
+                    // Pop the script path after module execution
+                    pop_script_path(&lua)?;
 
                     // Cache the result (first value only, like standard require)
                     if let Ok(ref res) = result {

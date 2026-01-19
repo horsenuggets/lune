@@ -10,43 +10,65 @@ const SCRIPT_PATH_STACK_KEY: &str = "__lune_script_path_stack";
 
 /// A reference to a script or module location in the file system.
 /// This provides a Roblox-like `script` global that can be used for navigation.
+///
+/// Can be either:
+/// - Static: contains a fixed path (used for script.Parent, child lookups, etc.)
+/// - Dynamic: resolves path from the current script path stack (used for the global `script`)
 #[derive(Debug, Clone)]
 pub struct ScriptReference {
-    /// The full path to this script/module
-    path: PathBuf,
+    /// The path to this script/module.
+    /// None means this is a dynamic reference that should look up the current path.
+    path: Option<PathBuf>,
 }
 
 impl ScriptReference {
-    /// Create a new script reference from a path
+    /// Create a new static script reference from a path
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self { path: Some(path.into()) }
     }
 
-    /// Get the full path as a string
+    /// Create a new dynamic script reference that resolves path at access time
+    pub fn dynamic() -> Self {
+        Self { path: None }
+    }
+
+    /// Get the path, resolving dynamically if needed
+    fn resolve_path(&self, lua: &Lua) -> LuaResult<PathBuf> {
+        match &self.path {
+            Some(p) => Ok(p.clone()),
+            None => {
+                let path_str = get_script_path_from_stack(lua)?;
+                Ok(PathBuf::from(path_str))
+            }
+        }
+    }
+
+    /// Get the full path as a string (for static references only)
     pub fn path_string(&self) -> String {
-        self.path.display().to_string()
+        self.path.as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "[dynamic]".to_string())
     }
 
-    /// Get just the file/folder name
-    pub fn name(&self) -> String {
-        self.path
-            .file_name()
+    /// Get just the file/folder name from a path
+    fn name_from_path(path: &Path) -> String {
+        path.file_name()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| self.path_string())
+            .unwrap_or_else(|| path.display().to_string())
     }
 
-    /// Get the parent directory as a new ScriptReference
-    pub fn parent(&self) -> Option<ScriptReference> {
-        self.path.parent().map(|p| ScriptReference::new(p))
+    /// Get the parent directory as a new ScriptReference from a path
+    fn parent_from_path(path: &Path) -> Option<ScriptReference> {
+        path.parent().map(|p| ScriptReference::new(p))
     }
 
-    /// Get a child by name (file or folder)
+    /// Get a child by name from a path
     /// First checks default.project.json for path mappings, then falls back to direct child
-    pub fn child(&self, name: &str) -> ScriptReference {
-        let base_dir = if self.path.is_file() {
-            self.path.parent().map(|p| p.to_path_buf())
+    fn child_from_path(path: &Path, name: &str) -> ScriptReference {
+        let base_dir = if path.is_file() {
+            path.parent().map(|p| p.to_path_buf())
         } else {
-            Some(self.path.clone())
+            Some(path.to_path_buf())
         };
 
         if let Some(base) = &base_dir {
@@ -57,7 +79,7 @@ impl ScriptReference {
         }
 
         // Fall back to direct child lookup
-        let mut child_path = base_dir.unwrap_or_else(|| self.path.clone());
+        let mut child_path = base_dir.unwrap_or_else(|| path.to_path_buf());
         child_path.push(name);
         ScriptReference::new(child_path)
     }
@@ -190,46 +212,86 @@ fn resolve_through_project(base_path: &Path, child_name: &str) -> Option<PathBuf
 
 impl UserData for ScriptReference {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        methods.add_meta_method(LuaMetaMethod::ToString, |_, this, ()| {
-            Ok(this.path_string())
+        // __tostring returns the full path
+        methods.add_meta_method(LuaMetaMethod::ToString, |lua, this, ()| {
+            let path = this.resolve_path(lua)?;
+            Ok(path.display().to_string())
         });
 
-        methods.add_meta_method(LuaMetaMethod::Concat, |_, this, value: LuaValue| {
-            match value {
-                LuaValue::String(s) => Ok(format!("{}{}", this.path_string(), s.to_str()?)),
-                _ => Ok(format!("{}{}", this.path_string(), value.to_string()?)),
+        // String concatenation - use add_meta_function to handle both orderings
+        // "string" .. script and script .. "string"
+        methods.add_meta_function(LuaMetaMethod::Concat, |lua, (a, b): (LuaValue, LuaValue)| {
+            // Determine which argument is the ScriptReference
+            let (path_str, other, script_first) = if let LuaValue::UserData(ref ud) = a {
+                if let Ok(script_ref) = ud.borrow::<ScriptReference>() {
+                    let path = script_ref.resolve_path(&lua)?;
+                    (path.display().to_string(), b, true)
+                } else {
+                    return Err(LuaError::runtime("Invalid ScriptReference in concatenation"));
+                }
+            } else if let LuaValue::UserData(ref ud) = b {
+                if let Ok(script_ref) = ud.borrow::<ScriptReference>() {
+                    let path = script_ref.resolve_path(&lua)?;
+                    (path.display().to_string(), a, false)
+                } else {
+                    return Err(LuaError::runtime("Invalid ScriptReference in concatenation"));
+                }
+            } else {
+                return Err(LuaError::runtime("ScriptReference concatenation requires a ScriptReference"));
+            };
+
+            let other_str = match other {
+                LuaValue::String(s) => s.to_str()?.to_string(),
+                _ => other.to_string()?,
+            };
+
+            if script_first {
+                Ok(format!("{}{}", path_str, other_str))
+            } else {
+                Ok(format!("{}{}", other_str, path_str))
             }
         });
 
         // Allow accessing properties and children via indexing
         methods.add_meta_method(LuaMetaMethod::Index, |lua, this, key: String| {
+            let path = this.resolve_path(lua)?;
             match key.as_str() {
-                "Name" => Ok(LuaValue::String(lua.create_string(&this.name())?)),
-                "Path" => Ok(LuaValue::String(lua.create_string(&this.path_string())?)),
+                "Name" => {
+                    let name = ScriptReference::name_from_path(&path);
+                    Ok(LuaValue::String(lua.create_string(&name)?))
+                }
                 "Parent" => {
-                    match this.parent() {
+                    match ScriptReference::parent_from_path(&path) {
                         Some(parent) => Ok(LuaValue::UserData(lua.create_userdata(parent)?)),
                         None => Ok(LuaValue::Nil),
                     }
                 }
                 _ => {
                     // Treat as child lookup
-                    let child = this.child(&key);
+                    let child = ScriptReference::child_from_path(&path, &key);
                     Ok(LuaValue::UserData(lua.create_userdata(child)?))
                 }
             }
         });
 
-        // Add RequirePath method that returns a relative path string for use with require()
+        // GetFullName returns the full path (like Roblox's Instance:GetFullName())
+        methods.add_method("GetFullName", |lua, this, ()| {
+            let path = this.resolve_path(lua)?;
+            Ok(path.display().to_string())
+        });
+
+        // RequirePath returns a relative path string for use with require()
         // Usage: require(script.Parent.Module:RequirePath())
         methods.add_method("RequirePath", |lua, this, ()| {
+            let path = this.resolve_path(lua)?;
+            let path_str = path.display().to_string();
             // Get current script path to calculate relative path
             if let Some(current_script) = get_current_script_path(lua)? {
-                let relative = make_relative_path(&current_script, &this.path_string());
+                let relative = make_relative_path(&current_script, &path_str);
                 Ok(relative)
             } else {
                 // Fallback: just use ./ prefix with the path
-                Ok(format!("./{}", this.path_string()))
+                Ok(format!("./{}", path_str))
             }
         });
     }
@@ -334,13 +396,14 @@ fn get_script_path_from_stack(lua: &Lua) -> LuaResult<String> {
     }
 
     // Use mlua's native stack inspection instead of debug.info
-    // This should work better from within Rust callbacks
+    // We need to find the first Lua frame that has a valid source file
+    // This tells us which script/module the current code was defined in
     for level in 0..100 {
         let result: Option<Option<String>> = lua.inspect_stack(level, |debug| {
             let source_info = debug.source();
-            if let Some(source) = source_info.source {
-                // Skip C functions and our internal code
-                if source == "[C]" || source.contains("script_global") {
+            if let Some(source) = &source_info.source {
+                // Skip C functions and internal code
+                if source == "[C]" || source.starts_with("__mlua") {
                     return None;
                 }
                 // Strip @ or = prefix if present
@@ -349,6 +412,10 @@ fn get_script_path_from_stack(lua: &Lua) -> LuaResult<String> {
                 } else {
                     source.to_string()
                 };
+                // Skip internal identifiers that aren't file paths
+                if !path.contains('/') && !path.contains('\\') {
+                    return None;
+                }
                 return Some(path);
             }
             None
@@ -356,7 +423,7 @@ fn get_script_path_from_stack(lua: &Lua) -> LuaResult<String> {
 
         match result {
             None => break, // No more stack frames
-            Some(Some(path)) => return Ok(path), // Found a valid source
+            Some(Some(path)) => return Ok(path),
             Some(None) => continue, // Skip this frame
         }
     }
@@ -369,74 +436,9 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
     get_or_create_stack(&lua)?;
 
     // Create a dynamic script reference that resolves its path at access time
-    // We use a table with a metatable for now, but the metamethods call into Rust
-    let script_table = lua.create_table()?;
+    // Using ScriptReference::dynamic() means typeof(script) returns "ScriptReference"
+    let script = ScriptReference::dynamic();
+    let userdata = lua.create_userdata(script)?;
 
-    // Create metatable with direct Rust implementations
-    let metatable = lua.create_table()?;
-
-    metatable.set(
-        "__tostring",
-        lua.create_function(|lua, _: LuaValue| {
-            get_script_path_from_stack(lua)
-        })?,
-    )?;
-
-    metatable.set(
-        "__concat",
-        lua.create_function(|lua, (a, b): (LuaValue, LuaValue)| {
-            let path = get_script_path_from_stack(lua)?;
-            match a {
-                LuaValue::Table(_) | LuaValue::UserData(_) => {
-                    // script .. "something"
-                    Ok(format!("{}{}", path, b.to_string()?))
-                }
-                _ => {
-                    // "something" .. script
-                    Ok(format!("{}{}", a.to_string()?, path))
-                }
-            }
-        })?,
-    )?;
-
-    metatable.set(
-        "__index",
-        lua.create_function(|lua, (_table, key): (LuaValue, String)| {
-            let path = get_script_path_from_stack(lua)?;
-            match key.as_str() {
-                "Name" => {
-                    let name = Path::new(&path)
-                        .file_name()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_else(|| path.clone());
-                    Ok(LuaValue::String(lua.create_string(&name)?))
-                }
-                "Path" => Ok(LuaValue::String(lua.create_string(&path)?)),
-                "Parent" => {
-                    let parent_path = Path::new(&path)
-                        .parent()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|| path.clone());
-                    let parent_ref = ScriptReference::new(parent_path);
-                    Ok(LuaValue::UserData(lua.create_userdata(parent_ref)?))
-                }
-                _ => {
-                    // Treat as child lookup - create a new ScriptReference
-                    let child_path = Path::new(&path)
-                        .parent()  // Get directory of current script
-                        .map(|p| p.join(&key))
-                        .unwrap_or_else(|| PathBuf::from(&key));
-                    let child_ref = ScriptReference::new(child_path);
-                    Ok(LuaValue::UserData(lua.create_userdata(child_ref)?))
-                }
-            }
-        })?,
-    )?;
-
-    // Note: We intentionally don't set __type so that print(script) just shows
-    // the path string (via __tostring) rather than <Script(path)>
-
-    script_table.set_metatable(Some(metatable))?;
-
-    Ok(LuaValue::Table(script_table))
+    Ok(LuaValue::UserData(userdata))
 }

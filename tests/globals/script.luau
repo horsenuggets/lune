@@ -3,8 +3,8 @@
 -- script global should exist
 assert(script ~= nil, "script global is missing")
 
--- script is a table with a metatable (typeof returns "table")
-assert(typeof(script) == "table", "script typeof should be 'table'")
+-- script is a ScriptReference userdata (typeof returns "ScriptReference")
+assert(typeof(script) == "ScriptReference", "script typeof should be 'ScriptReference'")
 
 -- tostring(script) should return the path to this test file
 local scriptPath = tostring(script)
@@ -29,10 +29,10 @@ assert(
 	"script.Name should contain 'script'"
 )
 
--- script.Path should return the full path (same as tostring)
-local scriptFullPath = script.Path
-assert(type(scriptFullPath) == "string", "script.Path should return a string")
-assert(scriptFullPath == scriptPath, "script.Path should equal tostring(script)")
+-- script:GetFullName() should return the full path (same as tostring)
+local scriptFullPath = script:GetFullName()
+assert(type(scriptFullPath) == "string", "script:GetFullName() should return a string")
+assert(scriptFullPath == scriptPath, "script:GetFullName() should equal tostring(script)")
 
 -- String concatenation should work
 local prefixed = "Path: " .. script
@@ -60,7 +60,7 @@ assert(parent ~= nil, "script.Parent should exist")
 assert(typeof(parent) == "ScriptReference", "script.Parent should be ScriptReference")
 print("script.Parent:", parent)
 print("script.Parent.Name:", parent.Name)
-print("script.Parent.Path:", parent.Path)
+print("script.Parent:GetFullName():", parent:GetFullName())
 
 -- Test navigation to sibling
 local sibling = script.Parent.SomeSibling
