@@ -158,7 +158,8 @@ impl Bundler {
             .with_context(|| format!("failed to read file: {}", file_path.display()))?;
 
         // Store the file with its canonical path (will be relativized at the end)
-        self.files_canonical.insert(canonical.clone(), source.clone());
+        self.files_canonical
+            .insert(canonical.clone(), source.clone());
 
         // Find all require paths first (to avoid borrow issues)
         let source_str = String::from_utf8_lossy(&source);
@@ -190,9 +191,7 @@ impl Bundler {
     /// Returns a path relative to the base directory, starting with '/'.
     /// This ensures bundled binaries are portable across machines.
     fn normalize_path(&self, path: &Path) -> String {
-        let canonical = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.to_path_buf());
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
         // Make path relative to base_dir
         if let Ok(relative) = canonical.strip_prefix(&self.base_dir) {
@@ -288,10 +287,8 @@ impl Bundler {
                     // Store canonical path (will be relativized at the end)
                     if let Some(actual_file) = self.find_module_file(&resolved) {
                         if let Ok(canonical) = actual_file.canonicalize() {
-                            self.aliases_canonical.insert(
-                                format!("@{}", alias_path),
-                                canonical,
-                            );
+                            self.aliases_canonical
+                                .insert(format!("@{}", alias_path), canonical);
                         }
                     }
 

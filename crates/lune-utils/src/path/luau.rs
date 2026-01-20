@@ -4,8 +4,7 @@
 
 use std::{
     ffi::OsStr,
-    fmt,
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 

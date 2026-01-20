@@ -124,12 +124,8 @@ impl BuildCommand {
         } else {
             self.input.display().to_string()
         };
-        println!(
-            "Bundling dependencies for {}",
-            style(&display_path).green()
-        );
-        let mut bundler = Bundler::new(&entry_file)
-            .context("failed to initialize bundler")?;
+        println!("Bundling dependencies for {}", style(&display_path).green());
+        let mut bundler = Bundler::new(&entry_file).context("failed to initialize bundler")?;
         let bundle_result = bundler
             .bundle(&entry_file)
             .context("failed to bundle dependencies")?;
@@ -163,8 +159,8 @@ impl BuildCommand {
             bundle_result.files,
             bundle_result.aliases,
         )
-            .await
-            .context("failed to create patched binary")?;
+        .await
+        .context("failed to create patched binary")?;
 
         // And finally write the patched binary to the output file
         println!(
