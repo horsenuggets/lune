@@ -77,8 +77,7 @@ impl Metadata {
 
         // Extract JSON size (8 bytes before magic)
         let json_size_bytes = &bytes[bytes.len() - 16..bytes.len() - 8];
-        let json_size =
-            usize::try_from(u64::from_be_bytes(json_size_bytes.try_into().unwrap()))?;
+        let json_size = usize::try_from(u64::from_be_bytes(json_size_bytes.try_into().unwrap()))?;
 
         // Extract JSON data
         let json_start = bytes.len() - 16 - json_size;

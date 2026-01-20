@@ -17,7 +17,10 @@ print("Module getValue():", module.getValue())
 print("\nTesting that script path is correct...")
 local scriptPath = tostring(script)
 print("Script path:", scriptPath)
-assert(string.find(scriptPath, "script_ref", 1, true) ~= nil, "Script path should contain 'script_ref'")
+assert(
+	string.find(scriptPath, "script_ref", 1, true) ~= nil,
+	"Script path should contain 'script_ref'"
+)
 
 -- Test 3: Require a .lua file (without extension in path)
 print("\nTesting .lua extension support...")

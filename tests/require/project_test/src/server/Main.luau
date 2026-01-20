@@ -2,7 +2,7 @@
 print("Testing default.project.json support...")
 
 -- Navigate to project root and then to Shared
-local projectRoot = script.Parent.Parent.Parent  -- src/server -> src -> project_test
+local projectRoot = script.Parent.Parent.Parent -- src/server -> src -> project_test
 print("Project root:", projectRoot)
 
 -- Access Shared via the project tree

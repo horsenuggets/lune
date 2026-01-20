@@ -24,10 +24,7 @@ local scriptName = script.Name
 assert(type(scriptName) == "string", "script.Name should return a string")
 assert(#scriptName > 0, "script.Name should not be empty")
 print("Script name:", scriptName)
-assert(
-	string.find(scriptName, "script", 1, true) ~= nil,
-	"script.Name should contain 'script'"
-)
+assert(string.find(scriptName, "script", 1, true) ~= nil, "script.Name should contain 'script'")
 
 -- script:GetFullName() should return the full path (same as tostring)
 local scriptFullPath = script:GetFullName()
@@ -37,18 +34,12 @@ assert(scriptFullPath == scriptPath, "script:GetFullName() should equal tostring
 -- String concatenation should work
 local prefixed = "Path: " .. script
 assert(type(prefixed) == "string", "string concatenation should work")
-assert(
-	string.find(prefixed, "Path: ", 1, true) == 1,
-	"concatenation should preserve prefix"
-)
+assert(string.find(prefixed, "Path: ", 1, true) == 1, "concatenation should preserve prefix")
 print("Concatenated:", prefixed)
 
 local suffixed = script .. " (test)"
 assert(type(suffixed) == "string", "string concatenation should work (suffix)")
-assert(
-	string.find(suffixed, " (test)", 1, true) ~= nil,
-	"concatenation should preserve suffix"
-)
+assert(string.find(suffixed, " (test)", 1, true) ~= nil, "concatenation should preserve suffix")
 print("Concatenated (suffix):", suffixed)
 
 -- print(script) should work (uses __tostring) and just show the path
