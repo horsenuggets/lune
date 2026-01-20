@@ -95,8 +95,14 @@ impl LuauFilePath {
             // This supports Roblox-style project files used by Wally packages
             if check_project_json {
                 if let Some(mapped_path) = read_project_json_path(module) {
-                    // Recursively resolve the mapped path, but don't check project.json again
-                    // to avoid infinite loops
+                    // If the mapped path is already an existing file, return it directly
+                    // This handles cases like $path: "init.luau" where the path points
+                    // to a file rather than a directory
+                    if mapped_path.is_file() {
+                        return Ok(Self::File(mapped_path));
+                    }
+                    // Otherwise recursively resolve the mapped path as a module,
+                    // but don't check project.json again to avoid infinite loops
                     return Self::resolve_inner(&mapped_path, false);
                 }
             }
