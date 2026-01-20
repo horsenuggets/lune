@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use mlua::prelude::*;
 use mlua::UserData;
+use mlua::prelude::*;
 
 /// Registry key for storing the current script path stack
 const SCRIPT_PATH_STACK_KEY: &str = "__lune_script_path_stack";
@@ -24,7 +24,9 @@ pub struct ScriptReference {
 impl ScriptReference {
     /// Create a new static script reference from a path
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: Some(path.into()) }
+        Self {
+            path: Some(path.into()),
+        }
     }
 
     /// Create a new dynamic script reference that resolves path at access time
@@ -45,7 +47,8 @@ impl ScriptReference {
 
     /// Get the full path as a string (for static references only)
     pub fn path_string(&self) -> String {
-        self.path.as_ref()
+        self.path
+            .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "[dynamic]".to_string())
     }
@@ -220,37 +223,46 @@ impl UserData for ScriptReference {
 
         // String concatenation - use add_meta_function to handle both orderings
         // "string" .. script and script .. "string"
-        methods.add_meta_function(LuaMetaMethod::Concat, |lua, (a, b): (LuaValue, LuaValue)| {
-            // Determine which argument is the ScriptReference
-            let (path_str, other, script_first) = if let LuaValue::UserData(ref ud) = a {
-                if let Ok(script_ref) = ud.borrow::<ScriptReference>() {
-                    let path = script_ref.resolve_path(&lua)?;
-                    (path.display().to_string(), b, true)
+        methods.add_meta_function(
+            LuaMetaMethod::Concat,
+            |lua, (a, b): (LuaValue, LuaValue)| {
+                // Determine which argument is the ScriptReference
+                let (path_str, other, script_first) = if let LuaValue::UserData(ref ud) = a {
+                    if let Ok(script_ref) = ud.borrow::<ScriptReference>() {
+                        let path = script_ref.resolve_path(&lua)?;
+                        (path.display().to_string(), b, true)
+                    } else {
+                        return Err(LuaError::runtime(
+                            "Invalid ScriptReference in concatenation",
+                        ));
+                    }
+                } else if let LuaValue::UserData(ref ud) = b {
+                    if let Ok(script_ref) = ud.borrow::<ScriptReference>() {
+                        let path = script_ref.resolve_path(&lua)?;
+                        (path.display().to_string(), a, false)
+                    } else {
+                        return Err(LuaError::runtime(
+                            "Invalid ScriptReference in concatenation",
+                        ));
+                    }
                 } else {
-                    return Err(LuaError::runtime("Invalid ScriptReference in concatenation"));
-                }
-            } else if let LuaValue::UserData(ref ud) = b {
-                if let Ok(script_ref) = ud.borrow::<ScriptReference>() {
-                    let path = script_ref.resolve_path(&lua)?;
-                    (path.display().to_string(), a, false)
+                    return Err(LuaError::runtime(
+                        "ScriptReference concatenation requires a ScriptReference",
+                    ));
+                };
+
+                let other_str = match other {
+                    LuaValue::String(s) => s.to_str()?.to_string(),
+                    _ => other.to_string()?,
+                };
+
+                if script_first {
+                    Ok(format!("{}{}", path_str, other_str))
                 } else {
-                    return Err(LuaError::runtime("Invalid ScriptReference in concatenation"));
+                    Ok(format!("{}{}", other_str, path_str))
                 }
-            } else {
-                return Err(LuaError::runtime("ScriptReference concatenation requires a ScriptReference"));
-            };
-
-            let other_str = match other {
-                LuaValue::String(s) => s.to_str()?.to_string(),
-                _ => other.to_string()?,
-            };
-
-            if script_first {
-                Ok(format!("{}{}", path_str, other_str))
-            } else {
-                Ok(format!("{}{}", other_str, path_str))
-            }
-        });
+            },
+        );
 
         // Allow accessing properties and children via indexing
         methods.add_meta_method(LuaMetaMethod::Index, |lua, this, key: String| {
@@ -260,12 +272,10 @@ impl UserData for ScriptReference {
                     let name = ScriptReference::name_from_path(&path);
                     Ok(LuaValue::String(lua.create_string(&name)?))
                 }
-                "Parent" => {
-                    match ScriptReference::parent_from_path(&path) {
-                        Some(parent) => Ok(LuaValue::UserData(lua.create_userdata(parent)?)),
-                        None => Ok(LuaValue::Nil),
-                    }
-                }
+                "Parent" => match ScriptReference::parent_from_path(&path) {
+                    Some(parent) => Ok(LuaValue::UserData(lua.create_userdata(parent)?)),
+                    None => Ok(LuaValue::Nil),
+                },
                 _ => {
                     // Treat as child lookup
                     let child = ScriptReference::child_from_path(&path, &key);

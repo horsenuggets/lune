@@ -1,5 +1,5 @@
 -- Test init.luau support (folder as module)
 return {
-    fromInit = true,
-    message = "Hello from init.luau!",
+	fromInit = true,
+	message = "Hello from init.luau!",
 }

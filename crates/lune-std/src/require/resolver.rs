@@ -72,11 +72,7 @@ impl RequireResolver {
 
     /// Navigate to a path without requiring it to exist on disk.
     /// Used for standalone executables where the entry point doesn't exist.
-    fn navigate_to_virtual(
-        &mut self,
-        relative: PathBuf,
-        absolute: PathBuf,
-    ) {
+    fn navigate_to_virtual(&mut self, relative: PathBuf, absolute: PathBuf) {
         self.absolute = absolute;
         self.relative = relative;
         self.resolved = None;

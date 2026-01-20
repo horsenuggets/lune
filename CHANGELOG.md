@@ -8,6 +8,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.10.4-horse.8.0` - January 19th, 2026
+
+### Added
+
+- Added `task` as a global for Roblox compatibility
+  - The `task` library (spawn, defer, wait, delay, cancel) is now available as a global
+  - Enables Wally packages that use `task.spawn()` to work without requiring it
+- Added `default.project.json` support for require
+  - When requiring a directory, Lune checks for `default.project.json` and resolves `$path` mappings
+  - Enables Wally packages like `evaera/promise` that use project files to be required correctly
+- Added release branch workflow with branch protection
+  - PRs to `release` branch require validation (title format, version bump, changelog entry)
+  - Releases are automatically created when PRs are merged to `release`
+
+### Fixed
+
+- Fixed `Color3:ToHex()` to output lowercase hex strings (matching Roblox behavior)
+
 ## `0.10.4-horse.7.0` - January 18th, 2026
 
 ### Added

@@ -189,9 +189,9 @@ fn get_caller_path(lua: &Lua) -> Option<PathBuf> {
         });
 
         match result {
-            None => break,              // No more stack frames
+            None => break,                         // No more stack frames
             Some(Some(path)) => return Some(path), // Found a valid source
-            Some(None) => continue,     // Skip this frame
+            Some(None) => continue,                // Skip this frame
         }
     }
     None
@@ -322,10 +322,7 @@ fn resolve_alias(alias: &str, caller_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Resolve a require argument to paths or an alias.
-fn resolve_require_arg(
-    arg: &LuaValue,
-    caller_path: Option<&Path>,
-) -> LuaResult<ResolveResult> {
+fn resolve_require_arg(arg: &LuaValue, caller_path: Option<&Path>) -> LuaResult<ResolveResult> {
     match arg {
         LuaValue::String(s) => {
             let path_str: String = s.to_str()?.to_string();
@@ -434,7 +431,9 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
 
                     // For standalone executables, try bundled aliases first
                     // Bundled aliases return paths that don't need filesystem resolution
-                    let resolved_path: PathBuf = if let Some(bundled_path) = get_bundled_alias(&lua, &alias) {
+                    let resolved_path: PathBuf = if let Some(bundled_path) =
+                        get_bundled_alias(&lua, &alias)
+                    {
                         bundled_path
                     } else if let Some(alias_path) = resolve_alias(&alias, &caller_dir) {
                         // Try bundled files first (for standalone executables with virtual paths)
@@ -450,12 +449,16 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                                 ))
                             })?;
 
-                            resolved.target().as_file().ok_or_else(|| {
-                                LuaError::runtime(format!(
-                                    "cannot require directory '{}'",
-                                    alias_path.display()
-                                ))
-                            })?.to_path_buf()
+                            resolved
+                                .target()
+                                .as_file()
+                                .ok_or_else(|| {
+                                    LuaError::runtime(format!(
+                                        "cannot require directory '{}'",
+                                        alias_path.display()
+                                    ))
+                                })?
+                                .to_path_buf()
                         }
                     } else {
                         return Err(LuaError::runtime(format!("cannot find alias '{}'", alias)));
@@ -486,17 +489,18 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                     let chunk_name = format!("{FILE_CHUNK_PREFIX}{}", resolved_path.display());
 
                     // Try bundled source first, then filesystem
-                    let chunk_bytes = if let Some(bundled) = get_bundled_source(&lua, &resolved_path) {
-                        bundled
-                    } else {
-                        read_file(&resolved_path).await.map_err(|e| {
-                            LuaError::runtime(format!(
-                                "cannot read '{}': {}",
-                                resolved_path.display(),
-                                e
-                            ))
-                        })?
-                    };
+                    let chunk_bytes =
+                        if let Some(bundled) = get_bundled_source(&lua, &resolved_path) {
+                            bundled
+                        } else {
+                            read_file(&resolved_path).await.map_err(|e| {
+                                LuaError::runtime(format!(
+                                    "cannot read '{}': {}",
+                                    resolved_path.display(),
+                                    e
+                                ))
+                            })?
+                        };
 
                     // Create a custom environment for this module with a static script reference
                     let module_env = lua.create_table()?;
@@ -509,7 +513,8 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                     env_mt.set("__newindex", lua.globals())?;
                     module_env.set_metatable(Some(env_mt))?;
 
-                    let chunk = lua.load(chunk_bytes)
+                    let chunk = lua
+                        .load(chunk_bytes)
                         .set_name(chunk_name)
                         .set_environment(module_env);
 
@@ -547,7 +552,9 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                 ResolveResult::FilePath(_relative_path, absolute_path) => {
                     // Try bundled files first (for standalone executables with virtual paths)
                     // Then fall back to filesystem resolution
-                    let resolved_path: PathBuf = if let Some(bundled_path) = resolve_bundled_module(&lua, &absolute_path) {
+                    let resolved_path: PathBuf = if let Some(bundled_path) =
+                        resolve_bundled_module(&lua, &absolute_path)
+                    {
                         bundled_path
                     } else {
                         // Resolve to actual filesystem path (handling .luau/.lua extensions)
@@ -559,12 +566,16 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                             ))
                         })?;
 
-                        resolved.target().as_file().ok_or_else(|| {
-                            LuaError::runtime(format!(
-                                "cannot require directory '{}'",
-                                absolute_path.display()
-                            ))
-                        })?.to_path_buf()
+                        resolved
+                            .target()
+                            .as_file()
+                            .ok_or_else(|| {
+                                LuaError::runtime(format!(
+                                    "cannot require directory '{}'",
+                                    absolute_path.display()
+                                ))
+                            })?
+                            .to_path_buf()
                     };
 
                     let cache_key = resolved_path.to_string_lossy().to_string();
@@ -593,17 +604,18 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                     let chunk_name = format!("{FILE_CHUNK_PREFIX}{}", resolved_path.display());
 
                     // Try bundled source first, then filesystem
-                    let chunk_bytes = if let Some(bundled) = get_bundled_source(&lua, &resolved_path) {
-                        bundled
-                    } else {
-                        read_file(&resolved_path).await.map_err(|e| {
-                            LuaError::runtime(format!(
-                                "cannot read '{}': {}",
-                                resolved_path.display(),
-                                e
-                            ))
-                        })?
-                    };
+                    let chunk_bytes =
+                        if let Some(bundled) = get_bundled_source(&lua, &resolved_path) {
+                            bundled
+                        } else {
+                            read_file(&resolved_path).await.map_err(|e| {
+                                LuaError::runtime(format!(
+                                    "cannot read '{}': {}",
+                                    resolved_path.display(),
+                                    e
+                                ))
+                            })?
+                        };
 
                     // Create a custom environment for this module with a static script reference
                     let module_env = lua.create_table()?;
@@ -616,7 +628,8 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                     env_mt.set("__newindex", lua.globals())?;
                     module_env.set_metatable(Some(env_mt))?;
 
-                    let chunk = lua.load(chunk_bytes)
+                    let chunk = lua
+                        .load(chunk_bytes)
                         .set_name(chunk_name)
                         .set_environment(module_env);
 
@@ -660,15 +673,16 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
         let caller_path = get_caller_path(lua);
         lua.set_named_registry_value(
             CALLER_PATH_KEY,
-            caller_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            caller_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
         )?;
         Ok(())
     })?;
 
     // Store our async require and preprocessor in globals for the wrapper to access
     lua.globals().set("__lune_async_require", require_fn)?;
-    lua.globals()
-        .set("__lune_capture_caller", capture_caller)?;
+    lua.globals().set("__lune_capture_caller", capture_caller)?;
 
     // Create a Luau wrapper that:
     // 1. Captures the caller path
