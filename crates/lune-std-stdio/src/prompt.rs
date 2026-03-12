@@ -1,18 +1,55 @@
 use std::{fmt, str::FromStr};
 
-use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
+use dialoguer::{
+    Confirm, Input, MultiSelect, Password, Select,
+    theme::{ColorfulTheme, Theme},
+};
 use mlua::prelude::*;
+
+struct PasswordTheme {
+    inner: ColorfulTheme,
+}
+
+impl Theme for PasswordTheme {
+    fn format_password_prompt(&self, f: &mut dyn fmt::Write, prompt: &str) -> fmt::Result {
+        self.inner.format_password_prompt(f, prompt)?;
+        write!(f, "\u{1F512} ")
+    }
+
+    fn format_password_prompt_selection(
+        &self,
+        f: &mut dyn fmt::Write,
+        prompt: &str,
+    ) -> fmt::Result {
+        self.inner.format_password_prompt_selection(f, prompt)
+    }
+
+    fn format_prompt(&self, f: &mut dyn fmt::Write, prompt: &str) -> fmt::Result {
+        self.inner.format_prompt(f, prompt)
+    }
+
+    fn format_error(&self, f: &mut dyn fmt::Write, err: &str) -> fmt::Result {
+        self.inner.format_error(f, err)
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum PromptKind {
     Text,
+    Password,
     Confirm,
     Select,
     MultiSelect,
 }
 
 impl PromptKind {
-    const ALL: [PromptKind; 4] = [Self::Text, Self::Confirm, Self::Select, Self::MultiSelect];
+    const ALL: [PromptKind; 5] = [
+        Self::Text,
+        Self::Password,
+        Self::Confirm,
+        Self::Select,
+        Self::MultiSelect,
+    ];
 }
 
 impl Default for PromptKind {
@@ -26,6 +63,7 @@ impl FromStr for PromptKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
             "text" => Ok(Self::Text),
+            "password" => Ok(Self::Password),
             "confirm" => Ok(Self::Confirm),
             "select" => Ok(Self::Select),
             "multiselect" => Ok(Self::MultiSelect),
@@ -41,6 +79,7 @@ impl fmt::Display for PromptKind {
             "{}",
             match self {
                 Self::Text => "Text",
+                Self::Password => "Password",
                 Self::Confirm => "Confirm",
                 Self::Select => "Select",
                 Self::MultiSelect => "MultiSelect",
@@ -185,6 +224,15 @@ pub fn prompt(options: PromptOptions) -> LuaResult<PromptResult> {
                 .with_prompt(options.text.unwrap_or_default())
                 .with_initial_text(options.default_string.unwrap_or_default())
                 .interact_text()
+                .into_lua_err()?;
+            Ok(PromptResult::String(input))
+        }
+        PromptKind::Password => {
+            let password_theme = PasswordTheme { inner: theme };
+            let input = Password::with_theme(&password_theme)
+                .allow_empty_password(true)
+                .with_prompt(options.text.unwrap_or_default())
+                .interact()
                 .into_lua_err()?;
             Ok(PromptResult::String(input))
         }
