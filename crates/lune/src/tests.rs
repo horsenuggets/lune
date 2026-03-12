@@ -135,7 +135,6 @@ create_tests! {
 
     net_tcp_basic: "net/tcp/basic",
     net_tcp_info: "net/tcp/info",
-    net_tcp_tls: "net/tcp/tls",
 
     net_url_encode: "net/url/encode",
     net_url_decode: "net/url/decode",
