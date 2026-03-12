@@ -4,6 +4,7 @@ export type Style = "reset" | "bold" | "dim"
 type PromptFn = (
 	(() -> string)
 	& ((kind: "text", message: string?, defaultOrOptions: string?) -> string)
+	& ((kind: "password", message: string?) -> string)
 	& ((kind: "confirm", message: string, defaultOrOptions: boolean?) -> boolean)
 	& ((kind: "select", message: string?, defaultOrOptions: { string }) -> number?)
 	& ((kind: "multiselect", message: string?, defaultOrOptions: { string }) -> { number }?)
@@ -17,6 +18,7 @@ type PromptFn = (
 	Prompts for user input using the wanted kind of prompt:
 
 	* `"text"` - Prompts for a plain text string from the user
+	* `"password"` - Prompts for a secret string from the user, hiding input
 	* `"confirm"` - Prompts the user to confirm with y / n (yes / no)
 	* `"select"` - Prompts the user to select *one* value from a list
 	* `"multiselect"` - Prompts the user to select *one or more* values from a list
