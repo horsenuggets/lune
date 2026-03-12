@@ -23,6 +23,12 @@ print(`Got text '{text}'\n`)
 
 passed = true
 
+-- Password prompt
+
+local password = stdio.prompt("password", "Type a secret password")
+assert(#password > 0, "Did not get any password")
+print(`Got password of {#password} characters\n`)
+
 -- Confirmation prompt
 
 local confirmed = stdio.prompt("confirm", "Please confirm", true)
