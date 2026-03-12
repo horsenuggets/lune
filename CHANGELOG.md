@@ -8,6 +8,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.10.4-horse.10.0` - March 12th, 2026
+
+### Added
+
+- Added `"password"` prompt kind to `stdio.prompt()` for hidden input
+  - User input is completely hidden while typing for security
+  - A lock emoji is displayed after the prompt suffix for visual clarity
+  - After submission, `********` is shown as confirmation
+
+### Fixed
+
+- Removed flaky `net_tcp_tls` test that connected to `example.com` and caused unreliable CI failures
+
 ## `0.10.4-horse.9.0` - January 19th, 2026
 
 ### Fixed
