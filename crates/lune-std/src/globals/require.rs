@@ -441,9 +441,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                             } else {
                                 p.parent()
                                     .map(|parent| parent.to_path_buf())
-                                    .unwrap_or_else(|| {
-                                        std::env::current_dir().unwrap_or_default()
-                                    })
+                                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
                             }
                         })
                         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
