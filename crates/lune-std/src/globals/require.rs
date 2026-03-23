@@ -338,7 +338,14 @@ fn resolve_require_arg(arg: &LuaValue, caller_path: Option<&Path>) -> LuaResult<
                 // Relative path
                 let rel = relative_path_normalize(Path::new(&path_str));
                 let abs = if let Some(caller) = caller_path {
-                    let caller_dir = caller.parent().unwrap_or(caller);
+                    // For init.luau modules, the caller_path is the
+                    // directory itself (chunk name strips "/init.luau"),
+                    // so we use it directly instead of calling parent()
+                    let caller_dir = if caller.is_dir() {
+                        caller
+                    } else {
+                        caller.parent().unwrap_or(caller)
+                    };
                     clean_path_and_make_absolute(&caller_dir.join(&rel))
                 } else {
                     clean_path_and_make_absolute(&rel)
@@ -422,11 +429,23 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                         }
                     }
 
-                    // Handle custom aliases - check bundled aliases first, then .luaurc files
+                    // Handle custom aliases - check bundled aliases first, then .luaurc files.
+                    // For init.luau modules, the caller_path is the directory itself
+                    // (since the chunk name strips "/init.luau"), so we use it directly.
+                    // For regular files, we use the parent directory.
                     let caller_dir = caller_path
                         .as_ref()
-                        .and_then(|p| p.parent())
-                        .map(|p| p.to_path_buf())
+                        .map(|p| {
+                            if p.is_dir() {
+                                p.to_path_buf()
+                            } else {
+                                p.parent()
+                                    .map(|parent| parent.to_path_buf())
+                                    .unwrap_or_else(|| {
+                                        std::env::current_dir().unwrap_or_default()
+                                    })
+                            }
+                        })
                         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
                     // For standalone executables, try bundled aliases first
