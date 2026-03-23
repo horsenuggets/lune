@@ -8,6 +8,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.10.4-horse.11.0` - March 22nd, 2026
+
+### Fixed
+
+- Fixed `@self` and relative requires (`./`, `../`) in `init.luau` files resolving to the parent directory instead of the containing directory
+
 ## `0.10.4-horse.10.0` - March 12th, 2026
 
 ### Added
