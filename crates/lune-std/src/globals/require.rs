@@ -27,19 +27,26 @@ type BundledFiles = HashMap<String, Vec<u8>>;
 /// Type for bundled aliases from standalone executables
 type BundledAliases = HashMap<String, String>;
 
+/// Normalize path separators to forward slashes for consistent bundled
+/// file lookups. Bundled keys always use forward slashes, but on Windows
+/// path operations produce backslashes.
+fn normalize_separators(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 /// Try to get bundled source for a path from app_data
 fn get_bundled_source(lua: &Lua, path: &Path) -> Option<Vec<u8>> {
     let bundled = lua.app_data_ref::<BundledFiles>()?;
 
-    // Try the path as-is first (handles virtual paths like /Source/Module.luau)
-    let key = path.display().to_string();
+    // Normalize separators so Windows backslash paths match forward-slash keys
+    let key = normalize_separators(&path.display().to_string());
     if let Some(source) = bundled.get(&key) {
         return Some(source.clone());
     }
 
     // Try canonical path (handles real filesystem paths)
     if let Ok(canonical) = path.canonicalize() {
-        let key = canonical.display().to_string();
+        let key = normalize_separators(&canonical.display().to_string());
         if let Some(source) = bundled.get(&key) {
             return Some(source.clone());
         }
@@ -53,7 +60,7 @@ fn get_bundled_source(lua: &Lua, path: &Path) -> Option<Vec<u8>> {
 /// This handles .luau/.lua extensions and init.luau patterns.
 fn resolve_bundled_module(lua: &Lua, module_path: &Path) -> Option<PathBuf> {
     let bundled = lua.app_data_ref::<BundledFiles>()?;
-    let base = module_path.display().to_string();
+    let base = normalize_separators(&module_path.display().to_string());
 
     // Try exact path first
     if bundled.contains_key(&base) {
@@ -726,4 +733,76 @@ end
         .call(())?;
 
     Ok(LuaValue::Function(wrapper))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn normalize_separators_converts_backslashes() {
+        assert_eq!(
+            normalize_separators(r"C:\Users\foo\Source\Module.luau"),
+            "C:/Users/foo/Source/Module.luau"
+        );
+    }
+
+    #[test]
+    fn normalize_separators_preserves_forward_slashes() {
+        assert_eq!(
+            normalize_separators("/Source/Module.luau"),
+            "/Source/Module.luau"
+        );
+    }
+
+    #[test]
+    fn normalize_separators_handles_mixed_slashes() {
+        assert_eq!(
+            normalize_separators(r"/Source\Nested/Module.luau"),
+            "/Source/Nested/Module.luau"
+        );
+    }
+
+    #[test]
+    fn bundled_lookup_matches_with_backslash_path() {
+        // Simulate bundled files with forward-slash keys (as the bundler
+        // produces) and verify that a backslash path would match after
+        // normalization
+        let mut bundled: HashMap<String, Vec<u8>> = HashMap::new();
+        bundled.insert(
+            "/Source/MyModule/init.luau".to_string(),
+            b"return {}".to_vec(),
+        );
+        bundled.insert(
+            "/Source/MyModule/Helper.luau".to_string(),
+            b"return {}".to_vec(),
+        );
+
+        // Simulate what Windows would produce
+        let windows_path = r"\Source\MyModule\Helper.luau";
+        let normalized = normalize_separators(windows_path);
+        assert_eq!(normalized, "/Source/MyModule/Helper.luau");
+        assert!(bundled.contains_key(&normalized));
+
+        // Forward-slash path should work directly
+        let unix_path = "/Source/MyModule/Helper.luau";
+        let normalized = normalize_separators(unix_path);
+        assert!(bundled.contains_key(&normalized));
+    }
+
+    #[test]
+    fn bundled_lookup_with_init_luau_pattern() {
+        let mut bundled: HashMap<String, Vec<u8>> = HashMap::new();
+        bundled.insert(
+            "/Source/MyModule/init.luau".to_string(),
+            b"return {}".to_vec(),
+        );
+
+        // Simulate resolve_bundled_module logic with Windows backslash base
+        let base = normalize_separators(r"\Source\MyModule");
+        let init_luau = format!("{}/init.luau", base);
+        assert_eq!(init_luau, "/Source/MyModule/init.luau");
+        assert!(bundled.contains_key(&init_luau));
+    }
 }
