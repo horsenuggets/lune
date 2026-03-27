@@ -17,7 +17,7 @@ mod result;
 mod target;
 
 use self::base_exe::get_or_download_base_executable;
-use self::bundler::Bundler;
+use self::bundler::{Bundler, normalize_bundle_path};
 use self::files::{remove_source_file_ext, write_executable_file_to};
 use self::target::BuildTarget;
 
@@ -147,11 +147,7 @@ impl BuildCommand {
         let canonical_entry = entry_file
             .canonicalize()
             .unwrap_or_else(|_| entry_file.clone());
-        let entry_path = if let Ok(relative) = canonical_entry.strip_prefix(bundler.base_dir()) {
-            format!("/{}", relative.display())
-        } else {
-            canonical_entry.display().to_string()
-        };
+        let entry_path = normalize_bundle_path(&canonical_entry, bundler.base_dir());
         let patched_bin = Metadata::create_env_patched_bin(
             base_exe_path,
             source_code,
