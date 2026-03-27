@@ -17,7 +17,7 @@ mod result;
 mod target;
 
 use self::base_exe::get_or_download_base_executable;
-use self::bundler::{normalize_bundle_path, Bundler};
+use self::bundler::{Bundler, normalize_bundle_path};
 use self::files::{remove_source_file_ext, write_executable_file_to};
 use self::target::BuildTarget;
 

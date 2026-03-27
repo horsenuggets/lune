@@ -457,14 +457,8 @@ mod tests {
 
     #[test]
     fn dot_luau_and_dot_lua_extensions() {
-        let luau = normalize_bundle_path(
-            Path::new("/project/src/mod.luau"),
-            Path::new("/project"),
-        );
-        let lua = normalize_bundle_path(
-            Path::new("/project/src/mod.lua"),
-            Path::new("/project"),
-        );
+        let luau = normalize_bundle_path(Path::new("/project/src/mod.luau"), Path::new("/project"));
+        let lua = normalize_bundle_path(Path::new("/project/src/mod.lua"), Path::new("/project"));
         assert_eq!(luau, "/src/mod.luau");
         assert_eq!(lua, "/src/mod.lua");
     }
