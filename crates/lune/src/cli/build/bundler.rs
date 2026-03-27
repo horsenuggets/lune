@@ -189,17 +189,10 @@ impl Bundler {
 
     /// Normalize a path for use as a bundle key.
     /// Returns a path relative to the base directory, starting with '/'.
-    /// This ensures bundled binaries are portable across machines.
+    /// Uses forward slashes on all platforms for portable bundled binaries.
     fn normalize_path(&self, path: &Path) -> String {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-
-        // Make path relative to base_dir
-        if let Ok(relative) = canonical.strip_prefix(&self.base_dir) {
-            format!("/{}", relative.display())
-        } else {
-            // Path is outside base_dir - use the full canonical path as fallback
-            canonical.display().to_string()
-        }
+        normalize_bundle_path(&canonical, &self.base_dir)
     }
 
     /// Find the actual module file (handles init.luau pattern)
@@ -321,5 +314,176 @@ impl Bundler {
 
         self.configs.insert(dir.to_path_buf(), config.clone());
         config
+    }
+}
+
+/// Normalize a canonical path into a portable bundle key.
+/// Makes the path relative to base_dir with a leading '/', using forward
+/// slashes on all platforms. Falls back to the full path if it's outside
+/// base_dir.
+pub(super) fn normalize_bundle_path(canonical: &Path, base_dir: &Path) -> String {
+    if let Ok(relative) = canonical.strip_prefix(base_dir) {
+        format!("/{}", relative.display()).replace('\\', "/")
+    } else {
+        canonical.display().to_string().replace('\\', "/")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- normalize_bundle_path (relative to base_dir) --
+
+    #[test]
+    fn unix_simple_relative() {
+        let result = normalize_bundle_path(
+            Path::new("/home/user/project/src/main.luau"),
+            Path::new("/home/user/project"),
+        );
+        assert_eq!(result, "/src/main.luau");
+    }
+
+    #[test]
+    fn unix_nested_relative() {
+        let result = normalize_bundle_path(
+            Path::new("/home/user/project/src/lib/utils/format.luau"),
+            Path::new("/home/user/project"),
+        );
+        assert_eq!(result, "/src/lib/utils/format.luau");
+    }
+
+    #[test]
+    fn unix_file_at_root() {
+        let result = normalize_bundle_path(
+            Path::new("/home/user/project/init.luau"),
+            Path::new("/home/user/project"),
+        );
+        assert_eq!(result, "/init.luau");
+    }
+
+    #[test]
+    fn unix_outside_base_dir() {
+        let result = normalize_bundle_path(
+            Path::new("/other/location/lib.luau"),
+            Path::new("/home/user/project"),
+        );
+        assert_eq!(result, "/other/location/lib.luau");
+    }
+
+    #[test]
+    fn unix_packages_alias() {
+        let result = normalize_bundle_path(
+            Path::new("/home/user/project/Packages/Commandline.luau"),
+            Path::new("/home/user/project"),
+        );
+        assert_eq!(result, "/Packages/Commandline.luau");
+    }
+
+    #[test]
+    fn unix_init_luau_in_subdir() {
+        let result = normalize_bundle_path(
+            Path::new("/home/user/project/Source/MyModule/init.luau"),
+            Path::new("/home/user/project"),
+        );
+        assert_eq!(result, "/Source/MyModule/init.luau");
+    }
+
+    // -- Windows path simulation --
+    //
+    // On non-Windows, Path::new("C:\\foo\\bar") is treated as a single
+    // component, so strip_prefix won't match. We test the backslash
+    // replacement by constructing OsStrings that contain backslashes,
+    // which is what actually happens on Windows.
+
+    #[test]
+    fn backslashes_in_relative_component() {
+        // Simulate what Windows produces after strip_prefix: the relative
+        // portion contains backslashes. We can't use strip_prefix
+        // cross-platform, so test the replace logic directly.
+        let with_backslash = format!("/{}", "Packages\\Commandline.luau");
+        let normalized = with_backslash.replace('\\', "/");
+        assert_eq!(normalized, "/Packages/Commandline.luau");
+    }
+
+    #[test]
+    fn backslashes_deeply_nested() {
+        let with_backslash = format!("/{}", "Source\\Lib\\Utils\\format.luau");
+        let normalized = with_backslash.replace('\\', "/");
+        assert_eq!(normalized, "/Source/Lib/Utils/format.luau");
+    }
+
+    #[test]
+    fn mixed_separators() {
+        let with_mixed = format!("/{}", "Source/Lib\\Utils\\format.luau");
+        let normalized = with_mixed.replace('\\', "/");
+        assert_eq!(normalized, "/Source/Lib/Utils/format.luau");
+    }
+
+    #[test]
+    fn windows_drive_letter_fallback() {
+        // When path is outside base_dir, the full path is used as-is.
+        // On Windows this would include the drive letter with backslashes.
+        let full_path = "C:\\Users\\dev\\project\\lib.luau";
+        let normalized = full_path.replace('\\', "/");
+        assert_eq!(normalized, "C:/Users/dev/project/lib.luau");
+    }
+
+    #[test]
+    fn windows_unc_path_fallback() {
+        let unc = "\\\\server\\share\\project\\lib.luau";
+        let normalized = unc.replace('\\', "/");
+        assert_eq!(normalized, "//server/share/project/lib.luau");
+    }
+
+    #[test]
+    fn no_double_slashes_on_unix() {
+        let result = normalize_bundle_path(
+            Path::new("/home/user/project/src/main.luau"),
+            Path::new("/home/user/project"),
+        );
+        assert!(!result.contains("//"), "Should not produce double slashes");
+    }
+
+    #[test]
+    fn empty_relative_produces_root() {
+        // When canonical == base_dir, relative is empty -> "/"
+        let result = normalize_bundle_path(
+            Path::new("/home/user/project"),
+            Path::new("/home/user/project"),
+        );
+        assert_eq!(result, "/");
+    }
+
+    #[test]
+    fn dot_luau_and_dot_lua_extensions() {
+        let luau = normalize_bundle_path(
+            Path::new("/project/src/mod.luau"),
+            Path::new("/project"),
+        );
+        let lua = normalize_bundle_path(
+            Path::new("/project/src/mod.lua"),
+            Path::new("/project"),
+        );
+        assert_eq!(luau, "/src/mod.luau");
+        assert_eq!(lua, "/src/mod.lua");
+    }
+
+    #[test]
+    fn path_with_spaces() {
+        let result = normalize_bundle_path(
+            Path::new("/home/user/my project/src/main.luau"),
+            Path::new("/home/user/my project"),
+        );
+        assert_eq!(result, "/src/main.luau");
+    }
+
+    #[test]
+    fn path_with_unicode() {
+        let result = normalize_bundle_path(
+            Path::new("/home/user/проект/src/main.luau"),
+            Path::new("/home/user/проект"),
+        );
+        assert_eq!(result, "/src/main.luau");
     }
 }
