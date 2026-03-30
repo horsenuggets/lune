@@ -6,7 +6,10 @@ assert(type(debug.getcoverage) == "function", "debug.getcoverage should be a fun
 assert(type(debug.iscoverageenabled) == "function", "debug.iscoverageenabled should be a function")
 
 -- iscoverageenabled should return false when LUNE_COVERAGE=0
-assert(debug.iscoverageenabled() == false, "iscoverageenabled should return false when coverage is disabled")
+assert(
+	debug.iscoverageenabled() == false,
+	"iscoverageenabled should return false when coverage is disabled"
+)
 
 -- Without coverage enabled, should return an empty table
 local function simpleFunction()

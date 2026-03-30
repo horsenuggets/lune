@@ -4,7 +4,10 @@
 local Module = require("./coverage/module")
 
 -- iscoverageenabled should return true
-assert(debug.iscoverageenabled() == true, "iscoverageenabled should return true when coverage is enabled")
+assert(
+	debug.iscoverageenabled() == true,
+	"iscoverageenabled should return true when coverage is enabled"
+)
 
 -- Exercise some functions
 Module.greet("World")
