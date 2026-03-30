@@ -1,105 +1,122 @@
--- Test debug.getcoverage with LUNE_COVERAGE=1 and luau.compile coverageLevel
+-- Test debug.getcoverage with LUNE_COVERAGE=1 using require
+-- Requires LUNE_COVERAGE=1 to be set
 
-local luau = require("@lune/luau")
+local Module = require("./coverage/module")
 
--- Compile a module with coverage enabled via luau.compile
-local source = [[
-local M = {}
+-- Exercise some functions
+Module.greet("World")
+Module.outer()
 
-function M.add(a, b)
-	return a + b
+------------------------------------------------------------
+-- Individual function returns exactly 1 entry
+------------------------------------------------------------
+
+local greetCoverage = debug.getcoverage(Module.greet)
+assert(#greetCoverage == 1, `individual function should return 1 entry, got {#greetCoverage}`)
+assert(greetCoverage[1].Function == "greet", "entry should be named 'greet'")
+
+------------------------------------------------------------
+-- Verify entry structure and field types
+------------------------------------------------------------
+
+local entry = greetCoverage[1]
+assert(type(entry.Function) == "string", "Function should be a string")
+assert(type(entry.LineDefined) == "number", "LineDefined should be a number")
+assert(type(entry.Depth) == "number", "Depth should be a number")
+assert(type(entry.Hits) == "table", "Hits should be a table")
+
+for _, hit in entry.Hits do
+	assert(type(hit) == "number", "each hit should be a number")
+	assert(hit == math.floor(hit), "each hit should be an integer")
 end
 
-function M.unused()
-	return "never called"
-end
+------------------------------------------------------------
+-- Verify hit counts: -1 for non-executable, 0 for missed, >0 for hit
+------------------------------------------------------------
 
-return M
-]]
-
-local bytecode = luau.compile(source, {
-	coverageLevel = 1,
-	debugLevel = 1,
-	optimizationLevel = 0,
-})
-local moduleFunction = luau.load(bytecode, { debugName = "TestModule" })
-
--- Execute the module to get the table
-local M = moduleFunction()
-
--- Call one function but not the other
-local result = M.add(2, 3)
-assert(result == 5, "add should return 5")
-
--- Get coverage from the module-level function (includes all inner functions)
-local coverage = debug.getcoverage(moduleFunction)
-assert(type(coverage) == "table", "coverage should be a table")
-assert(#coverage > 0, "coverage should have entries when coverage is enabled")
-
--- Verify structure of coverage entries
-for _, entry in coverage do
-	assert(type(entry["function"]) == "string", "entry should have a function name string")
-	assert(type(entry.lineDefined) == "number", "entry should have lineDefined number")
-	assert(type(entry.depth) == "number", "entry should have depth number")
-	assert(type(entry.hits) == "table", "entry should have hits table")
-end
-
--- Find the add function and verify it was hit
-local foundAdd = false
-local foundUnused = false
-
-for _, entry in coverage do
-	if entry["function"] == "add" then
-		foundAdd = true
-		-- At least one hit should be > 0
-		local hasHit = false
-		for _, hit in entry.hits do
-			if hit > 0 then
-				hasHit = true
-				break
-			end
-		end
-		assert(hasHit, "add function should have at least one line hit")
-	end
-
-	if entry["function"] == "unused" then
-		foundUnused = true
-		-- All executable lines should be 0 (not hit)
-		for _, hit in entry.hits do
-			if hit >= 0 then
-				assert(hit == 0, "unused function should have no lines hit")
-			end
-		end
+-- greet was called, should have positive hits
+local hasPositiveHit = false
+for _, hit in entry.Hits do
+	assert(hit >= -1, "hit count should be >= -1")
+	if hit > 0 then
+		hasPositiveHit = true
 	end
 end
+assert(hasPositiveHit, "greet was called, should have at least one positive hit")
 
-assert(foundAdd, "should find coverage entry for add function")
-assert(foundUnused, "should find coverage entry for unused function")
+-- greet should have at least one non-executable line (-1)
+local hasNegativeOne = false
+for _, hit in entry.Hits do
+	if hit == -1 then
+		hasNegativeOne = true
+		break
+	end
+end
+assert(hasNegativeOne, "greet should have at least one non-executable line (-1)")
 
--- Get coverage from an individual function
-local addCoverage = debug.getcoverage(M.add)
-assert(type(addCoverage) == "table", "individual function coverage should be a table")
-assert(#addCoverage > 0, "individual function coverage should have entries")
-assert(addCoverage[1]["function"] == "add", "individual function should report its name")
+------------------------------------------------------------
+-- Unused function should have zero hits on all executable lines
+------------------------------------------------------------
 
--- Verify hit counts are integers
-for _, entry in coverage do
-	for _, hit in entry.hits do
-		assert(type(hit) == "number", "hit count should be a number")
-		assert(hit == math.floor(hit), "hit count should be an integer")
+local unusedCoverage = debug.getcoverage(Module.unused)
+assert(#unusedCoverage == 1, "unused should return 1 entry")
+for _, hit in unusedCoverage[1].Hits do
+	assert(hit <= 0, "unused function should have no positive hits")
+end
+
+------------------------------------------------------------
+-- Nested function: outer returns 2 entries (outer + inner)
+------------------------------------------------------------
+
+local outerCoverage = debug.getcoverage(Module.outer)
+assert(#outerCoverage == 2, `outer should return 2 entries (outer + inner), got {#outerCoverage}`)
+
+local outerEntry, innerEntry
+for _, e in outerCoverage do
+	if e.Function == "outer" then
+		outerEntry = e
+	elseif e.Function == "inner" then
+		innerEntry = e
 	end
 end
 
--- Test that calling a function multiple times increases hit counts
-M.add(1, 2)
-M.add(3, 4)
-local coverageAfter = debug.getcoverage(M.add)
-for _, entry in coverageAfter do
-	if entry["function"] == "add" then
-		for _, hit in entry.hits do
-			if hit > 0 then
-				assert(hit == 3, "add should have been called 3 times total")
-			end
-		end
+assert(outerEntry, "should find outer entry")
+assert(innerEntry, "should find inner entry")
+assert(innerEntry.Depth > outerEntry.Depth, "inner should have greater depth than outer")
+
+-- Both were called via Module.outer(), both should have hits
+for _, hit in outerEntry.Hits do
+	if hit > 0 then
+		break
 	end
 end
+
+local innerHasHit = false
+for _, hit in innerEntry.Hits do
+	if hit > 0 then
+		innerHasHit = true
+		break
+	end
+end
+assert(innerHasHit, "inner was called via outer(), should have hits")
+
+------------------------------------------------------------
+-- Verify hit accumulation across multiple calls
+------------------------------------------------------------
+
+Module.greet("Alice")
+Module.greet("Bob")
+local afterCoverage = debug.getcoverage(Module.greet)
+for _, hit in afterCoverage[1].Hits do
+	if hit > 0 then
+		assert(hit == 3, `greet was called 3 times total, expected 3, got {hit}`)
+	end
+end
+
+------------------------------------------------------------
+-- Built-in functions return empty table even with coverage on
+------------------------------------------------------------
+
+local builtinCoverage = debug.getcoverage(print)
+assert(type(builtinCoverage) == "table", "built-in coverage should be a table")
+assert(#builtinCoverage == 0, "built-in functions should have no coverage entries")

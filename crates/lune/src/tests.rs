@@ -13,6 +13,10 @@ use crate::Runtime;
 const ARGS: &[&str] = &["Foo", "Bar"];
 
 fn run_test(path: &str) -> Result<ExitCode> {
+    run_test_with_jit(path, true)
+}
+
+fn run_test_with_jit(path: &str, jit: bool) -> Result<ExitCode> {
     async_io::block_on(async {
         // We need to change the current directory to the workspace root since
         // we are in a sub-crate and tests would run relative to the sub-crate
@@ -26,7 +30,7 @@ fn run_test(path: &str) -> Result<ExitCode> {
         set_colors_enabled_stderr(false);
 
         // The rest of the test logic can continue as normal
-        let mut rt = Runtime::new()?.with_args(ARGS).with_jit(true);
+        let mut rt = Runtime::new()?.with_args(ARGS).with_jit(jit);
 
         let script_path = workspace_dir.join("tests").join(format!("{path}.luau"));
         let script_values = rt.run_file(script_path).await?;
@@ -82,11 +86,13 @@ create_tests! {
 }
 
 // Coverage tests run serially to prevent LUNE_COVERAGE env var contamination.
+// JIT must be disabled because coverage instrumentation is incompatible with
+// native code generation.
 
 #[test]
 #[serial_test::serial]
 fn global_debug_getcoverage() -> Result<ExitCode> {
-    run_test("globals/debug_getcoverage")
+    run_test_with_jit("globals/debug_getcoverage", false)
 }
 
 #[test]
@@ -95,7 +101,7 @@ fn global_debug_getcoverage_enabled() -> Result<ExitCode> {
     // SAFETY: This test runs serially and no other threads depend on
     // the LUNE_COVERAGE env var during this test's execution.
     unsafe { std::env::set_var("LUNE_COVERAGE", "1") };
-    let result = run_test("globals/debug_getcoverage_enabled");
+    let result = run_test_with_jit("globals/debug_getcoverage_enabled", false);
     unsafe { std::env::remove_var("LUNE_COVERAGE") };
     result
 }
@@ -104,7 +110,7 @@ fn global_debug_getcoverage_enabled() -> Result<ExitCode> {
 #[serial_test::serial]
 fn global_debug_getcoverage_global() -> Result<ExitCode> {
     unsafe { std::env::set_var("LUNE_COVERAGE", "1") };
-    let result = run_test("globals/debug_getcoverage_global");
+    let result = run_test_with_jit("globals/debug_getcoverage_global", false);
     unsafe { std::env::remove_var("LUNE_COVERAGE") };
     result
 }

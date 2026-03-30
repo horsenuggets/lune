@@ -119,8 +119,10 @@ impl Runtime {
             );
         }
 
-        // Store coverage state in AppData so debug.getcoverage can check it
-        lua.set_app_data(coverage_enabled);
+        // Store coverage state in AppData so debug.getcoverage can check it.
+        // Uses a wrapper struct to avoid type collisions with other bool AppData.
+        struct CoverageEnabled(bool);
+        lua.set_app_data(CoverageEnabled(coverage_enabled));
 
         // Add debug.getcoverage to retrieve code coverage data.
         // Returns an empty table when coverage is not enabled to avoid
@@ -131,21 +133,26 @@ impl Runtime {
                 "getcoverage",
                 lua.create_function(|lua, func: LuaFunction| {
                     let result = lua.create_table()?;
-                    let enabled = lua.app_data_ref::<bool>().is_some_and(|v| *v);
+                    let enabled = lua.app_data_ref::<CoverageEnabled>().is_some_and(|v| v.0);
                     if !enabled {
+                        return Ok(result);
+                    }
+                    // Skip C functions — lua_getcoverage asserts the function
+                    // is a Lua function and traps in debug builds otherwise
+                    if func.info().what == "C" {
                         return Ok(result);
                     }
                     let mut idx = 1;
                     func.coverage(|info| {
                         if let Ok(entry) = lua.create_table() {
-                            let _ = entry.set("function", info.function.unwrap_or_default());
-                            let _ = entry.set("lineDefined", info.line_defined);
-                            let _ = entry.set("depth", info.depth);
+                            let _ = entry.set("Function", info.function.unwrap_or_default());
+                            let _ = entry.set("LineDefined", info.line_defined);
+                            let _ = entry.set("Depth", info.depth);
                             if let Ok(hits_table) = lua.create_table() {
                                 for (i, &hit) in info.hits.iter().enumerate() {
                                     let _ = hits_table.set(i + 1, hit);
                                 }
-                                let _ = entry.set("hits", hits_table);
+                                let _ = entry.set("Hits", hits_table);
                             }
                             let _ = result.set(idx, entry);
                             idx += 1;

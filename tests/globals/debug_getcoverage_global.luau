@@ -13,7 +13,7 @@ assert(#greetCoverage > 0, "greet should have coverage data with LUNE_COVERAGE=1
 
 local hasHit = false
 for _, entry in greetCoverage do
-	for _, hit in entry.hits do
+	for _, hit in entry.Hits do
 		if hit > 0 then
 			hasHit = true
 			break
@@ -27,7 +27,7 @@ local farewellCoverage = debug.getcoverage(Module.farewell)
 assert(#farewellCoverage > 0, "farewell should have coverage data with LUNE_COVERAGE=1")
 
 for _, entry in farewellCoverage do
-	for _, hit in entry.hits do
+	for _, hit in entry.Hits do
 		if hit >= 0 then
 			assert(hit == 0, "farewell should have no hits since it was never called")
 		end
