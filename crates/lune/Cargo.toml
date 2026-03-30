@@ -84,3 +84,6 @@ zip = { optional = true, version = "5.1", default-features = false, features = [
 	"deflate64",
 	"zstd"
 ] }
+
+[dev-dependencies]
+serial_test = "3.2"
