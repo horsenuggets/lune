@@ -1,8 +1,12 @@
--- Test debug.getcoverage without coverage enabled
--- Should return empty tables since coverage is not instrumented
+-- Test debug.getcoverage and debug.iscoverageenabled without coverage
+-- Requires LUNE_COVERAGE=0 to be set
 
--- debug.getcoverage should exist as a function
+-- Both functions should exist
 assert(type(debug.getcoverage) == "function", "debug.getcoverage should be a function")
+assert(type(debug.iscoverageenabled) == "function", "debug.iscoverageenabled should be a function")
+
+-- iscoverageenabled should return false when LUNE_COVERAGE=0
+assert(debug.iscoverageenabled() == false, "iscoverageenabled should return false when coverage is disabled")
 
 -- Without coverage enabled, should return an empty table
 local function simpleFunction()
