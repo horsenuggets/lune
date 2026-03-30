@@ -7,6 +7,7 @@ lune run scripts/analyze_copy_typedefs
 luau-lsp analyze \
 	--platform=standard \
 	--settings=".vscode/settings.json" \
+	--definitions="definitions/coverage.d.luau" \
 	--ignore="tests/roblox/rbx-test-files/**" \
 	--ignore="tests/wally_test/**" \
 	--ignore="tests/require/project_test/**" \
