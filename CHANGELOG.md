@@ -8,6 +8,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.10.4-horse.14.0` - March 29th, 2026
+
+### Added
+
+- Added `debug.getcoverage(fn)` function to retrieve per-line code coverage data from instrumented functions
+- Added `LUNE_COVERAGE=1` environment variable to enable global code coverage instrumentation at runtime
+- Added type definitions for `debug.getcoverage` and `CoverageEntry`
+
 ## `0.10.4-horse.13.0` - March 26th, 2026
 
 ### Fixed

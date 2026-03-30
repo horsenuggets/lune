@@ -106,6 +106,56 @@ impl Runtime {
         co.set("resume", fns.resume.clone())?;
         co.set("wrap", fns.wrap.clone())?;
 
+        // Enable code coverage if LUNE_COVERAGE env var is set
+        let coverage_enabled = std::env::var("LUNE_COVERAGE")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        if coverage_enabled {
+            lua.set_compiler(
+                mlua::Compiler::default()
+                    .set_optimization_level(1)
+                    .set_coverage_level(1)
+                    .set_debug_level(1),
+            );
+        }
+
+        // Store coverage state in AppData so debug.getcoverage can check it
+        lua.set_app_data(coverage_enabled);
+
+        // Add debug.getcoverage to retrieve code coverage data.
+        // Returns an empty table when coverage is not enabled to avoid
+        // crashes from calling lua_getcoverage on uninstrumented functions.
+        {
+            let debug = lua.globals().get::<LuaTable>("debug")?;
+            debug.set(
+                "getcoverage",
+                lua.create_function(|lua, func: LuaFunction| {
+                    let result = lua.create_table()?;
+                    let enabled = lua.app_data_ref::<bool>().is_some_and(|v| *v);
+                    if !enabled {
+                        return Ok(result);
+                    }
+                    let mut idx = 1;
+                    func.coverage(|info| {
+                        if let Ok(entry) = lua.create_table() {
+                            let _ = entry.set("function", info.function.unwrap_or_default());
+                            let _ = entry.set("lineDefined", info.line_defined);
+                            let _ = entry.set("depth", info.depth);
+                            if let Ok(hits_table) = lua.create_table() {
+                                for (i, &hit) in info.hits.iter().enumerate() {
+                                    let _ = hits_table.set(i + 1, hit);
+                                }
+                                let _ = entry.set("hits", hits_table);
+                            }
+                            let _ = result.set(idx, entry);
+                            idx += 1;
+                        }
+                    });
+                    Ok(result)
+                })?,
+            )?;
+        }
+
         // Inject all the globals that are enabled
         #[cfg(any(
             feature = "std-datetime",

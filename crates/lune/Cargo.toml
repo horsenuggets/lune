@@ -1,6 +1,6 @@
 [package]
 name = "lune"
-version = "0.10.4-horse.13.0"
+version = "0.10.4-horse.14.0"
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/lune-org/lune"
@@ -84,3 +84,6 @@ zip = { optional = true, version = "5.1", default-features = false, features = [
 	"deflate64",
 	"zstd"
 ] }
+
+[dev-dependencies]
+serial_test = "3.2"

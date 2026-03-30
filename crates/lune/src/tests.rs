@@ -81,6 +81,34 @@ create_tests! {
     global_warn: "globals/warn",
 }
 
+// Coverage tests run serially to prevent LUNE_COVERAGE env var contamination.
+
+#[test]
+#[serial_test::serial]
+fn global_debug_getcoverage() -> Result<ExitCode> {
+    run_test("globals/debug_getcoverage")
+}
+
+#[test]
+#[serial_test::serial]
+fn global_debug_getcoverage_enabled() -> Result<ExitCode> {
+    // SAFETY: This test runs serially and no other threads depend on
+    // the LUNE_COVERAGE env var during this test's execution.
+    unsafe { std::env::set_var("LUNE_COVERAGE", "1") };
+    let result = run_test("globals/debug_getcoverage_enabled");
+    unsafe { std::env::remove_var("LUNE_COVERAGE") };
+    result
+}
+
+#[test]
+#[serial_test::serial]
+fn global_debug_getcoverage_global() -> Result<ExitCode> {
+    unsafe { std::env::set_var("LUNE_COVERAGE", "1") };
+    let result = run_test("globals/debug_getcoverage_global");
+    unsafe { std::env::remove_var("LUNE_COVERAGE") };
+    result
+}
+
 #[cfg(feature = "std-datetime")]
 create_tests! {
     datetime_format_local_time: "datetime/formatLocalTime",
