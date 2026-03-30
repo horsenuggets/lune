@@ -87,32 +87,30 @@ create_tests! {
 
 // Coverage tests run serially to prevent LUNE_COVERAGE env var contamination.
 // JIT must be disabled because coverage instrumentation is incompatible with
-// native code generation.
+// native code generation. Coverage is enabled by default; the disabled test
+// explicitly sets LUNE_COVERAGE=0.
 
 #[test]
 #[serial_test::serial]
 fn global_debug_getcoverage() -> Result<ExitCode> {
-    run_test_with_jit("globals/debug_getcoverage", false)
+    // SAFETY: This test runs serially and no other threads depend on
+    // the LUNE_COVERAGE env var during this test's execution.
+    unsafe { std::env::set_var("LUNE_COVERAGE", "0") };
+    let result = run_test_with_jit("globals/debug_getcoverage", false);
+    unsafe { std::env::remove_var("LUNE_COVERAGE") };
+    result
 }
 
 #[test]
 #[serial_test::serial]
 fn global_debug_getcoverage_enabled() -> Result<ExitCode> {
-    // SAFETY: This test runs serially and no other threads depend on
-    // the LUNE_COVERAGE env var during this test's execution.
-    unsafe { std::env::set_var("LUNE_COVERAGE", "1") };
-    let result = run_test_with_jit("globals/debug_getcoverage_enabled", false);
-    unsafe { std::env::remove_var("LUNE_COVERAGE") };
-    result
+    run_test_with_jit("globals/debug_getcoverage_enabled", false)
 }
 
 #[test]
 #[serial_test::serial]
 fn global_debug_getcoverage_global() -> Result<ExitCode> {
-    unsafe { std::env::set_var("LUNE_COVERAGE", "1") };
-    let result = run_test_with_jit("globals/debug_getcoverage_global", false);
-    unsafe { std::env::remove_var("LUNE_COVERAGE") };
-    result
+    run_test_with_jit("globals/debug_getcoverage_global", false)
 }
 
 #[cfg(feature = "std-datetime")]

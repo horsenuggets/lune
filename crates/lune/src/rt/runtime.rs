@@ -106,10 +106,10 @@ impl Runtime {
         co.set("resume", fns.resume.clone())?;
         co.set("wrap", fns.wrap.clone())?;
 
-        // Enable code coverage if LUNE_COVERAGE env var is set
+        // Enable code coverage by default. Set LUNE_COVERAGE=0 to disable.
         let coverage_enabled = std::env::var("LUNE_COVERAGE")
-            .map(|v| v == "1" || v == "true")
-            .unwrap_or(false);
+            .map(|v| v != "0" && v != "false")
+            .unwrap_or(true);
         if coverage_enabled {
             lua.set_compiler(
                 mlua::Compiler::default()
@@ -124,11 +124,18 @@ impl Runtime {
         struct CoverageEnabled(bool);
         lua.set_app_data(CoverageEnabled(coverage_enabled));
 
-        // Add debug.getcoverage to retrieve code coverage data.
-        // Returns an empty table when coverage is not enabled to avoid
-        // crashes from calling lua_getcoverage on uninstrumented functions.
+        // Add debug.iscoverageenabled and debug.getcoverage for code
+        // coverage support. Returns an empty table / false when coverage
+        // is not enabled to avoid crashes from uninstrumented functions.
         {
             let debug = lua.globals().get::<LuaTable>("debug")?;
+            debug.set(
+                "iscoverageenabled",
+                lua.create_function(move |lua, ()| {
+                    let enabled = lua.app_data_ref::<CoverageEnabled>().is_some_and(|v| v.0);
+                    Ok(enabled)
+                })?,
+            )?;
             debug.set(
                 "getcoverage",
                 lua.create_function(|lua, func: LuaFunction| {

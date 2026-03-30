@@ -1,7 +1,13 @@
--- Test debug.getcoverage with LUNE_COVERAGE=1 using require
--- Requires LUNE_COVERAGE=1 to be set
+-- Test debug.getcoverage and debug.iscoverageenabled with coverage on
+-- Coverage is enabled by default, no env var needed
 
 local Module = require("./coverage/module")
+
+-- iscoverageenabled should return true
+assert(
+	debug.iscoverageenabled() == true,
+	"iscoverageenabled should return true when coverage is enabled"
+)
 
 -- Exercise some functions
 Module.greet("World")
