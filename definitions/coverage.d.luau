@@ -1,8 +1,8 @@
 export type CoverageEntry = {
-	["function"]: string,
-	lineDefined: number,
-	depth: number,
-	hits: { number },
+	Function: string,
+	LineDefined: number,
+	Depth: number,
+	Hits: { number },
 }
 
 declare debug: {
