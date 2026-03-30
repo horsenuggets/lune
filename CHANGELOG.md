@@ -8,6 +8,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.10.4-horse.14.1` - March 30th, 2026
+
+### Fixed
+
+- Fixed crash when calling `debug.getcoverage` on C/built-in functions in debug builds
+- Fixed JIT incompatibility with coverage instrumentation in tests
+
+### Changed
+
+- Changed `debug.getcoverage` return table keys to PascalCase (Function, LineDefined, Depth, Hits)
+
 ## `0.10.4-horse.14.0` - March 29th, 2026
 
 ### Added
