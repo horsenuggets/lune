@@ -169,11 +169,7 @@ fn build_signature(
 
     // BlobIndex entry
     write_u32_be(&mut buf, 12, CSSLOT_CODEDIRECTORY);
-    write_u32_be(
-        &mut buf,
-        16,
-        (SUPER_BLOB_SIZE + BLOB_INDEX_SIZE) as u32,
-    );
+    write_u32_be(&mut buf, 16, (SUPER_BLOB_SIZE + BLOB_INDEX_SIZE) as u32);
 
     // CodeDirectory
     let cd_offset = SUPER_BLOB_SIZE + BLOB_INDEX_SIZE;
@@ -307,10 +303,8 @@ mod tests {
 
         // LC_SEGMENT_64 for __TEXT at offset 32
         let cmd_offset = 32;
-        data[cmd_offset..cmd_offset + 4]
-            .copy_from_slice(&LC_SEGMENT_64.to_le_bytes());
-        data[cmd_offset + 4..cmd_offset + 8]
-            .copy_from_slice(&72u32.to_le_bytes()); // cmdsize
+        data[cmd_offset..cmd_offset + 4].copy_from_slice(&LC_SEGMENT_64.to_le_bytes());
+        data[cmd_offset + 4..cmd_offset + 8].copy_from_slice(&72u32.to_le_bytes()); // cmdsize
         data[cmd_offset + 8..cmd_offset + 14].copy_from_slice(b"__TEXT"); // segname
         // vmaddr at +24 = 0
         // vmsize at +32 = text_segment_size
@@ -323,10 +317,8 @@ mod tests {
 
         // LC_CODE_SIGNATURE at offset 32 + 72 = 104
         let cs_cmd_offset = 32 + 72;
-        data[cs_cmd_offset..cs_cmd_offset + 4]
-            .copy_from_slice(&LC_CODE_SIGNATURE.to_le_bytes());
-        data[cs_cmd_offset + 4..cs_cmd_offset + 8]
-            .copy_from_slice(&16u32.to_le_bytes()); // cmdsize
+        data[cs_cmd_offset..cs_cmd_offset + 4].copy_from_slice(&LC_CODE_SIGNATURE.to_le_bytes());
+        data[cs_cmd_offset + 4..cs_cmd_offset + 8].copy_from_slice(&16u32.to_le_bytes()); // cmdsize
         data[cs_cmd_offset + 8..cs_cmd_offset + 12]
             .copy_from_slice(&(codesig_offset as u32).to_le_bytes()); // dataoff
         data[cs_cmd_offset + 12..cs_cmd_offset + 16]
@@ -408,25 +400,19 @@ mod tests {
 
         // Verify nCodeSlots = 2 (two pages)
         assert_eq!(
-            u32::from_be_bytes(
-                sig[cd_offset + 28..cd_offset + 32].try_into().unwrap()
-            ),
+            u32::from_be_bytes(sig[cd_offset + 28..cd_offset + 32].try_into().unwrap()),
             2
         );
 
         // Verify codeLimit
         assert_eq!(
-            u32::from_be_bytes(
-                sig[cd_offset + 32..cd_offset + 36].try_into().unwrap()
-            ),
+            u32::from_be_bytes(sig[cd_offset + 32..cd_offset + 36].try_into().unwrap()),
             (PAGE_SIZE * 2) as u32
         );
 
         // Verify execSegFlags has MAIN_BINARY set
         assert_eq!(
-            u64::from_be_bytes(
-                sig[cd_offset + 80..cd_offset + 88].try_into().unwrap()
-            ),
+            u64::from_be_bytes(sig[cd_offset + 80..cd_offset + 88].try_into().unwrap()),
             CS_EXECSEG_MAIN_BINARY
         );
     }
@@ -443,9 +429,7 @@ mod tests {
 
         // Should have 2 hash slots (1 full page + 1 partial)
         let cd_offset = SUPER_BLOB_SIZE + BLOB_INDEX_SIZE;
-        let nhashes = u32::from_be_bytes(
-            sig[cd_offset + 28..cd_offset + 32].try_into().unwrap(),
-        );
+        let nhashes = u32::from_be_bytes(sig[cd_offset + 28..cd_offset + 32].try_into().unwrap());
         assert_eq!(nhashes, 2);
 
         // Verify first page hash
@@ -470,9 +454,7 @@ mod tests {
         // Verify the signature was written at the correct offset
         let sig_offset = 4 * PAGE_SIZE;
         assert_eq!(
-            u32::from_be_bytes(
-                data[sig_offset..sig_offset + 4].try_into().unwrap()
-            ),
+            u32::from_be_bytes(data[sig_offset..sig_offset + 4].try_into().unwrap()),
             CSMAGIC_EMBEDDED_SIGNATURE
         );
     }
@@ -553,8 +535,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
-                .unwrap();
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
         // Use codesign -d to inspect the signature (not -v which does
@@ -568,10 +549,7 @@ mod tests {
         let stderr = String::from_utf8_lossy(&output.stderr);
         std::fs::remove_file(&tmp).ok();
 
-        assert!(
-            output.status.success(),
-            "codesign -d failed: {stderr}"
-        );
+        assert!(output.status.success(), "codesign -d failed: {stderr}");
         assert!(
             stderr.contains("adhoc"),
             "expected ad-hoc signature, got: {stderr}"
@@ -608,8 +586,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
-                .unwrap();
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
         let output = Command::new("codesign")
@@ -633,9 +610,8 @@ mod tests {
         let sig = build_signature(&code, b"lib", 0, PAGE_SIZE as u64, false);
 
         let cd_offset = SUPER_BLOB_SIZE + BLOB_INDEX_SIZE;
-        let exec_seg_flags = u64::from_be_bytes(
-            sig[cd_offset + 80..cd_offset + 88].try_into().unwrap(),
-        );
+        let exec_seg_flags =
+            u64::from_be_bytes(sig[cd_offset + 80..cd_offset + 88].try_into().unwrap());
         assert_eq!(exec_seg_flags, 0); // Not a main binary
     }
 }
