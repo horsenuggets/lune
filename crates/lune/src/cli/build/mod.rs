@@ -12,6 +12,7 @@ use crate::standalone::metadata::Metadata;
 
 mod base_exe;
 mod bundler;
+mod codesign;
 mod files;
 mod result;
 mod target;
@@ -136,7 +137,7 @@ impl BuildCommand {
         );
 
         // Derive the base executable path based on the arguments provided
-        let base_exe_path = get_or_download_base_executable(target).await?;
+        let base_exe_path = get_or_download_base_executable(target.clone()).await?;
 
         // Read the contents of the lune interpreter as our starting point
         println!(
@@ -158,12 +159,25 @@ impl BuildCommand {
         .await
         .context("failed to create patched binary")?;
 
+        // Ad-hoc sign macOS binaries to prevent SIGKILL on Apple Silicon.
+        // Appending metadata to the base executable invalidates its original
+        // code signature, so we re-sign with our built-in cross-platform
+        // signer. This works on any host OS (Linux, Windows, macOS).
+        let mut patched_bin = patched_bin;
+        if target.os == target::BuildTargetOS::MacOS {
+            let bin_name = output_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("lune");
+            codesign::sign_macho(&mut patched_bin, bin_name);
+        }
+
         // And finally write the patched binary to the output file
         println!(
             "Writing standalone binary to {}",
             style(output_path.display()).blue()
         );
-        write_executable_file_to(output_path, patched_bin).await?; // Read & execute for all, write for owner
+        write_executable_file_to(&output_path, patched_bin).await?;
 
         Ok(ExitCode::SUCCESS)
     }

@@ -67,6 +67,7 @@ async-fs = "2.1"
 blocking = "1.6"
 futures-lite = "2.6"
 
+sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
