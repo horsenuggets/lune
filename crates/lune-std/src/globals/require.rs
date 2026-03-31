@@ -1004,9 +1004,7 @@ mod tests {
         let result = resolve_bundled_relative(caller, relative);
         assert_eq!(
             result,
-            PathBuf::from(
-                "/Packages/_Index/horsenuggets_commandline-luau@0.2.0/commandline-luau"
-            )
+            PathBuf::from("/Packages/_Index/horsenuggets_commandline-luau@0.2.0/commandline-luau")
         );
     }
 
