@@ -34,19 +34,108 @@ fn normalize_separators(path: &str) -> String {
     path.replace('\\', "/")
 }
 
+/// Normalize a path string to a bundled key format.
+///
+/// Bundled keys use Unix-style paths with a leading `/` (e.g.,
+/// `/Packages/Commandline.luau`). On Windows, OS path operations can
+/// corrupt these virtual paths by prepending drive letters (e.g.,
+/// `D:/Packages/...`). This function strips any drive prefix and
+/// ensures the path starts with `/`.
+fn normalize_to_bundle_key(path: &str) -> String {
+    let normalized = normalize_separators(path);
+
+    // Strip Windows drive prefix (e.g., "C:/Packages/..." -> "/Packages/...")
+    if normalized.len() >= 3
+        && normalized.as_bytes()[0].is_ascii_alphabetic()
+        && normalized.as_bytes()[1] == b':'
+        && normalized.as_bytes()[2] == b'/'
+    {
+        return normalized[2..].to_string();
+    }
+
+    normalized
+}
+
+/// Check if a path represents a virtual bundled path.
+///
+/// Bundled paths start with `/` and exist only in the embedded bundle,
+/// not on the real filesystem. OS path operations must not be used on
+/// these paths because they produce platform-dependent results (e.g.,
+/// on Windows, `/Packages` resolves to `D:\Packages`).
+fn is_bundled_path(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    let normalized = normalize_separators(&s);
+    normalized.starts_with('/')
+        && !(normalized.len() >= 3
+            && normalized.as_bytes()[1] == b':'
+            && normalized.as_bytes()[2] == b'/')
+}
+
+/// Resolve a relative path against a bundled caller path using pure
+/// string manipulation. This avoids OS path operations that corrupt
+/// virtual paths on Windows.
+///
+/// Given caller `/Packages/Commandline.luau` and target `./_Index/foo`,
+/// returns `/Packages/_Index/foo`.
+fn resolve_bundled_relative(caller: &Path, relative: &Path) -> PathBuf {
+    let caller_str = normalize_separators(&caller.display().to_string());
+
+    // Get the parent directory of the caller
+    let caller_dir = if caller_str.ends_with('/') {
+        caller_str.trim_end_matches('/').to_string()
+    } else {
+        match caller_str.rfind('/') {
+            Some(idx) => caller_str[..idx].to_string(),
+            None => String::new(),
+        }
+    };
+
+    let rel_str = normalize_separators(&relative.display().to_string());
+
+    // Join caller_dir with the relative path
+    let joined = if rel_str.starts_with("./") {
+        format!("{}/{}", caller_dir, &rel_str[2..])
+    } else if rel_str.starts_with("../") {
+        // Walk up directories for each ../
+        let mut dir = caller_dir.clone();
+        let mut rest = rel_str.as_str();
+        while let Some(stripped) = rest.strip_prefix("../") {
+            rest = stripped;
+            if let Some(idx) = dir.rfind('/') {
+                dir = dir[..idx].to_string();
+            }
+        }
+        if rest.is_empty() {
+            dir
+        } else {
+            format!("{}/{}", dir, rest)
+        }
+    } else {
+        format!("{}/{}", caller_dir, rel_str)
+    };
+
+    // Clean any remaining ./ components
+    let cleaned = joined
+        .replace("/./", "/")
+        .trim_end_matches("/.")
+        .to_string();
+
+    PathBuf::from(cleaned)
+}
+
 /// Try to get bundled source for a path from app_data
 fn get_bundled_source(lua: &Lua, path: &Path) -> Option<Vec<u8>> {
     let bundled = lua.app_data_ref::<BundledFiles>()?;
 
-    // Normalize separators so Windows backslash paths match forward-slash keys
-    let key = normalize_separators(&path.display().to_string());
+    // Normalize to bundle key format, stripping any Windows drive prefix
+    let key = normalize_to_bundle_key(&path.display().to_string());
     if let Some(source) = bundled.get(&key) {
         return Some(source.clone());
     }
 
     // Try canonical path (handles real filesystem paths)
     if let Ok(canonical) = path.canonicalize() {
-        let key = normalize_separators(&canonical.display().to_string());
+        let key = normalize_to_bundle_key(&canonical.display().to_string());
         if let Some(source) = bundled.get(&key) {
             return Some(source.clone());
         }
@@ -60,11 +149,12 @@ fn get_bundled_source(lua: &Lua, path: &Path) -> Option<Vec<u8>> {
 /// This handles .luau/.lua extensions and init.luau patterns.
 fn resolve_bundled_module(lua: &Lua, module_path: &Path) -> Option<PathBuf> {
     let bundled = lua.app_data_ref::<BundledFiles>()?;
-    let base = normalize_separators(&module_path.display().to_string());
+    // Normalize to bundle key format, stripping Windows drive prefixes
+    let base = normalize_to_bundle_key(&module_path.display().to_string());
 
     // Try exact path first
     if bundled.contains_key(&base) {
-        return Some(module_path.to_path_buf());
+        return Some(PathBuf::from(&base));
     }
 
     // Try with .luau extension
@@ -295,6 +385,15 @@ fn resolve_alias(alias: &str, caller_dir: &Path) -> Option<PathBuf> {
     // Special case: @self refers to the current module's directory
     // It's used to reference modules relative to the current script
     if alias_name == "self" {
+        if is_bundled_path(caller_dir) {
+            // In bundled context, use string-based resolution
+            let dir_str = normalize_separators(&caller_dir.display().to_string());
+            let resolved = match rest {
+                Some(rest_path) => format!("{}/{}", dir_str, rest_path),
+                None => dir_str,
+            };
+            return Some(PathBuf::from(resolved));
+        }
         let mut resolved = caller_dir.to_path_buf();
         if let Some(rest_path) = rest {
             resolved = resolved.join(rest_path);
@@ -335,8 +434,10 @@ fn resolve_require_arg(arg: &LuaValue, caller_path: Option<&Path>) -> LuaResult<
             let path_str: String = s.to_str()?.to_string();
 
             if path_str.starts_with('/') {
-                // Absolute path
-                let abs = clean_path_and_make_absolute(Path::new(&path_str));
+                // Absolute path — treat as a bundled virtual path on all
+                // platforms. Do NOT use clean_path_and_make_absolute which
+                // would prepend the CWD drive letter on Windows.
+                let abs = PathBuf::from(&path_str);
                 let rel = caller_path
                     .map(|cp| make_relative_path(cp, &abs))
                     .unwrap_or_else(|| PathBuf::from(format!(".{}", path_str)));
@@ -345,15 +446,22 @@ fn resolve_require_arg(arg: &LuaValue, caller_path: Option<&Path>) -> LuaResult<
                 // Relative path
                 let rel = relative_path_normalize(Path::new(&path_str));
                 let abs = if let Some(caller) = caller_path {
-                    // For init.luau modules, the caller_path is the
-                    // directory itself (chunk name strips "/init.luau"),
-                    // so we use it directly instead of calling parent()
-                    let caller_dir = if caller.is_dir() {
-                        caller
+                    if is_bundled_path(caller) {
+                        // Caller is a virtual bundled path — resolve using
+                        // pure string manipulation to avoid OS path
+                        // operations that corrupt paths on Windows
+                        resolve_bundled_relative(caller, &rel)
                     } else {
-                        caller.parent().unwrap_or(caller)
-                    };
-                    clean_path_and_make_absolute(&caller_dir.join(&rel))
+                        // For init.luau modules, the caller_path is the
+                        // directory itself (chunk name strips "/init.luau"),
+                        // so we use it directly instead of calling parent()
+                        let caller_dir = if caller.is_dir() {
+                            caller
+                        } else {
+                            caller.parent().unwrap_or(caller)
+                        };
+                        clean_path_and_make_absolute(&caller_dir.join(&rel))
+                    }
                 } else {
                     clean_path_and_make_absolute(&rel)
                 };
@@ -804,5 +912,116 @@ mod tests {
         let init_luau = format!("{}/init.luau", base);
         assert_eq!(init_luau, "/Source/MyModule/init.luau");
         assert!(bundled.contains_key(&init_luau));
+    }
+
+    // -- normalize_to_bundle_key --
+
+    #[test]
+    fn bundle_key_strips_windows_drive_prefix() {
+        assert_eq!(
+            normalize_to_bundle_key("D:/Packages/_Index/foo/bar"),
+            "/Packages/_Index/foo/bar"
+        );
+    }
+
+    #[test]
+    fn bundle_key_strips_windows_drive_with_backslashes() {
+        assert_eq!(
+            normalize_to_bundle_key(r"D:\Packages\_Index\foo\bar"),
+            "/Packages/_Index/foo/bar"
+        );
+    }
+
+    #[test]
+    fn bundle_key_preserves_unix_path() {
+        assert_eq!(
+            normalize_to_bundle_key("/Packages/Commandline.luau"),
+            "/Packages/Commandline.luau"
+        );
+    }
+
+    #[test]
+    fn bundle_key_preserves_relative_path() {
+        assert_eq!(
+            normalize_to_bundle_key("./Packages/Commandline.luau"),
+            "./Packages/Commandline.luau"
+        );
+    }
+
+    // -- is_bundled_path --
+
+    #[test]
+    fn bundled_path_detects_virtual_paths() {
+        assert!(is_bundled_path(Path::new("/Packages/Commandline.luau")));
+        assert!(is_bundled_path(Path::new("/Source/MyModule/init.luau")));
+    }
+
+    #[test]
+    fn bundled_path_rejects_relative_paths() {
+        assert!(!is_bundled_path(Path::new("./Packages/Commandline.luau")));
+        assert!(!is_bundled_path(Path::new("Packages/Commandline.luau")));
+    }
+
+    #[test]
+    fn bundled_path_rejects_windows_absolute_paths() {
+        // Windows absolute paths have a drive letter
+        assert!(!is_bundled_path(Path::new("C:/Packages/Commandline.luau")));
+    }
+
+    // -- resolve_bundled_relative --
+
+    #[test]
+    fn bundled_relative_simple_dot_slash() {
+        let caller = Path::new("/Packages/Commandline.luau");
+        let relative = Path::new("./_Index/foo/bar");
+        let result = resolve_bundled_relative(caller, relative);
+        assert_eq!(result, PathBuf::from("/Packages/_Index/foo/bar"));
+    }
+
+    #[test]
+    fn bundled_relative_dot_dot_slash() {
+        let caller = Path::new("/Source/MyModule/SubDir/File.luau");
+        let relative = Path::new("../Helper.luau");
+        let result = resolve_bundled_relative(caller, relative);
+        assert_eq!(result, PathBuf::from("/Source/MyModule/Helper.luau"));
+    }
+
+    #[test]
+    fn bundled_relative_from_init_dir() {
+        // init.luau caller paths are the directory itself
+        let caller = Path::new("/Source/MyModule/");
+        let relative = Path::new("./Helper");
+        let result = resolve_bundled_relative(caller, relative);
+        assert_eq!(result, PathBuf::from("/Source/MyModule/Helper"));
+    }
+
+    #[test]
+    fn bundled_relative_wally_redirect() {
+        // This is the exact scenario that fails on Windows:
+        // Packages/Commandline.luau contains require("./_Index/horsenuggets_commandline-luau@0.2.0/commandline-luau")
+        let caller = Path::new("/Packages/Commandline.luau");
+        let relative = Path::new("./_Index/horsenuggets_commandline-luau@0.2.0/commandline-luau");
+        let result = resolve_bundled_relative(caller, relative);
+        assert_eq!(
+            result,
+            PathBuf::from("/Packages/_Index/horsenuggets_commandline-luau@0.2.0/commandline-luau")
+        );
+    }
+
+    #[test]
+    fn bundled_lookup_with_windows_drive_prefix() {
+        // Verify that even if a Windows drive prefix sneaks through,
+        // the bundle lookup still works
+        let mut bundled: HashMap<String, Vec<u8>> = HashMap::new();
+        bundled.insert(
+            "/Packages/_Index/foo/bar.luau".to_string(),
+            b"return {}".to_vec(),
+        );
+
+        // Simulate what happens on Windows when path gets a drive prefix
+        let windows_path = "D:/Packages/_Index/foo/bar.luau";
+        let key = normalize_to_bundle_key(windows_path);
+        assert_eq!(key, "/Packages/_Index/foo/bar.luau");
+        assert!(bundled.contains_key(&key));
     }
 }
