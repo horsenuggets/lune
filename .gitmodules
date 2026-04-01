@@ -1,3 +1,6 @@
 [submodule "tests/roblox/rbx-test-files"]
 	path = tests/roblox/rbx-test-files
 	url = https://github.com/rojo-rbx/rbx-test-files
+[submodule "Submodules/luau-cicd"]
+	path = submodules/luau-cicd
+	url = git@github.com:horsenuggets/luau-cicd.git
