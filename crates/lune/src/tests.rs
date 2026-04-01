@@ -113,6 +113,12 @@ fn global_debug_getcoverage_global() -> Result<ExitCode> {
     run_test_with_jit("globals/debug_getcoverage_global", false)
 }
 
+#[test]
+#[serial_test::serial]
+fn global_debug_getcoverage_script() -> Result<ExitCode> {
+    run_test_with_jit("globals/debug_getcoverage_script", false)
+}
+
 #[cfg(feature = "std-datetime")]
 create_tests! {
     datetime_format_local_time: "datetime/formatLocalTime",

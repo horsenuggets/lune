@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added file-level coverage via `debug.getcoverage(script)` — accepts a script instance and returns coverage for all functions in the file, including local/unexported ones
+- Added chunk function cache to the require system, storing compiled chunk functions for coverage lookups
 - Added cross-platform ad-hoc code signing for `lune build` standalone binaries, preventing SIGKILL on macOS Apple Silicon
 - Added ad-hoc signing to release workflow for macOS binaries
 
