@@ -97,19 +97,4 @@ for _, entry in coverage do
 end
 assert(foundHello, "should find exported function 'hello' in file-level coverage")
 
-------------------------------------------------------------
--- Error on non-required module
-------------------------------------------------------------
-
--- A script reference to a file that was never required should error
-local ok, err = pcall(function()
-	local nonExistent = script.Parent.coverage.module
-	-- module.luau exists but let's test with the main test script itself
-	-- which is the entry point, not a required module tracked in chunk cache
-	-- Actually, module.luau IS required by other tests, so let's just
-	-- verify the error message format for a truly non-required path
-end)
--- We can't easily test this without a file that exists but isn't required,
--- so we just verify the API accepts script instances (tested above)
-
 print("All script-based coverage tests passed")
