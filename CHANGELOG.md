@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added cross-platform ad-hoc code signing for `lune build` standalone binaries, preventing SIGKILL on macOS Apple Silicon
 - Added ad-hoc signing to release workflow for macOS binaries
 
+### Fixed
+
+- Fixed compiled binary module resolution on Windows where `./` relative requires in bundled files resolved to the wrong drive root path (e.g., `D:\Packages\_Index\...` instead of `/Packages/_Index/...`)
+
 ## `0.10.4-horse.14.2` - March 30th, 2026
 
 ### Added
