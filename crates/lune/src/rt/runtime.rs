@@ -138,12 +138,57 @@ impl Runtime {
             )?;
             debug.set(
                 "getcoverage",
-                lua.create_function(|lua, func: LuaFunction| {
+                lua.create_function(|lua, value: LuaValue| {
                     let result = lua.create_table()?;
                     let enabled = lua.app_data_ref::<CoverageEnabled>().is_some_and(|v| v.0);
                     if !enabled {
                         return Ok(result);
                     }
+
+                    // Resolve the target function: either a direct function
+                    // argument or a script instance whose chunk function we
+                    // look up from the chunk cache
+                    let func = match value {
+                        LuaValue::Function(f) => f,
+                        LuaValue::UserData(ud) => {
+                            let script_ref = ud.borrow::<lune_std::ScriptReference>()?;
+                            let path_str = script_ref.path_string();
+                            let chunk_cache = lune_std::get_chunk_cache(lua)?;
+
+                            // Try the exact path first, then with common Luau
+                            // extensions, then as init.luau inside a directory
+                            let candidates = [
+                                format!("{FILE_CHUNK_PREFIX}{path_str}"),
+                                format!("{FILE_CHUNK_PREFIX}{path_str}.luau"),
+                                format!("{FILE_CHUNK_PREFIX}{path_str}.lua"),
+                                format!("{FILE_CHUNK_PREFIX}{path_str}/init.luau"),
+                                format!("{FILE_CHUNK_PREFIX}{path_str}/init.lua"),
+                            ];
+
+                            let mut found = None;
+                            for candidate in &candidates {
+                                if let Ok(f) = chunk_cache.get::<LuaFunction>(candidate.as_str()) {
+                                    found = Some(f);
+                                    break;
+                                }
+                            }
+
+                            match found {
+                                Some(f) => f,
+                                None => {
+                                    return Err(LuaError::runtime(format!(
+                                        "no coverage data for '{path_str}' (module not yet required)"
+                                    )));
+                                }
+                            }
+                        }
+                        _ => {
+                            return Err(LuaError::runtime(
+                                "debug.getcoverage expects a function or script instance",
+                            ));
+                        }
+                    };
+
                     // Skip C functions — lua_getcoverage asserts the function
                     // is a Lua function and traps in debug builds otherwise
                     if func.info().what == "C" {
@@ -557,8 +602,15 @@ impl Runtime {
             .load(chunk_contents.as_ref())
             .set_name(chunk_name.as_ref());
 
+        // Convert to function and cache for file-level coverage
+        let main_func = main.into_function()?;
+        {
+            let chunk_cache = lune_std::get_chunk_cache(&self.lua)?;
+            chunk_cache.set(chunk_name.as_ref(), main_func.clone())?;
+        }
+
         // Run it on our scheduler until it and any other spawned threads complete
-        let main_thread_id = self.sched.push_thread_back(main, ())?;
+        let main_thread_id = self.sched.push_thread_back(main_func, ())?;
         self.sched.run().await;
 
         let main_thread_values = self

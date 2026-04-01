@@ -202,6 +202,9 @@ const BUILTIN_REQUIRE_KEY: &str = "__lune_builtin_require";
 /// Registry key for the module cache
 const MODULE_CACHE_KEY: &str = "__lune_require_cache";
 
+/// Registry key for the chunk function cache (used by debug.getcoverage)
+pub const CHUNK_CACHE_KEY: &str = "__lune_chunk_cache";
+
 /// Shared state for tracking pending requires to avoid duplicate loading.
 #[derive(Debug, Clone)]
 struct RequireState {
@@ -241,6 +244,20 @@ fn get_module_cache(lua: &Lua) -> LuaResult<LuaTable> {
         Err(_) => {
             let cache = lua.create_table()?;
             lua.set_named_registry_value(MODULE_CACHE_KEY, cache.clone())?;
+            Ok(cache)
+        }
+    }
+}
+
+/// Get or create the chunk function cache table.
+/// Maps chunk names (e.g., "@/path/to/file.luau") to their compiled
+/// chunk functions, enabling file-level coverage via debug.getcoverage.
+pub fn get_chunk_cache(lua: &Lua) -> LuaResult<LuaTable> {
+    match lua.named_registry_value::<LuaTable>(CHUNK_CACHE_KEY) {
+        Ok(cache) => Ok(cache),
+        Err(_) => {
+            let cache = lua.create_table()?;
+            lua.set_named_registry_value(CHUNK_CACHE_KEY, cache.clone())?;
             Ok(cache)
         }
     }
@@ -647,13 +664,19 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
 
                     let chunk = lua
                         .load(chunk_bytes)
-                        .set_name(chunk_name)
+                        .set_name(&chunk_name)
                         .set_environment(module_env);
+
+                    // Convert chunk to function so we can cache it for
+                    // file-level coverage before executing it
+                    let func = chunk.into_function()?;
+                    let chunk_cache = get_chunk_cache(&lua)?;
+                    chunk_cache.set(chunk_name.as_str(), func.clone())?;
 
                     // Push the script path before executing the module (for dynamic fallback)
                     push_script_path(&lua, &resolved_path.display().to_string())?;
 
-                    let thread_id = lua.push_thread_back(chunk, ())?;
+                    let thread_id = lua.push_thread_back(func, ())?;
                     lua.track_thread(thread_id);
                     lua.wait_for_thread(thread_id).await;
 
@@ -762,13 +785,19 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
 
                     let chunk = lua
                         .load(chunk_bytes)
-                        .set_name(chunk_name)
+                        .set_name(&chunk_name)
                         .set_environment(module_env);
+
+                    // Convert chunk to function so we can cache it for
+                    // file-level coverage before executing it
+                    let func = chunk.into_function()?;
+                    let chunk_cache = get_chunk_cache(&lua)?;
+                    chunk_cache.set(chunk_name.as_str(), func.clone())?;
 
                     // Push the script path before executing the module (for dynamic fallback)
                     push_script_path(&lua, &resolved_path.display().to_string())?;
 
-                    let thread_id = lua.push_thread_back(chunk, ())?;
+                    let thread_id = lua.push_thread_back(func, ())?;
                     lua.track_thread(thread_id);
                     lua.wait_for_thread(thread_id).await;
 
