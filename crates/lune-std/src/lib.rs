@@ -9,7 +9,7 @@ mod require;
 
 pub use self::global::LuneStandardGlobal;
 pub use self::globals::executable::create as create_executable_global;
-pub use self::globals::require::{get_chunk_cache, CHUNK_CACHE_KEY};
+pub use self::globals::require::{CHUNK_CACHE_KEY, get_chunk_cache};
 pub use self::globals::script::{ScriptReference, pop_script_path, push_script_path};
 pub use self::globals::version::set_global_version;
 pub use self::library::LuneStandardLibrary;
