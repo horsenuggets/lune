@@ -514,7 +514,12 @@ mod tests {
     /// binaries with data appended after __LINKEDIT — even when signed by
     /// Apple's own `codesign` tool. The kernel's signature check is less
     /// strict and accepts them.
+    ///
+    /// Ignored by default because `current_exe()` may not return a standard
+    /// Mach-O binary in all test runners (e.g., cargo-nextest wraps tests).
+    /// Run with `cargo test -- --ignored` to execute locally.
     #[test]
+    #[ignore]
     #[cfg(target_os = "macos")]
     fn test_sign_real_binary_with_appended_data() {
         use std::process::Command;
@@ -567,6 +572,7 @@ mod tests {
     /// Sign a real binary without appended data — this should pass both
     /// codesign -d (inspection) and codesign -v (validation).
     #[test]
+    #[ignore]
     #[cfg(target_os = "macos")]
     fn test_sign_real_binary_validates() {
         use std::process::Command;
