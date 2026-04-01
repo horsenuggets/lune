@@ -8,6 +8,6 @@ export type CoverageEntry = {
 declare debug: {
 	info: (...any) -> ...any,
 	traceback: ((string?, number?) -> string) & ((thread, string?, number?) -> string),
-	getcoverage: (fn: (...any) -> ...any) -> { CoverageEntry },
+	getcoverage: ((fn: (...any) -> ...any) -> { CoverageEntry }) & ((script: any) -> { CoverageEntry }),
 	iscoverageenabled: () -> boolean,
 }
