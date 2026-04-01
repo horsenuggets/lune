@@ -1,6 +1,6 @@
 [package]
 name = "lune"
-version = "0.10.4-horse.14.2"
+version = "0.10.4-horse.14.3"
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/lune-org/lune"
@@ -67,6 +67,7 @@ async-fs = "2.1"
 blocking = "1.6"
 futures-lite = "2.6"
 
+sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

@@ -1,18 +1,18 @@
 {
-  "languageMode": "strict",
-  "lint": {
-    "*": true
-  },
-  "lintErrors": false,
-  "typeErrors": true,
-  "globals": [
-    "executable",
-    "script",
-    "warn"
-  ],
-  "aliases": {
-    "lune": "./types/",
-    "tests": "./tests",
-    "require-tests": "./tests/require/tests"
-  }
+    "languageMode": "strict",
+    "lint": {
+      "*": true
+    },
+    "lintErrors": false,
+    "typeErrors": true,
+    "globals": [
+      "executable",
+      "script",
+      "warn"
+    ],
+    "aliases": {
+      "lune": "./types/",
+      "tests": "./tests",
+      "require-tests": "./tests/require/tests"
+    }
 }

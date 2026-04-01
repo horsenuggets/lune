@@ -42,6 +42,11 @@ mkdir -p staging
 cp "$TARGET_DIR/$BIN_NAME$BIN_EXT" staging/
 cd staging
 
+# Ad-hoc sign macOS binaries to prevent SIGKILL on Apple Silicon
+if [ "$OS" = "macos" ]; then
+	codesign -s - --force "$BIN_NAME"
+fi
+
 # Zip the staging dir up
 if [ "$OS" = "windows" ]; then
 	7z a ../release.zip *

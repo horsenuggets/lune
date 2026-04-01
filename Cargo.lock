@@ -1589,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "lune"
-version = "0.10.4-horse.14.2"
+version = "0.10.4-horse.14.3"
 dependencies = [
  "anyhow",
  "async-fs",
@@ -1610,6 +1610,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "sha2",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
