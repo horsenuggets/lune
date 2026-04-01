@@ -8,6 +8,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.10.4-horse.14.5` - April 1st, 2026
+
+### Changed
+
+- Bumped version for release (includes all changes from 14.3 and 14.4)
+
 ## `0.10.4-horse.14.4` - March 31st, 2026
 
 ### Added
