@@ -117,3 +117,48 @@ jobs:
           fi
 
           echo "VERSION file matches Cargo.toml."
+
+  build-test:
+    name: Build test - ${{ matrix.name }}
+    runs-on: ${{ matrix.runner-os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x86_64
+            runner-os: windows-2022
+            cargo-target: x86_64-pc-windows-msvc
+
+          - name: Windows aarch64
+            runner-os: windows-11-arm
+            cargo-target: aarch64-pc-windows-msvc
+
+          - name: Linux x86_64
+            runner-os: ubuntu-22.04
+            cargo-target: x86_64-unknown-linux-gnu
+
+          - name: Linux aarch64
+            runner-os: ubuntu-22.04-arm
+            cargo-target: aarch64-unknown-linux-gnu
+
+          - name: macOS x86_64
+            runner-os: macos-15
+            cargo-target: x86_64-apple-darwin
+
+          - name: macOS aarch64
+            runner-os: macos-15
+            cargo-target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cargo-target }}
+
+      - name: Build
+        run: cargo build --release --locked --all-features --target ${{ matrix.cargo-target }}
