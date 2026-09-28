@@ -2,7 +2,11 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use url::Url;
 
-use hyper::{HeaderMap, Method, Request as HyperRequest, body::Incoming};
+use hyper::{
+    HeaderMap, Method, Request as HyperRequest,
+    body::Incoming,
+    header::{HOST, HeaderValue},
+};
 
 use mlua::prelude::*;
 
@@ -50,6 +54,41 @@ impl FromLua for RequestOptions {
                 )),
             })
         }
+    }
+}
+
+/**
+    Prepares an outgoing request for sending to an origin server over HTTP/1.
+
+    This sets the `Host` header from the URI authority (host plus a non-default
+    port, never userinfo) and rewrites the request URI to its origin-form target
+    (path and query only).
+
+    `hyper`'s HTTP/1 client serialises whatever URI form it is given, so leaving
+    the absolute URI in place emits an absolute-form request line
+    (`GET http://host/path HTTP/1.1`). RFC 7230 requires origin servers to accept
+    that form, but some servers reject it - notably `workerd`, the runtime behind
+    `wrangler dev` - so we send the conventional origin-form (`GET /path HTTP/1.1`).
+*/
+pub fn prepare_outgoing_request<B>(request: &mut HyperRequest<B>) {
+    if let Some(authority) = request.uri().authority().cloned() {
+        let host = match authority.port_u16() {
+            Some(port) => format!("{}:{port}", authority.host()),
+            None => authority.host().to_string(),
+        };
+        if let Ok(value) = HeaderValue::from_str(&host) {
+            request.headers_mut().insert(HOST, value);
+        }
+    }
+
+    let origin_form = request
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/")
+        .to_string();
+    if let Ok(uri) = origin_form.parse() {
+        *request.uri_mut() = uri;
     }
 }
 
