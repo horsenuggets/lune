@@ -6,14 +6,18 @@ use hyper::{
     Method, Request as HyperRequest,
     body::Bytes,
     client::conn::http1::handshake,
-    header::{ACCEPT, CONTENT_LENGTH, HOST, HeaderName, HeaderValue, USER_AGENT},
+    header::{ACCEPT, CONTENT_LENGTH, HeaderName, HeaderValue, USER_AGENT},
 };
 
 use url::Url;
 
 use crate::{
     client::stream::HttpStream,
-    shared::{hyper::HyperIo, request::Request, response::Response},
+    shared::{
+        hyper::HyperIo,
+        request::{Request, prepare_outgoing_request},
+        response::Response,
+    },
 };
 
 /**
@@ -96,12 +100,10 @@ async fn fetch_inner(
 
         exec.spawn(conn).detach();
 
-        let (mut parts, body) = request.clone_inner().into_parts();
-        if let Some(host) = parts.uri.host() {
-            let host = HeaderValue::from_str(host).unwrap();
-            parts.headers.insert(HOST, host);
-        }
+        let mut outgoing = request.clone_inner();
+        prepare_outgoing_request(&mut outgoing);
 
+        let (parts, body) = outgoing.into_parts();
         let data = HyperRequest::from_parts(parts, Full::new(body.into_bytes()));
         let incoming = sender.send_request(data).await.map_err(|e| e.to_string())?;
 
