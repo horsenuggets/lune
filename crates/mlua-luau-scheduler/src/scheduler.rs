@@ -346,8 +346,13 @@ impl Scheduler {
                                 if let Err(e) = res.as_ref() {
                                     self.error_callback.call(e);
                                 }
-                                if thread.status() != LuaThreadStatus::Resumable {
-                                    result_map_inner.unwrap().insert(id, res);
+                                // NOTE: The thread may have been untracked while it was
+                                // running, if whoever tracked it no longer wants its result
+                                let result_map = result_map_inner.unwrap();
+                                if thread.status() != LuaThreadStatus::Resumable
+                                    && result_map.is_tracked(id)
+                                {
+                                    result_map.insert(id, res);
                                 }
                             }
                         } else {
