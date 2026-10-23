@@ -2,7 +2,7 @@ use std::{cell::Cell, io::ErrorKind as IoErrorKind, rc::Rc, time::Duration};
 
 use async_channel::Receiver;
 use async_io::Timer;
-use futures_lite::future::or;
+use futures_lite::future::{self, or};
 use mlua::prelude::*;
 use mlua_luau_scheduler::{LuaSchedulerExt, LuaSpawnExt};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -79,7 +79,7 @@ pub fn fs_watch(
         events: event_rx,
         handle_dropped: false,
         shutdown: shutdown_rx,
-        stopped: Rc::clone(&stopped),
+        stopped,
         target: WatchTarget::new(root, canonical_root, file),
     };
     lua.spawn_local(run_watcher(
@@ -88,7 +88,6 @@ pub fn fs_watch(
         source,
         options.debounce,
         callback,
-        stopped,
     ));
 
     handle.into_lua_table(lua.clone())
@@ -178,6 +177,24 @@ impl EventSource {
             }
         }
     }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped.get()
+    }
+
+    /**
+        Resolves once the watcher has been stopped through its handle.
+
+        Never resolves if the handle was garbage collected without being stopped.
+    */
+    async fn wait_for_stop(&self) {
+        // NOTE: This may consume the stop message, in which case `next`
+        // sees a closed channel with the stopped flag set and also ends
+        self.shutdown.recv().await.ok();
+        if !self.is_stopped() {
+            future::pending::<()>().await;
+        }
+    }
 }
 
 async fn run_watcher(
@@ -186,7 +203,6 @@ async fn run_watcher(
     mut source: EventSource,
     debounce: Duration,
     callback: LuaFunction,
-    stopped: Rc<Cell<bool>>,
 ) {
     // Keep the OS-level watcher alive for as long as this task runs,
     // it gets dropped (and stops watching) once the task completes
@@ -213,10 +229,10 @@ async fn run_watcher(
         }
 
         for event in batch {
-            if stopped.get() {
+            if source.is_stopped() {
                 return;
             }
-            deliver(&lua, &callback, event).await.ok();
+            deliver(&lua, &callback, &source, event).await.ok();
         }
     }
 }
@@ -227,11 +243,32 @@ async fn run_watcher(
 
     Errors thrown inside the callback are reported by the scheduler.
 */
-async fn deliver(lua: &Lua, callback: &LuaFunction, event: WatchEvent) -> LuaResult<()> {
+async fn deliver(
+    lua: &Lua,
+    callback: &LuaFunction,
+    source: &EventSource,
+    event: WatchEvent,
+) -> LuaResult<()> {
     let thread_id = lua.push_thread_back(callback.clone(), event)?;
     lua.track_thread(thread_id);
-    lua.wait_for_thread(thread_id).await;
-    lua.get_thread_result(thread_id);
+
+    let finished = async {
+        lua.wait_for_thread(thread_id).await;
+        true
+    };
+    let stopped = async {
+        source.wait_for_stop().await;
+        false
+    };
+
+    // NOTE: If the watcher gets stopped while the callback is suspended, we stop
+    // waiting for it, so that a callback that never resumes can not keep the
+    // watcher (and the process) alive. The thread must stay tracked in that case,
+    // since the scheduler expects it to be tracked when storing its final result.
+    if or(finished, stopped).await {
+        lua.get_thread_result(thread_id);
+    }
+
     Ok(())
 }
 
