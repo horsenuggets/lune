@@ -1,7 +1,10 @@
 local fs = require("@lune/fs")
 local task = require("@lune/task")
 
+type WatchCallback = fs.WatchCallback
 type WatchEvent = fs.WatchEvent
+type WatchHandle = fs.WatchHandle
+type WatchOptions = fs.WatchOptions
 
 local ROOT = "bin/fs_watch"
 local SETTLE = 0.25
@@ -14,6 +17,28 @@ if fs.isDir(ROOT) then
 	fs.removeDir(ROOT)
 end
 fs.writeDir(ROOT)
+
+-- Every watcher is tracked so that it can be stopped even when a test fails,
+-- otherwise the active watcher would keep the process alive and hang the test
+
+local activeWatchers: { WatchHandle } = {}
+
+local function watch(path: string, options: WatchOptions?, callback: WatchCallback): WatchHandle
+	local watcher = fs.watch(path, options, callback)
+	table.insert(activeWatchers, watcher)
+	return watcher
+end
+
+local function test(name: string, body: () -> ())
+	local success, err = pcall(body :: () -> any)
+	for _, watcher in activeWatchers do
+		pcall(watcher.stop)
+	end
+	table.clear(activeWatchers)
+	if not success then
+		error(`Test "{name}" failed - {err}`)
+	end
+end
 
 local function makeDir(name: string): string
 	local dir = `{ROOT}/{name}`
@@ -54,28 +79,30 @@ local function waitFor(predicate: () -> boolean, message: string)
 	end
 end
 
--- Invalid arguments should throw errors
+test("invalid arguments", function()
+	assert(
+		not pcall(fs.watch, `{ROOT}/does_not_exist`, function() end),
+		"Watching a missing path should throw"
+	)
+	assert(not pcall(fs.watch :: any, ROOT), "Watching without a callback should throw")
+	assert(
+		not pcall(fs.watch :: any, ROOT, { debounce = -1 }, function() end),
+		"Watching with a negative debounce should throw"
+	)
+	assert(
+		not pcall(fs.watch :: any, ROOT, { debounce = 1e20 }, function() end),
+		"Watching with an unrepresentable debounce should throw"
+	)
+	assert(
+		not pcall(fs.watch :: any, ROOT, true, function() end),
+		"Watching with non-table options should throw"
+	)
+end)
 
-assert(
-	not pcall(fs.watch, `{ROOT}/does_not_exist`, function() end),
-	"Watching a missing path should throw"
-)
-assert(not pcall(fs.watch :: any, ROOT), "Watching without a callback should throw")
-assert(
-	not pcall(fs.watch :: any, ROOT, { debounce = -1 }, function() end),
-	"Watching with a negative debounce should throw"
-)
-assert(
-	not pcall(fs.watch :: any, ROOT, true, function() end),
-	"Watching with non-table options should throw"
-)
-
--- Watching a directory should report creating, modifying and removing files
-
-do
+test("directory watching", function()
 	local dir = makeDir("dir")
 	local events: { WatchEvent } = {}
-	local watcher = fs.watch(dir, function(event)
+	local watcher = watch(dir, nil, function(event)
 		table.insert(events, event)
 	end)
 	task.wait(SETTLE)
@@ -104,15 +131,28 @@ do
 
 	watcher.stop()
 	assert(not pcall(watcher.stop), "Stopping a watcher twice should throw")
-end
+end)
 
--- Directories should be watched recursively by default, and only then
+test("callback without options", function()
+	local dir = makeDir("no_options")
+	local events: { WatchEvent } = {}
+	local watcher = fs.watch(dir, function(event)
+		table.insert(events, event)
+	end)
+	table.insert(activeWatchers, watcher)
+	task.wait(SETTLE)
 
-do
+	fs.writeFile(`{dir}/a.txt`, "one")
+	waitFor(function()
+		return find(events, "/no_options/a.txt") ~= nil
+	end, "an event for a watcher created without options")
+end)
+
+test("recursive watching", function()
 	local dir = makeDir("recursive")
 	fs.writeDir(`{dir}/sub`)
 	local events: { WatchEvent } = {}
-	local watcher = fs.watch(dir, function(event)
+	watch(dir, nil, function(event)
 		table.insert(events, event)
 	end)
 	task.wait(SETTLE)
@@ -121,14 +161,13 @@ do
 	waitFor(function()
 		return find(events, "/recursive/sub/b.txt") ~= nil
 	end, "an event for a nested file with a recursive watcher")
-	watcher.stop()
-end
+end)
 
-do
+test("non-recursive watching", function()
 	local dir = makeDir("non_recursive")
 	fs.writeDir(`{dir}/sub`)
 	local events: { WatchEvent } = {}
-	local watcher = fs.watch(dir, { recursive = false }, function(event)
+	watch(dir, { recursive = false }, function(event)
 		table.insert(events, event)
 	end)
 	task.wait(SETTLE)
@@ -144,18 +183,14 @@ do
 		find(events, "/non_recursive/sub/c.txt") == nil,
 		"A non-recursive watcher should not report nested files"
 	)
-	watcher.stop()
-end
+end)
 
--- Watching a single file should ignore its siblings, and
--- keep working after the file is replaced by an atomic save
-
-do
+test("single file watching with atomic saves", function()
 	local dir = makeDir("single")
 	local target = `{dir}/config.json`
 	fs.writeFile(target, "{}")
 	local events: { WatchEvent } = {}
-	local watcher = fs.watch(target, function(event)
+	watch(target, nil, function(event)
 		table.insert(events, event)
 	end)
 	task.wait(SETTLE)
@@ -178,22 +213,20 @@ do
 		return false
 	end, "an event for a watched file after it was replaced")
 
+	-- Events without paths are rescan notifications, and are always delivered
 	for _, event in events do
 		local paths = table.concat(event.paths, ", ")
 		assert(
-			involves(event, "/single/config.json"),
+			#event.paths == 0 or involves(event, "/single/config.json"),
 			`Every event for a watched file should involve it, got "{event.kind}" for "{paths}"`
 		)
 	end
-	watcher.stop()
-end
+end)
 
--- Debouncing should merge identical events into one callback
-
-do
+test("debouncing", function()
 	local dir = makeDir("debounce")
 	local events: { WatchEvent } = {}
-	local watcher = fs.watch(dir, { debounce = 0.3 }, function(event)
+	watch(dir, { debounce = 0.3 }, function(event)
 		table.insert(events, event)
 	end)
 	task.wait(SETTLE)
@@ -212,15 +245,12 @@ do
 		assert(not seen[key], `Debounced events should not contain duplicates, got "{key}" twice`)
 		seen[key] = true
 	end
-	watcher.stop()
-end
+end)
 
--- Callbacks should be able to yield, and should never overlap
-
-do
+test("sequential yielding callbacks", function()
 	local dir = makeDir("sequential")
 	local active, maxActive, completed = 0, 0, 0
-	local watcher = fs.watch(dir, function()
+	watch(dir, nil, function()
 		active += 1
 		maxActive = math.max(maxActive, active)
 		task.wait(0.05)
@@ -237,16 +267,13 @@ do
 	end, "three yielding callbacks to complete")
 
 	assert(maxActive == 1, `Callbacks should never overlap, but {maxActive} ran at once`)
-	watcher.stop()
-end
+end)
 
--- Stopping from inside a callback should prevent any further callbacks
-
-do
+test("stopping inside a callback", function()
 	local dir = makeDir("stop_inside")
 	local calls = 0
 	local watcher
-	watcher = fs.watch(dir, function()
+	watcher = watch(dir, nil, function()
 		calls += 1
 		watcher.stop()
 	end)
@@ -263,7 +290,27 @@ do
 	task.wait(SETTLE * 2)
 
 	assert(calls == 1, `No callbacks should run after stopping, but {calls} ran`)
-end
+end)
+
+-- A callback that suspends forever must not keep a stopped watcher alive,
+-- if it did then this test would hang instead of letting the process exit
+
+test("stopping while a callback is suspended", function()
+	local dir = makeDir("suspended")
+	local suspended = false
+	local watcher = watch(dir, nil, function()
+		suspended = true
+		coroutine.yield()
+	end)
+	task.wait(SETTLE)
+
+	fs.writeFile(`{dir}/first.txt`, "contents")
+	waitFor(function()
+		return suspended
+	end, "a callback to suspend")
+
+	watcher.stop()
+end)
 
 -- Clean up, all watchers are stopped so the process is free to exit
 
