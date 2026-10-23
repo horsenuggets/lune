@@ -312,6 +312,33 @@ test("stopping while a callback is suspended", function()
 	watcher.stop()
 end)
 
+-- A callback that is still waiting when its watcher stops must be able to
+-- finish afterwards, even though the watcher no longer waits for its result
+
+test("stopping while a callback is waiting", function()
+	local dir = makeDir("waiting")
+	local waiting, finished = false, false
+	local watcher = watch(dir, nil, function()
+		if waiting then
+			return
+		end
+		waiting = true
+		task.wait(0.3)
+		finished = true
+	end)
+	task.wait(SETTLE)
+
+	fs.writeFile(`{dir}/first.txt`, "contents")
+	waitFor(function()
+		return waiting
+	end, "a callback to start waiting")
+
+	watcher.stop()
+	waitFor(function()
+		return finished
+	end, "a waiting callback to finish after its watcher stopped")
+end)
+
 -- Clean up, all watchers are stopped so the process is free to exit
 
 fs.removeDir(ROOT)
