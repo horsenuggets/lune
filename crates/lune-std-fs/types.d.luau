@@ -82,8 +82,9 @@ export type WatchEventKind = "create" | "modify" | "remove" | "rename" | "other"
 	* `kind` - The kind of change, one of `create`, `modify`, `remove`, `rename` or `other`
 	* `paths` - Absolute paths affected by the change, which for renames may include both the old and new path
 
-	Events of kind `other` may come without any paths, which means that changes may
-	have been missed (e.g. an OS-level event queue overflowed) and should be rescanned.
+	Events of kind `other` may come without any paths, which means that changes may have been
+	missed and should be rescanned. This happens when an OS-level event queue overflows, or when
+	more than 1024 changes pile up while a callback is still running.
 ]=]
 export type WatchEvent = {
 	kind: WatchEventKind,

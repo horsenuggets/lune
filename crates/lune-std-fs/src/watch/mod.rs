@@ -5,19 +5,19 @@ use async_io::Timer;
 use futures_lite::future::{self, or};
 use mlua::prelude::*;
 use mlua_luau_scheduler::{LuaSchedulerExt, LuaSpawnExt};
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 use lune_utils::path::clean_path_and_make_absolute;
 
 mod event;
 mod handle;
 mod options;
+mod queue;
 
 use self::event::{WatchEvent, WatchTarget, push_unique};
 use self::handle::WatchHandle;
 use self::options::FsWatchOptions;
-
-type RawEvent = notify::Result<Event>;
+use self::queue::{EventQueue, QUEUE_CAPACITY, event_queue};
 
 /**
     Starts watching the file or directory at the given path for changes.
@@ -63,11 +63,12 @@ pub fn fs_watch(
     };
     let canonical_root = std::fs::canonicalize(&root).ok();
 
-    let (event_tx, event_rx) = async_channel::unbounded::<RawEvent>();
-    let mut watcher = notify::recommended_watcher(move |res: RawEvent| {
-        // NOTE: This runs on a thread owned by notify, so we only forward
+    let target = WatchTarget::new(root.clone(), canonical_root, file);
+    let (forwarder, queue) = event_queue(target, QUEUE_CAPACITY);
+    let mut watcher = notify::recommended_watcher(move |res| {
+        // NOTE: This runs on a thread owned by notify, so we only queue
         // events here, and never touch Luau until we are back on the scheduler
-        event_tx.try_send(res).ok();
+        forwarder.forward(res);
     })
     .map_err(|e| LuaError::RuntimeError(format!("Failed to watch the path '{path}' - {e}")))?;
     watcher
@@ -76,11 +77,10 @@ pub fn fs_watch(
 
     let (handle, shutdown_rx, stopped) = WatchHandle::new();
     let source = EventSource {
-        events: event_rx,
         handle_dropped: false,
+        queue,
         shutdown: shutdown_rx,
         stopped,
-        target: WatchTarget::new(root, canonical_root, file),
     };
     lua.spawn_local(run_watcher(
         lua.clone(),
@@ -116,32 +116,37 @@ fn parse_args(
 
 enum Received {
     Closed,
-    Event(RawEvent),
+    Event(WatchEvent),
     HandleDropped,
     Stopped,
 }
 
 /**
-    Yields translated watch events until the watcher gets stopped.
+    Yields watch events until the watcher gets stopped.
 */
 struct EventSource {
-    events: Receiver<RawEvent>,
     handle_dropped: bool,
+    queue: EventQueue,
     shutdown: Receiver<()>,
     stopped: Rc<Cell<bool>>,
-    target: WatchTarget,
 }
 
 impl EventSource {
     async fn next(&mut self) -> Option<WatchEvent> {
         loop {
+            if self.is_stopped() {
+                return None;
+            }
+            if let Some(rescan) = self.queue.take_overflow() {
+                return Some(rescan);
+            }
             let received = if self.handle_dropped {
-                match self.events.recv().await {
-                    Ok(res) => Received::Event(res),
-                    Err(_) => Received::Closed,
+                match self.queue.recv().await {
+                    Some(event) => Received::Event(event),
+                    None => Received::Closed,
                 }
             } else {
-                let (shutdown_rx, events_rx) = (&self.shutdown, &self.events);
+                let (shutdown_rx, queue) = (&self.shutdown, &self.queue);
                 let shutdown = async {
                     match shutdown_rx.recv().await {
                         Ok(()) => Received::Stopped,
@@ -149,9 +154,9 @@ impl EventSource {
                     }
                 };
                 let events = async {
-                    match events_rx.recv().await {
-                        Ok(res) => Received::Event(res),
-                        Err(_) => Received::Closed,
+                    match queue.recv().await {
+                        Some(event) => Received::Event(event),
+                        None => Received::Closed,
                     }
                 };
                 or(shutdown, events).await
@@ -159,21 +164,12 @@ impl EventSource {
             match received {
                 Received::Stopped | Received::Closed => return None,
                 Received::HandleDropped => {
-                    if self.stopped.get() {
-                        return None;
-                    }
-                    // The handle was garbage collected without being stopped,
+                    // The handle was garbage collected without being stopped (or
+                    // the stop message was already consumed, checked at the top),
                     // meaning the user wants to keep watching forever
                     self.handle_dropped = true;
                 }
-                Received::Event(Ok(event)) => {
-                    if let Some(event) = self.target.translate(event.kind, &event.paths) {
-                        return Some(event);
-                    }
-                }
-                Received::Event(Err(_)) => {
-                    // TODO: Propagate watcher errors somehow
-                }
+                Received::Event(event) => return Some(event),
             }
         }
     }
@@ -252,22 +248,15 @@ async fn deliver(
     let thread_id = lua.push_thread_back(callback.clone(), event)?;
     lua.track_thread(thread_id);
 
-    let finished = async {
-        lua.wait_for_thread(thread_id).await;
-        true
-    };
-    let stopped = async {
-        source.wait_for_stop().await;
-        false
-    };
+    let finished = lua.wait_for_thread(thread_id);
+    let stopped = source.wait_for_stop();
 
     // NOTE: If the watcher gets stopped while the callback is suspended, we stop
     // waiting for it, so that a callback that never resumes can not keep the
-    // watcher (and the process) alive. The thread must stay tracked in that case,
-    // since the scheduler expects it to be tracked when storing its final result.
-    if or(finished, stopped).await {
-        lua.get_thread_result(thread_id);
-    }
+    // watcher (and the process) alive. Either way, taking the result untracks
+    // the thread, and the scheduler discards results for untracked threads.
+    or(finished, stopped).await;
+    lua.get_thread_result(thread_id);
 
     Ok(())
 }

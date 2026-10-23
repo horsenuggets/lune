@@ -55,6 +55,20 @@ pub struct WatchEvent {
     pub paths: Vec<PathBuf>,
 }
 
+impl WatchEvent {
+    /**
+        Creates an event without any paths, signaling that
+        changes may have been missed and should be rescanned.
+    */
+    #[must_use]
+    pub fn rescan() -> Self {
+        Self {
+            kind: WatchEventKind::Other,
+            paths: Vec::new(),
+        }
+    }
+}
+
 impl IntoLua for WatchEvent {
     fn into_lua(self, lua: &Lua) -> LuaResult<LuaValue> {
         let paths = lua.create_sequence_from(
