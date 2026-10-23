@@ -26,16 +26,14 @@ impl FsWatchOptions {
 
         # Errors
 
-        Errors if the value is negative, NaN, or infinite.
+        Errors if the value is negative, NaN, infinite, or too large to represent.
     */
     pub(crate) fn parse_debounce(seconds: f64) -> Result<Duration, String> {
-        if seconds.is_finite() && seconds >= 0.0 {
-            Ok(Duration::from_secs_f64(seconds))
-        } else {
-            Err(format!(
+        Duration::try_from_secs_f64(seconds).map_err(|_| {
+            format!(
                 "Invalid watch options - debounce must be a non-negative number of seconds, got {seconds}"
-            ))
-        }
+            )
+        })
     }
 }
 
@@ -90,7 +88,14 @@ mod tests {
 
     #[test]
     fn debounce_rejects_invalid_seconds() {
-        for seconds in [-0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for seconds in [
+            -0.1,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1e20,
+            f64::MAX,
+        ] {
             assert!(FsWatchOptions::parse_debounce(seconds).is_err());
         }
     }
