@@ -69,6 +69,55 @@ export type WriteOptions = {
 	overwrite: boolean?,
 }
 
+export type WatchEventKind = "create" | "modify" | "remove" | "rename" | "other"
+
+--[=[
+	@interface WatchEvent
+	@within FS
+
+	A change that was detected by `fs.watch`.
+
+	This is a dictionary that will contain the following values:
+
+	* `kind` - The kind of change, one of `create`, `modify`, `remove`, `rename` or `other`
+	* `paths` - Absolute paths affected by the change, which for renames may include both the old and new path
+
+	Events of kind `other` may come without any paths, which means that changes may
+	have been missed (e.g. an OS-level event queue overflowed) and should be rescanned.
+]=]
+export type WatchEvent = {
+	kind: WatchEventKind,
+	paths: { string },
+}
+
+--[=[
+	@interface WatchOptions
+	@within FS
+
+	Options for `fs.watch`.
+
+	This is a dictionary that may contain one or more of the following values:
+
+	* `recursive` - If subdirectories should also be watched, when watching a directory. Defaults to `true`
+	* `debounce` - Seconds to wait for changes to settle before running the callback, merging identical events. Defaults to `0`
+]=]
+export type WatchOptions = {
+	recursive: boolean?,
+	debounce: number?,
+}
+
+export type WatchCallback = (event: WatchEvent) -> ()
+
+--[=[
+	@interface WatchHandle
+	@within FS
+
+	A handle to an active watcher, containing a single `stop` function to stop watching.
+]=]
+export type WatchHandle = {
+	stop: () -> (),
+}
+
 --[=[
 	@class FS
 
@@ -287,5 +336,50 @@ function fs.move(from: string, to: string, overwriteOrOptions: (boolean | WriteO
 	@param overwriteOrOptions Options for the target path, such as if should be overwritten if it already exists
 ]=]
 function fs.copy(from: string, to: string, overwriteOrOptions: (boolean | WriteOptions)?) end
+
+--[=[
+	@within FS
+
+	Watches a file or directory for changes, calling `callback` with a `WatchEvent` for each change.
+
+	Options may be passed as the second argument, with the callback as the third.
+	Refer to the documentation for `WatchOptions` for specific option keys and their values.
+
+	Callbacks run one at a time, in the order that changes were detected, and may yield.
+	The watcher keeps the process alive until the `stop` function on the returned `WatchHandle`
+	has been called. Watching a single file keeps working when an editor saves it by
+	replacing it with another file, as long as the file's parent directory still exists.
+
+	An error will be thrown in the following situations:
+
+	* `path` does not point to an existing file or directory.
+	* The current process lacks permissions to watch `path`.
+	* Some other I/O error occurred.
+
+	### Example usage
+
+	```lua
+	local fs = require("@lune/fs")
+
+	local watcher = fs.watch("config", { debounce = 0.1 }, function(event)
+		print(event.kind, event.paths)
+	end)
+
+	-- Later, when no longer interested in changes
+	watcher.stop()
+	```
+
+	@param path The file or directory to watch
+	@param callbackOrOptions The callback to run for each change, or options for the watcher
+	@param callback The callback to run for each change, if options were given
+	@return A handle that can be used to stop watching
+]=]
+function fs.watch(
+	path: string,
+	callbackOrOptions: (WatchCallback | WatchOptions)?,
+	callback: WatchCallback?
+): WatchHandle
+	return nil :: any
+end
 
 return fs
