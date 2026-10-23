@@ -56,7 +56,14 @@ impl EventForwarder {
         let Ok(event) = res else {
             return;
         };
-        let Some(event) = self.target.translate(event.kind, &event.paths) else {
+        // NOTE: Backends flag events that mean changes were missed, such as
+        // FSEvents recovery events, and those may come with a path that would
+        // otherwise be filtered out or delivered as an ordinary event
+        let event = if event.need_rescan() {
+            WatchEvent::rescan()
+        } else if let Some(event) = self.target.translate(event.kind, &event.paths) {
+            event
+        } else {
             return;
         };
         if let Err(TrySendError::Full(_)) = self.sender.try_send(event) {
@@ -77,11 +84,17 @@ pub struct EventQueue {
 impl EventQueue {
     /**
         Returns a rescan event if any events were dropped since the last call.
+
+        Events that are still queued at that point are discarded, since they
+        are older than the rescan, and delivering them afterwards could undo
+        whatever state the callback recovered through rescanning.
     */
     pub fn take_overflow(&self) -> Option<WatchEvent> {
-        self.overflowed
-            .swap(false, Ordering::SeqCst)
-            .then(WatchEvent::rescan)
+        if !self.overflowed.swap(false, Ordering::SeqCst) {
+            return None;
+        }
+        while self.receiver.try_recv().is_ok() {}
+        Some(WatchEvent::rescan())
     }
 
     /**
@@ -101,7 +114,7 @@ mod tests {
     use futures_lite::future::block_on;
     use notify::{
         EventKind,
-        event::{AccessKind, CreateKind},
+        event::{AccessKind, CreateKind, Flag},
     };
 
     use super::*;
@@ -146,21 +159,38 @@ mod tests {
     }
 
     #[test]
-    fn overflow_drops_events_and_emits_one_rescan() {
+    fn overflow_emits_one_rescan_and_discards_stale_events() {
         let (forwarder, queue) = event_queue(WatchTarget::new(root(), None, None), 2);
         for name in ["a", "b", "c", "d"] {
             forwarder.forward(create(name));
         }
         assert_eq!(queue.take_overflow(), Some(WatchEvent::rescan()));
         assert!(queue.take_overflow().is_none());
+
+        // Events queued before the rescan are stale, but newer ones still arrive
+        forwarder.forward(create("e"));
         assert_eq!(
             block_on(queue.recv()).unwrap().paths,
-            vec![root().join("a")]
+            vec![root().join("e")]
         );
-        assert_eq!(
-            block_on(queue.recv()).unwrap().paths,
-            vec![root().join("b")]
-        );
+    }
+
+    #[test]
+    fn flagged_events_become_rescans_for_every_target() {
+        let flagged = || {
+            Event::new(EventKind::Other)
+                .add_path(root().join("sub"))
+                .set_flag(Flag::Rescan)
+        };
+        let targets = [
+            WatchTarget::new(root(), None, None),
+            WatchTarget::new(root(), None, Some(root().join("watched"))),
+        ];
+        for target in targets {
+            let (forwarder, queue) = event_queue(target, 4);
+            forwarder.forward(Ok(flagged()));
+            assert_eq!(block_on(queue.recv()), Some(WatchEvent::rescan()));
+        }
     }
 
     #[test]
