@@ -131,12 +131,16 @@ impl WatchTarget {
 
         Returns `None` if the event should not be delivered, either because
         its kind is ignored or because it does not involve the watched file.
+
+        Events without any paths are always delivered, since they signal that
+        changes may have been missed and that everything should be rescanned.
     */
     #[must_use]
     pub fn translate(&self, kind: EventKind, paths: &[PathBuf]) -> Option<WatchEvent> {
         let kind = WatchEventKind::from_notify(kind)?;
         let paths: Vec<PathBuf> = paths.iter().map(|path| self.normalize(path)).collect();
         if let Some(file) = &self.file
+            && !paths.is_empty()
             && !paths.iter().any(|path| path == file)
         {
             return None;
@@ -271,7 +275,8 @@ mod tests {
                 .translate(modify, &[abs("dir/sub/config.json")])
                 .is_none()
         );
-        assert!(target.translate(EventKind::Other, &[]).is_none());
+        // Rescan events have no paths, and must reach file watchers too
+        assert!(target.translate(EventKind::Other, &[]).is_some());
 
         // Atomic saves rename a temporary file over the watched file
         let atomic = target
