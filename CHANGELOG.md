@@ -8,6 +8,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.10.4-horse.15.0` - October 23rd, 2026
+
+### Added
+
+- Added `fs.watch` for watching files and directories for changes, backed by FSEvents on macOS, inotify on Linux, and ReadDirectoryChangesW on Windows. It supports `recursive` and `debounce` options, keeps working for single files that editors save through atomic renames, and returns a handle with a `stop` function like `net.serve`
+
+### Fixed
+
+- Fixed `net.request` sending absolute-form request lines (`GET http://host/path`), which some servers such as `wrangler dev` reject, by sending origin-form request lines with a `Host` header that includes non-default ports
+- Fixed the scheduler panicking with "Thread must be tracked" when a tracked thread finished after its result had already been taken
+
 ## `0.10.4-horse.14.5` - April 1st, 2026
 
 ### Changed
