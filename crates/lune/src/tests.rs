@@ -80,6 +80,7 @@ create_tests! {
     global_coroutine: "globals/coroutine",
     global_error: "globals/error",
     global_pcall: "globals/pcall",
+    global_script: "globals/script",
     global_type: "globals/type",
     global_typeof: "globals/typeof",
     global_warn: "globals/warn",
