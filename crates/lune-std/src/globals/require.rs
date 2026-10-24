@@ -445,7 +445,11 @@ fn resolve_alias(alias: &str, caller_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Resolve a require argument to paths or an alias.
-fn resolve_require_arg(arg: &LuaValue, caller_path: Option<&Path>) -> LuaResult<ResolveResult> {
+fn resolve_require_arg(
+    lua: &Lua,
+    arg: &LuaValue,
+    caller_path: Option<&Path>,
+) -> LuaResult<ResolveResult> {
     match arg {
         LuaValue::String(s) => {
             let path_str: String = s.to_str()?.to_string();
@@ -495,7 +499,7 @@ fn resolve_require_arg(arg: &LuaValue, caller_path: Option<&Path>) -> LuaResult<
         }
         LuaValue::UserData(ud) => {
             if let Ok(script_ref) = ud.borrow::<ScriptReference>() {
-                let abs = PathBuf::from(script_ref.path_string());
+                let abs = PathBuf::from(script_ref.path_string(lua)?);
                 let rel = caller_path
                     .map(|cp| make_relative_path(cp, &abs))
                     .unwrap_or_else(|| PathBuf::from(format!("./{}", abs.display())));
@@ -540,7 +544,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                 .ok();
 
             // Resolve the argument to paths
-            match resolve_require_arg(&arg, caller_path.as_deref())? {
+            match resolve_require_arg(&lua, &arg, caller_path.as_deref())? {
                 ResolveResult::Alias(alias) => {
                     // Handle @lune/* built-in modules
                     if alias.starts_with("@lune/") {

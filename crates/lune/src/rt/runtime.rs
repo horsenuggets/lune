@@ -152,7 +152,7 @@ impl Runtime {
                         LuaValue::Function(f) => f,
                         LuaValue::UserData(ud) => {
                             let script_ref = ud.borrow::<lune_std::ScriptReference>()?;
-                            let path_str = script_ref.path_string();
+                            let path_str = script_ref.path_string(lua)?;
                             let chunk_cache = lune_std::get_chunk_cache(lua)?;
 
                             // Try the exact path first, then with common Luau
