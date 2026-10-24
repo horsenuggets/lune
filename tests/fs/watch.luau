@@ -1,14 +1,14 @@
-local fs = require("@lune/fs")
-local task = require("@lune/task")
+const fs = require("@lune/fs")
+const task = require("@lune/task")
 
 type WatchCallback = fs.WatchCallback
 type WatchEvent = fs.WatchEvent
 type WatchHandle = fs.WatchHandle
 type WatchOptions = fs.WatchOptions
 
-local ROOT = "bin/fs_watch"
-local SETTLE = 0.25
-local TIMEOUT = 10
+const ROOT = "bin/fs_watch"
+const SETTLE = 0.25
+const TIMEOUT = 10
 
 -- Make sure we start from a clean slate, other fs tests
 -- also write to the bin dir, so we only ever watch our own
@@ -21,16 +21,16 @@ fs.writeDir(ROOT)
 -- Every watcher is tracked so that it can be stopped even when a test fails,
 -- otherwise the active watcher would keep the process alive and hang the test
 
-local activeWatchers: { WatchHandle } = {}
+const activeWatchers: { WatchHandle } = {}
 
-local function watch(path: string, options: WatchOptions?, callback: WatchCallback): WatchHandle
-	local watcher = fs.watch(path, options, callback)
+const function watch(path: string, options: WatchOptions?, callback: WatchCallback): WatchHandle
+	const watcher = fs.watch(path, options, callback)
 	table.insert(activeWatchers, watcher)
 	return watcher
 end
 
-local function test(name: string, body: () -> ())
-	local success, err = pcall(body :: () -> any)
+const function test(name: string, body: () -> ())
+	const success, err = pcall(body :: () -> any)
 	for _, watcher in activeWatchers do
 		pcall(watcher.stop)
 	end
@@ -40,19 +40,19 @@ local function test(name: string, body: () -> ())
 	end
 end
 
-local function makeDir(name: string): string
-	local dir = `{ROOT}/{name}`
+const function makeDir(name: string): string
+	const dir = `{ROOT}/{name}`
 	fs.writeDir(dir)
 	return dir
 end
 
-local function normalize(path: string): string
+const function normalize(path: string): string
 	return (string.gsub(path, "\\", "/"))
 end
 
-local function involves(event: WatchEvent, suffix: string): boolean
+const function involves(event: WatchEvent, suffix: string): boolean
 	for _, path in event.paths do
-		local normalized = normalize(path)
+		const normalized = normalize(path)
 		if string.sub(normalized, -#suffix) == suffix then
 			return true
 		end
@@ -60,7 +60,7 @@ local function involves(event: WatchEvent, suffix: string): boolean
 	return false
 end
 
-local function find(events: { WatchEvent }, suffix: string, kind: string?): WatchEvent?
+const function find(events: { WatchEvent }, suffix: string, kind: string?): WatchEvent?
 	for _, event in events do
 		if involves(event, suffix) and (kind == nil or event.kind == kind) then
 			return event
@@ -69,7 +69,7 @@ local function find(events: { WatchEvent }, suffix: string, kind: string?): Watc
 	return nil
 end
 
-local function waitFor(predicate: () -> boolean, message: string)
+const function waitFor(predicate: () -> boolean, message: string)
 	local elapsed = 0
 	while not predicate() do
 		if elapsed >= TIMEOUT then
@@ -100,9 +100,9 @@ test("invalid arguments", function()
 end)
 
 test("directory watching", function()
-	local dir = makeDir("dir")
-	local events: { WatchEvent } = {}
-	local watcher = watch(dir, nil, function(event)
+	const dir = makeDir("dir")
+	const events: { WatchEvent } = {}
+	const watcher = watch(dir, nil, function(event)
 		table.insert(events, event)
 	end)
 	task.wait(SETTLE)
@@ -124,7 +124,7 @@ test("directory watching", function()
 
 	for _, event in events do
 		for _, path in event.paths do
-			local absolute = string.sub(path, 1, 1) == "/" or string.match(path, "^%a:[\\/]") ~= nil
+			const absolute = string.sub(path, 1, 1) == "/" or string.match(path, "^%a:[\\/]") ~= nil
 			assert(absolute, `Event path "{path}" should be absolute`)
 		end
 	end
@@ -134,9 +134,9 @@ test("directory watching", function()
 end)
 
 test("callback without options", function()
-	local dir = makeDir("no_options")
-	local events: { WatchEvent } = {}
-	local watcher = fs.watch(dir, function(event)
+	const dir = makeDir("no_options")
+	const events: { WatchEvent } = {}
+	const watcher = fs.watch(dir, function(event)
 		table.insert(events, event)
 	end)
 	table.insert(activeWatchers, watcher)
@@ -149,9 +149,9 @@ test("callback without options", function()
 end)
 
 test("recursive watching", function()
-	local dir = makeDir("recursive")
+	const dir = makeDir("recursive")
 	fs.writeDir(`{dir}/sub`)
-	local events: { WatchEvent } = {}
+	const events: { WatchEvent } = {}
 	watch(dir, nil, function(event)
 		table.insert(events, event)
 	end)
@@ -164,9 +164,9 @@ test("recursive watching", function()
 end)
 
 test("non-recursive watching", function()
-	local dir = makeDir("non_recursive")
+	const dir = makeDir("non_recursive")
 	fs.writeDir(`{dir}/sub`)
-	local events: { WatchEvent } = {}
+	const events: { WatchEvent } = {}
 	watch(dir, { recursive = false }, function(event)
 		table.insert(events, event)
 	end)
@@ -186,10 +186,10 @@ test("non-recursive watching", function()
 end)
 
 test("single file watching with atomic saves", function()
-	local dir = makeDir("single")
-	local target = `{dir}/config.json`
+	const dir = makeDir("single")
+	const target = `{dir}/config.json`
 	fs.writeFile(target, "{}")
-	local events: { WatchEvent } = {}
+	const events: { WatchEvent } = {}
 	watch(target, nil, function(event)
 		table.insert(events, event)
 	end)
@@ -202,7 +202,7 @@ test("single file watching with atomic saves", function()
 		return find(events, "/single/config.json") ~= nil
 	end, "an event after atomically replacing a watched file")
 
-	local countBefore = #events
+	const countBefore = #events
 	fs.writeFile(target, `\{"saved": 2}`)
 	waitFor(function()
 		for index = countBefore + 1, #events do
@@ -215,7 +215,7 @@ test("single file watching with atomic saves", function()
 
 	-- Events without paths are rescan notifications, and are always delivered
 	for _, event in events do
-		local paths = table.concat(event.paths, ", ")
+		const paths = table.concat(event.paths, ", ")
 		assert(
 			#event.paths == 0 or involves(event, "/single/config.json"),
 			`Every event for a watched file should involve it, got "{event.kind}" for "{paths}"`
@@ -227,21 +227,21 @@ end)
 -- spelling (possible on case-insensitive filesystems) must fail loudly instead of
 -- silently receiving nothing
 test("single file watching requires the stored spelling", function()
-	local dir = makeDir("casing")
+	const dir = makeDir("casing")
 	fs.writeFile(`{dir}/config.json`, "{}")
 	if not fs.isFile(`{dir}/CONFIG.json`) then
 		return -- Case-sensitive filesystem, nothing to test here
 	end
 
 	-- Goes through the helper so an unexpectedly successful watch still gets stopped
-	local success, err = pcall(watch, `{dir}/CONFIG.json`, nil, function() end)
+	const success, err = pcall(watch, `{dir}/CONFIG.json`, nil, function() end)
 	assert(not success, "Watching a file by a different spelling should throw")
 	assert(
 		string.find(tostring(err), "config.json", 1, true) ~= nil,
 		`The error should name the stored spelling, got "{err}"`
 	)
 
-	local events: { WatchEvent } = {}
+	const events: { WatchEvent } = {}
 	watch(`{dir}/config.json`, nil, function(event)
 		table.insert(events, event)
 	end)
@@ -253,8 +253,8 @@ test("single file watching requires the stored spelling", function()
 end)
 
 test("debouncing", function()
-	local dir = makeDir("debounce")
-	local events: { WatchEvent } = {}
+	const dir = makeDir("debounce")
+	const events: { WatchEvent } = {}
 	watch(dir, { debounce = 0.3 }, function(event)
 		table.insert(events, event)
 	end)
@@ -268,16 +268,16 @@ test("debouncing", function()
 	end, "a debounced event")
 	task.wait(0.6)
 
-	local seen = {}
+	const seen = {}
 	for _, event in events do
-		local key = `{event.kind} {table.concat(event.paths, ", ")}`
+		const key = `{event.kind} {table.concat(event.paths, ", ")}`
 		assert(not seen[key], `Debounced events should not contain duplicates, got "{key}" twice`)
 		seen[key] = true
 	end
 end)
 
 test("sequential yielding callbacks", function()
-	local dir = makeDir("sequential")
+	const dir = makeDir("sequential")
 	local active, maxActive, completed = 0, 0, 0
 	watch(dir, nil, function()
 		active += 1
@@ -299,7 +299,7 @@ test("sequential yielding callbacks", function()
 end)
 
 test("stopping inside a callback", function()
-	local dir = makeDir("stop_inside")
+	const dir = makeDir("stop_inside")
 	local calls = 0
 	local watcher
 	watcher = watch(dir, nil, function()
@@ -325,9 +325,9 @@ end)
 -- if it did then this test would hang instead of letting the process exit
 
 test("stopping while a callback is suspended", function()
-	local dir = makeDir("suspended")
+	const dir = makeDir("suspended")
 	local suspended = false
-	local watcher = watch(dir, nil, function()
+	const watcher = watch(dir, nil, function()
 		suspended = true
 		coroutine.yield()
 	end)
@@ -345,9 +345,9 @@ end)
 -- finish afterwards, even though the watcher no longer waits for its result
 
 test("stopping while a callback is waiting", function()
-	local dir = makeDir("waiting")
+	const dir = makeDir("waiting")
 	local waiting, finished = false, false
-	local watcher = watch(dir, nil, function()
+	const watcher = watch(dir, nil, function()
 		if waiting then
 			return
 		end

@@ -1,4 +1,4 @@
-local Module = {}
+const Module = {}
 
 function Module.greet(name)
 	return "Hello, " .. name
@@ -9,7 +9,7 @@ function Module.farewell(name)
 end
 
 function Module.outer()
-	local function inner()
+	const function inner()
 		return 42
 	end
 	return inner()
