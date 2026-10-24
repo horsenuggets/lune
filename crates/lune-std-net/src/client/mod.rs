@@ -64,22 +64,20 @@ fn try_follow_redirect(
             return Err("Too many redirects");
         }
 
-        if new_uri.host().is_some() {
-            let new_url = new_uri
-                .to_string()
-                .parse()
-                .map_err(|_| "Invalid redirect URL")?;
-            *url = new_url;
-        } else {
-            url.set_path(new_uri.path());
-        }
+        // Resolve the redirect target against the current URL so both the
+        // connection URL and the request URI stay absolute. A relative
+        // Location would otherwise leave the next request without an
+        // authority, and therefore without the required Host header.
+        *url = url
+            .join(&new_uri.to_string())
+            .map_err(|_| "Invalid redirect URL")?;
 
         if new_method == Method::GET {
             *request.inner.body_mut() = ReadableBody::empty();
         }
 
         *request.inner.method_mut() = new_method;
-        *request.inner.uri_mut() = new_uri;
+        *request.inner.uri_mut() = url.as_str().parse().map_err(|_| "Invalid redirect URL")?;
 
         *request.redirects.get_or_insert_default() += 1;
 

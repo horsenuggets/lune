@@ -62,3 +62,7 @@ test = true
 [[example]]
 name = "tracy"
 test = false
+
+[[example]]
+name = "untracked_result"
+test = true

@@ -13,10 +13,12 @@ use lune_utils::TableBuilder;
 mod copy;
 mod metadata;
 mod options;
+mod watch;
 
 use self::copy::copy;
 use self::metadata::FsMetadata;
 use self::options::FsWriteOptions;
+use self::watch::fs_watch;
 
 const TYPEDEFS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/types.d.luau"));
 
@@ -48,6 +50,7 @@ pub fn module(lua: Lua) -> LuaResult<LuaTable> {
         .with_async_function("isDir", fs_is_dir)?
         .with_async_function("move", fs_move)?
         .with_async_function("copy", fs_copy)?
+        .with_function("watch", fs_watch)?
         .build_readonly()
 }
 

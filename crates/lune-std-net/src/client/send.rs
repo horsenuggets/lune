@@ -2,7 +2,7 @@ use http_body_util::Full;
 use hyper::{
     Method, Request as HyperRequest,
     client::conn::http1::handshake,
-    header::{ACCEPT, CONTENT_LENGTH, HOST, HeaderValue, USER_AGENT},
+    header::{ACCEPT, CONTENT_LENGTH, HeaderValue, USER_AGENT},
 };
 
 use mlua::prelude::*;
@@ -13,7 +13,7 @@ use crate::{
     shared::{
         headers::create_user_agent_header,
         hyper::{HyperExecutor, HyperIo},
-        request::Request,
+        request::{Request, prepare_outgoing_request},
         response::Response,
     },
 };
@@ -57,12 +57,10 @@ pub async fn send(mut request: Request, lua: Lua) -> LuaResult<Response> {
 
         HyperExecutor::execute(lua.clone(), conn);
 
-        let (mut parts, body) = request.clone_inner().into_parts();
-        if let Some(host) = parts.uri.host() {
-            let host = HeaderValue::from_str(host).unwrap();
-            parts.headers.insert(HOST, host);
-        }
+        let mut outgoing = request.clone_inner();
+        prepare_outgoing_request(&mut outgoing);
 
+        let (parts, body) = outgoing.into_parts();
         let data = HyperRequest::from_parts(parts, Full::new(body.into_bytes()));
         let incoming = sender.send_request(data).await.into_lua_err()?;
 
