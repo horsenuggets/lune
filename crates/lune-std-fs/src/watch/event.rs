@@ -67,6 +67,11 @@ impl WatchEvent {
             paths: Vec::new(),
         }
     }
+
+    #[must_use]
+    pub fn is_rescan(&self) -> bool {
+        self.kind == WatchEventKind::Other && self.paths.is_empty()
+    }
 }
 
 impl IntoLua for WatchEvent {
@@ -164,13 +169,24 @@ impl WatchTarget {
 }
 
 /**
-    Adds an event to a debounced batch, unless an identical event is already in it.
+    Adds an event to a debounced batch, keeping the batch small and ordered.
 
-    Ordering of first occurrences is preserved.
+    > Identical events are merged into their latest occurrence, so the batch
+    > still ends with the most recent state (e.g. create, remove, create).
+    > Rescan events act as a barrier, discarding every older event in the batch.
+    > A batch that grows beyond `capacity` is replaced with a single rescan event.
 */
-pub fn push_unique(batch: &mut Vec<WatchEvent>, event: WatchEvent) {
-    if !batch.contains(&event) {
+pub fn push_debounced(batch: &mut Vec<WatchEvent>, event: WatchEvent, capacity: usize) {
+    if event.is_rescan() {
+        batch.clear();
         batch.push(event);
+        return;
+    }
+    batch.retain(|existing| existing != &event);
+    batch.push(event);
+    if batch.len() > capacity {
+        batch.clear();
+        batch.push(WatchEvent::rescan());
     }
 }
 
@@ -316,26 +332,81 @@ mod tests {
         assert_eq!(event.paths, vec![abs("tmp/dir/config.json")]);
     }
 
-    #[test]
-    fn push_unique_drops_duplicates_and_keeps_order() {
-        let event = |kind, path: &str| WatchEvent {
+    fn event(kind: WatchEventKind, path: &str) -> WatchEvent {
+        WatchEvent {
             kind,
             paths: vec![abs(path)],
-        };
+        }
+    }
+
+    fn debounce(events: Vec<WatchEvent>, capacity: usize) -> Vec<WatchEvent> {
         let mut batch = Vec::new();
-        push_unique(&mut batch, event(WatchEventKind::Modify, "a"));
-        push_unique(&mut batch, event(WatchEventKind::Create, "b"));
-        push_unique(&mut batch, event(WatchEventKind::Modify, "a"));
-        push_unique(&mut batch, event(WatchEventKind::Modify, "b"));
-        push_unique(&mut batch, event(WatchEventKind::Create, "b"));
+        for event in events {
+            push_debounced(&mut batch, event, capacity);
+        }
+        batch
+    }
+
+    #[test]
+    fn push_debounced_merges_duplicates_into_latest_occurrence() {
+        use WatchEventKind::{Create, Modify};
+        let batch = debounce(
+            vec![
+                event(Modify, "a"),
+                event(Create, "b"),
+                event(Modify, "a"),
+                event(Modify, "b"),
+                event(Create, "b"),
+            ],
+            16,
+        );
         assert_eq!(
             batch,
-            vec![
-                event(WatchEventKind::Modify, "a"),
-                event(WatchEventKind::Create, "b"),
-                event(WatchEventKind::Modify, "b"),
-            ]
+            vec![event(Modify, "a"), event(Modify, "b"), event(Create, "b")]
         );
+    }
+
+    #[test]
+    fn push_debounced_keeps_the_final_state_of_a_path() {
+        use WatchEventKind::{Create, Remove};
+        let batch = debounce(
+            vec![event(Create, "a"), event(Remove, "a"), event(Create, "a")],
+            16,
+        );
+        assert_eq!(batch, vec![event(Remove, "a"), event(Create, "a")]);
+        assert_eq!(batch.last(), Some(&event(Create, "a")));
+    }
+
+    #[test]
+    fn push_debounced_treats_rescans_as_barriers() {
+        use WatchEventKind::{Create, Modify};
+        let batch = debounce(
+            vec![
+                event(Create, "a"),
+                WatchEvent::rescan(),
+                event(Modify, "b"),
+                WatchEvent::rescan(),
+                event(Create, "c"),
+            ],
+            16,
+        );
+        assert_eq!(batch, vec![WatchEvent::rescan(), event(Create, "c")]);
+    }
+
+    #[test]
+    fn push_debounced_never_exceeds_capacity() {
+        let capacity = 4;
+        let mut batch = Vec::new();
+        for index in 0..100 {
+            push_debounced(
+                &mut batch,
+                event(WatchEventKind::Create, &format!("file{index}")),
+                capacity,
+            );
+            assert!(batch.len() <= capacity, "batch grew to {}", batch.len());
+        }
+        // Overflowing replaces everything older with a rescan barrier
+        assert_eq!(batch.first(), Some(&WatchEvent::rescan()));
     }
 
     #[test]
