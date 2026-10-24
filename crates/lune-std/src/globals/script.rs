@@ -137,8 +137,9 @@ fn script_folder(script_path: &Path) -> Option<PathBuf> {
         script_path.parent()?
     };
 
-    // Canonicalize so that ".." components can't walk into a folder the script isn't in
-    fs::canonicalize(folder).ok()
+    // Canonicalize so that ".." components can't walk into a folder the script isn't in.
+    // dunce avoids verbatim paths on Windows, which reject forward slashes.
+    dunce::canonicalize(folder).ok()
 }
 
 /// Find the nearest Git repository root containing the given script by searching up from
@@ -544,7 +545,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lune-find-git-root-{name}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::canonicalize(dir).unwrap()
+        dunce::canonicalize(dir).unwrap()
     }
 
     #[test]

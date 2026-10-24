@@ -1690,6 +1690,7 @@ dependencies = [
  "async-fs",
  "async-lock",
  "console",
+ "dunce",
  "lune-roblox",
  "lune-std-datetime",
  "lune-std-fs",
