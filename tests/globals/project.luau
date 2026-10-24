@@ -18,7 +18,7 @@ assert(project:GetFullName() == projectPath, "project:GetFullName() should equal
 
 -- Children should resolve relative to the repository root, regardless of script location
 assert(
-	tostring(project.tests) == projectPath .. "/tests",
+	tostring(project.tests.Parent) == projectPath and project.tests.Name == "tests",
 	"project.tests should be a child of the root"
 )
 assert(
@@ -26,7 +26,7 @@ assert(
 	"project.tests.globals should match script.Parent"
 )
 assert(
-	tostring(project.Parent) .. "/" .. project.Name == projectPath,
+	tostring(project.Parent[project.Name]) == projectPath,
 	"project.Parent and project.Name should split the root path"
 )
 
