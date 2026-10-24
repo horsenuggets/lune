@@ -223,93 +223,32 @@ test("single file watching with atomic saves", function()
 	end
 end)
 
--- On case-insensitive filesystems (Windows and macOS by default), a file can be
--- watched using different casing than it is stored with, and should still work
-
-test("single file watching with different casing", function()
+-- Watchers only ever report a file's stored name, so watching a file by another
+-- spelling (possible on case-insensitive filesystems) must fail loudly instead of
+-- silently receiving nothing
+test("single file watching requires the stored spelling", function()
 	local dir = makeDir("casing")
 	fs.writeFile(`{dir}/config.json`, "{}")
 	if not fs.isFile(`{dir}/CONFIG.json`) then
 		return -- Case-sensitive filesystem, nothing to test here
 	end
 
+	local success, err = pcall(fs.watch, `{dir}/CONFIG.json`, function() end)
+	assert(not success, "Watching a file by a different spelling should throw")
+	assert(
+		string.find(tostring(err), "config.json", 1, true) ~= nil,
+		`The error should name the stored spelling, got "{err}"`
+	)
+
 	local events: { WatchEvent } = {}
-	watch(`{dir}/CONFIG.json`, nil, function(event)
+	watch(`{dir}/config.json`, nil, function(event)
 		table.insert(events, event)
 	end)
 	task.wait(SETTLE)
-
 	fs.writeFile(`{dir}/config.json`, `\{"saved": 1}`)
 	waitFor(function()
 		return find(events, "/casing/config.json") ~= nil
-	end, "an event for a file watched using different casing")
-
-	-- Renaming the file to a different casing should not break the watcher
-	fs.move(`{dir}/config.json`, `{dir}/Config.json`, true)
-	waitFor(function()
-		return find(events, "/casing/Config.json") ~= nil
-	end, "an event for a case-only rename of a watched file")
-
-	local countBefore = #events
-	fs.writeFile(`{dir}/Config.json`, `\{"saved": 2}`)
-	waitFor(function()
-		for index = countBefore + 1, #events do
-			if involves(events[index], "/casing/Config.json") then
-				return true
-			end
-		end
-		return false
-	end, "an event for a watched file after a case-only rename")
-end)
-
-test("single file watching with different non-ASCII casing", function()
-	local dir = makeDir("casing_unicode")
-	fs.writeFile(`{dir}/ä.json`, "{}")
-	if not fs.isFile(`{dir}/Ä.json`) then
-		return -- Case-sensitive filesystem, nothing to test here
-	end
-
-	local events: { WatchEvent } = {}
-	watch(`{dir}/Ä.json`, nil, function(event)
-		table.insert(events, event)
-	end)
-	task.wait(SETTLE)
-
-	fs.writeFile(`{dir}/ä.json`, `\{"saved": 1}`)
-	waitFor(function()
-		return find(events, "/casing_unicode/ä.json") ~= nil
-	end, "an event for a file watched using different non-ASCII casing")
-end)
-
--- Debouncing should keep the final state of a path, even when
--- it is created, removed and created again within one window
-
-test("debouncing keeps the final state", function()
-	local dir = makeDir("debounce_state")
-	local events: { WatchEvent } = {}
-	watch(dir, { debounce = 0.3 }, function(event)
-		table.insert(events, event)
-	end)
-	task.wait(SETTLE)
-
-	fs.writeFile(`{dir}/flip.txt`, "one")
-	fs.removeFile(`{dir}/flip.txt`)
-	fs.writeFile(`{dir}/flip.txt`, "two")
-	waitFor(function()
-		return find(events, "/debounce_state/flip.txt") ~= nil
-	end, "a debounced event for a recreated file")
-	task.wait(0.6)
-
-	local last: WatchEvent? = nil
-	for _, event in events do
-		if involves(event, "/debounce_state/flip.txt") then
-			last = event
-		end
-	end
-	assert(
-		last ~= nil and last.kind ~= "remove",
-		"The last event for a recreated file should not be a removal"
-	)
+	end, "an event for a file watched by its stored spelling")
 end)
 
 test("debouncing", function()

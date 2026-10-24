@@ -354,6 +354,8 @@ function fs.copy(from: string, to: string, overwriteOrOptions: (boolean | WriteO
 	An error will be thrown in the following situations:
 
 	* `path` does not point to an existing file or directory.
+	* `path` is a file named with different casing than it's stored with, which
+	  case-insensitive filesystems allow. Watchers only report the stored name.
 	* The current process lacks permissions to watch `path`.
 	* Some other I/O error occurred.
 

@@ -1,7 +1,4 @@
-use std::{
-    ffi::{OsStr, OsString},
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use mlua::prelude::*;
 use notify::{EventKind, event::ModifyKind};
@@ -103,7 +100,6 @@ impl IntoLua for WatchEvent {
 #[derive(Debug, Clone)]
 pub struct WatchTarget {
     canonical_root: Option<PathBuf>,
-    case_insensitive: bool,
     file: Option<PathBuf>,
     root: PathBuf,
 }
@@ -120,38 +116,9 @@ impl WatchTarget {
     pub fn new(root: PathBuf, canonical_root: Option<PathBuf>, file: Option<PathBuf>) -> Self {
         Self {
             canonical_root,
-            case_insensitive: false,
             file,
             root,
         }
-    }
-
-    /**
-        Sets whether the watched file's name should be matched without regard to case.
-
-        On case-insensitive filesystems (the default on Windows and macOS), a file can be
-        watched using any casing, and renamed to a different casing later on, while the OS
-        always reports the casing it is currently stored with.
-    */
-    #[must_use]
-    pub fn with_case_insensitive(mut self, case_insensitive: bool) -> Self {
-        self.case_insensitive = case_insensitive;
-        self
-    }
-
-    fn is_watched_file(&self, path: &Path) -> bool {
-        let Some(file) = &self.file else {
-            return false;
-        };
-        if path == file {
-            return true;
-        }
-        self.case_insensitive
-            && path.parent() == file.parent()
-            && match (path.file_name(), file.file_name()) {
-                (Some(a), Some(b)) => names_equal_ignoring_case(a, b),
-                _ => false,
-            }
     }
 
     /**
@@ -191,40 +158,14 @@ impl WatchTarget {
     pub fn translate(&self, kind: EventKind, paths: &[PathBuf]) -> Option<WatchEvent> {
         let kind = WatchEventKind::from_notify(kind)?;
         let paths: Vec<PathBuf> = paths.iter().map(|path| self.normalize(path)).collect();
-        if self.file.is_some()
+        if let Some(file) = &self.file
             && !paths.is_empty()
-            && !paths.iter().any(|path| self.is_watched_file(path))
+            && !paths.iter().any(|path| path == file)
         {
             return None;
         }
         Some(WatchEvent { kind, paths })
     }
-}
-
-/**
-    Checks if two file names are equal when ignoring (Unicode) case.
-*/
-#[must_use]
-pub fn names_equal_ignoring_case(a: &OsStr, b: &OsStr) -> bool {
-    a == b || a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
-}
-
-/**
-    Returns the given file name with its case flipped, or `None` if
-    it has no letters with case, and its case can not be flipped.
-
-    Used to probe whether a filesystem treats names case-insensitively.
-*/
-#[must_use]
-pub fn flip_case(name: &OsStr) -> Option<OsString> {
-    let name = name.to_str()?;
-    let upper = name.to_uppercase();
-    let flipped = if upper == name {
-        name.to_lowercase()
-    } else {
-        upper
-    };
-    (flipped != name).then(|| OsString::from(flipped))
 }
 
 /**
@@ -373,73 +314,6 @@ mod tests {
             .unwrap();
         assert_eq!(atomic.kind, WatchEventKind::Rename);
         assert_eq!(atomic.paths, vec![abs("dir/.config.json.tmp"), file]);
-    }
-
-    #[test]
-    fn case_insensitive_file_targets_match_any_casing() {
-        let modify = EventKind::Modify(ModifyKind::Data(DataChange::Content));
-        let cases = [
-            // (watched name, reported path, case insensitive, expected match)
-            ("CONFIG.json", "dir/config.json", true, true),
-            ("config.json", "dir/CONFIG.JSON", true, true),
-            ("Ä.json", "dir/ä.json", true, true),
-            ("CONFIG.json", "dir/sub/config.json", true, false),
-            ("CONFIG.json", "dir/other.json", true, false),
-            ("CONFIG.json", "dir/config.json", false, false),
-            ("config.json", "dir/config.json", false, true),
-        ];
-        for (watched, reported, case_insensitive, expected) in cases {
-            let target = WatchTarget::new(abs("dir"), None, Some(abs("dir").join(watched)))
-                .with_case_insensitive(case_insensitive);
-            assert_eq!(
-                target.translate(modify, &[abs(reported)]).is_some(),
-                expected,
-                "watched {watched}, reported {reported}, case insensitive {case_insensitive}"
-            );
-        }
-    }
-
-    #[test]
-    fn case_insensitive_matching_survives_case_only_renames() {
-        let target = WatchTarget::new(abs("dir"), None, Some(abs("dir/CONFIG.json")))
-            .with_case_insensitive(true);
-        let rename = EventKind::Modify(ModifyKind::Name(RenameMode::Both));
-        let modify = EventKind::Modify(ModifyKind::Data(DataChange::Content));
-        assert!(
-            target
-                .translate(rename, &[abs("dir/config.json"), abs("dir/Config.json")])
-                .is_some()
-        );
-        assert!(
-            target
-                .translate(modify, &[abs("dir/Config.json")])
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn names_compare_with_unicode_case_folding() {
-        assert!(names_equal_ignoring_case(
-            OsStr::new("a.TXT"),
-            OsStr::new("A.txt")
-        ));
-        assert!(names_equal_ignoring_case(
-            OsStr::new("Ä.json"),
-            OsStr::new("ä.json")
-        ));
-        assert!(!names_equal_ignoring_case(
-            OsStr::new("a.txt"),
-            OsStr::new("b.txt")
-        ));
-    }
-
-    #[test]
-    fn flip_case_only_flips_names_with_cased_letters() {
-        assert_eq!(flip_case(OsStr::new("config.json")).unwrap(), "CONFIG.JSON");
-        assert_eq!(flip_case(OsStr::new("Config.json")).unwrap(), "CONFIG.JSON");
-        assert_eq!(flip_case(OsStr::new("CONFIG")).unwrap(), "config");
-        assert_eq!(flip_case(OsStr::new("ä.json")).unwrap(), "Ä.JSON");
-        assert!(flip_case(OsStr::new("123-456")).is_none());
     }
 
     #[test]
