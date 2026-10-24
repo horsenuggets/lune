@@ -509,6 +509,24 @@ impl Runtime {
         let module_name = format!("{FILE_CHUNK_PREFIX}{module_path}");
         let module_contents = strip_shebang(contents);
 
+        // The module path drops the extension and init segments, and can be remapped by a
+        // default.project.json, so remember which file it resolved to for the project global
+        #[cfg(any(
+            feature = "std-datetime",
+            feature = "std-fs",
+            feature = "std-luau",
+            feature = "std-net",
+            feature = "std-process",
+            feature = "std-regex",
+            feature = "std-roblox",
+            feature = "std-serde",
+            feature = "std-stdio",
+            feature = "std-task",
+        ))]
+        if let Some(file) = module_path.target().as_file() {
+            lune_std::register_script_file(&self.lua, &module_path.to_string(), file)?;
+        }
+
         self.run_inner(module_name, module_contents).await
     }
 

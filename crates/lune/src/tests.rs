@@ -1,5 +1,6 @@
 use std::env::set_current_dir;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -119,6 +120,62 @@ fn global_debug_getcoverage_global() -> Result<ExitCode> {
 #[serial_test::serial]
 fn global_debug_getcoverage_script() -> Result<ExitCode> {
     run_test_with_jit("globals/debug_getcoverage_script", false)
+}
+
+/// Writes a script at the given path that checks which repository `project` resolves to
+fn write_project_check(path: &Path, expected_name: &str) -> Result<()> {
+    fs::create_dir_all(path.parent().unwrap())?;
+    fs::write(
+        path,
+        format!("assert(project.Name == \"{expected_name}\", `got {{project.Name}}`)\n"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn global_project_follows_resolved_entrypoint_files() -> Result<()> {
+    let root = std::env::temp_dir().join("lune-project-entrypoints");
+    let _ = fs::remove_dir_all(&root);
+    let outer = root.join("Outer");
+    fs::create_dir_all(outer.join(".git"))?;
+
+    // A script next to a folder with its own name, where that folder is a repository
+    fs::create_dir_all(outer.join("Scripts").join("Build").join(".git"))?;
+    write_project_check(&outer.join("Scripts").join("Build.luau"), "Outer")?;
+
+    // An init entrypoint at the root of a nested repository
+    fs::create_dir_all(outer.join("Repo").join(".git"))?;
+    write_project_check(&outer.join("Repo").join("init.luau"), "Repo")?;
+
+    // A nested repository whose default.project.json points at a source folder
+    let package = outer.join("Package");
+    fs::create_dir_all(package.join(".git"))?;
+    fs::write(
+        package.join("default.project.json"),
+        r#"{ "tree": { "$path": "Source" } }"#,
+    )?;
+    write_project_check(&package.join("Source").join("init.luau"), "Package")?;
+
+    let entrypoints = [
+        outer.join("Scripts").join("Build.luau"),
+        outer.join("Repo").join("init.luau"),
+        package,
+    ];
+    let results: Vec<bool> = entrypoints
+        .iter()
+        .map(|entrypoint| {
+            async_io::block_on(async {
+                let mut rt = Runtime::new()?;
+                Ok::<_, anyhow::Error>(rt.run_file(entrypoint).await?.success())
+            })
+        })
+        .collect::<Result<_>>()?;
+
+    fs::remove_dir_all(&root)?;
+    for (entrypoint, success) in entrypoints.iter().zip(results) {
+        assert!(success, "project was wrong for {}", entrypoint.display());
+    }
+    Ok(())
 }
 
 #[cfg(feature = "std-datetime")]

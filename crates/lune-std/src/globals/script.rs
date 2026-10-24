@@ -7,6 +7,8 @@ use mlua::prelude::*;
 
 /// Registry key for storing the current script path stack
 const SCRIPT_PATH_STACK_KEY: &str = "__lune_script_path_stack";
+/// Registry key for storing the files that entrypoint script paths resolved to
+const SCRIPT_FILES_KEY: &str = "__lune_script_files";
 
 /// What a `ScriptReference` points at.
 #[derive(Debug, Clone)]
@@ -66,7 +68,7 @@ impl ScriptReference {
                     Some(p) => p.clone(),
                     None => PathBuf::from(get_script_path_from_stack(lua)?),
                 };
-                find_git_root(&script_path).ok_or_else(|| {
+                find_git_root(&script_file(lua, &script_path)).ok_or_else(|| {
                     LuaError::runtime(format!(
                         "No Git repository was found containing \"{}\".",
                         script_path.display()
@@ -116,37 +118,42 @@ impl ScriptReference {
     }
 }
 
-/// Find the folder that contains the given script.
-///
-/// Module paths include their extension, but entrypoint paths are module paths without
-/// one, and an `init` entrypoint is named after its folder. A sibling file takes priority
-/// over a folder with the same name, matching how `require` resolves module paths.
-fn script_folder(script_path: &Path) -> Option<PathBuf> {
-    let has_sibling_file = ["luau", "lua"].iter().any(|ext| {
-        let mut file = script_path.as_os_str().to_owned();
-        file.push(format!(".{ext}"));
-        Path::new(&file).is_file()
-    });
-    let is_init_folder = ["init.luau", "init.lua"]
-        .iter()
-        .any(|init| script_path.join(init).is_file());
-
-    let folder = if !script_path.is_file() && !has_sibling_file && is_init_folder {
-        script_path
-    } else {
-        script_path.parent()?
+/// Remember the file an entrypoint resolved to. Entrypoint script paths are module paths,
+/// which drop the extension and `init` segments and can be remapped by a
+/// `default.project.json`, so the path alone doesn't say which folder the script is in.
+pub fn register_script_file(lua: &Lua, script_path: &str, file: &Path) -> LuaResult<()> {
+    let files = match lua.named_registry_value::<LuaTable>(SCRIPT_FILES_KEY) {
+        Ok(t) => t,
+        Err(_) => {
+            let t = lua.create_table()?;
+            lua.set_named_registry_value(SCRIPT_FILES_KEY, t.clone())?;
+            t
+        }
     };
-
-    // Canonicalize so that ".." components can't walk into a folder the script isn't in.
-    // dunce avoids verbatim paths on Windows, which reject forward slashes.
-    dunce::canonicalize(folder).ok()
+    files.raw_set(script_path, file.display().to_string())
 }
 
-/// Find the nearest Git repository root containing the given script by searching up from
-/// its folder for a `.git` entry. `.git` is a directory in a normal checkout and a file in
-/// worktrees and submodules, so both count.
-fn find_git_root(script_path: &Path) -> Option<PathBuf> {
-    script_folder(script_path)?
+/// Get the file a script path refers to, which is the path itself unless it was registered
+fn script_file(lua: &Lua, script_path: &Path) -> PathBuf {
+    lua.named_registry_value::<LuaTable>(SCRIPT_FILES_KEY)
+        .ok()
+        .and_then(|files| {
+            files
+                .raw_get::<Option<String>>(script_path.display().to_string())
+                .ok()
+                .flatten()
+        })
+        .map_or_else(|| script_path.to_path_buf(), PathBuf::from)
+}
+
+/// Find the nearest Git repository root containing the given script file by searching up
+/// from its folder for a `.git` entry. `.git` is a directory in a normal checkout and a
+/// file in worktrees and submodules, so both count.
+fn find_git_root(script_file: &Path) -> Option<PathBuf> {
+    // Canonicalize so that ".." components can't walk into a folder the script isn't in.
+    // dunce avoids verbatim paths on Windows, which reject forward slashes.
+    dunce::canonicalize(script_file.parent()?)
+        .ok()?
         .ancestors()
         .find(|dir| dir.join(".git").exists())
         .map(Path::to_path_buf)
@@ -576,55 +583,32 @@ mod tests {
     }
 
     #[test]
-    fn find_git_root_ignores_sibling_folder_with_script_name() {
-        let root = scratch_dir("sibling-folder");
-        let scripts = root.join("Scripts");
+    fn find_git_root_ignores_folders_canceled_by_parent_components() {
+        let root = scratch_dir("parent-components");
         fs::create_dir_all(root.join(".git")).unwrap();
-        fs::create_dir_all(scripts.join("Build").join(".git")).unwrap();
-        fs::write(scripts.join("Build.luau"), "").unwrap();
+        fs::create_dir_all(root.join("Sibling").join(".git")).unwrap();
+        fs::write(root.join("Main.luau"), "").unwrap();
 
-        // The extensionless entrypoint path names the Build folder, which is its own
-        // repository, but the script itself lives in the outer one
-        assert_eq!(find_git_root(&scripts.join("Build")), Some(root.clone()));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn find_git_root_accepts_paths_without_extensions() {
-        let root = scratch_dir("extensionless");
-        fs::create_dir_all(root.join(".git")).unwrap();
-        fs::create_dir_all(root.join("Scripts")).unwrap();
-        fs::write(root.join("Scripts").join("RunTests.luau"), "").unwrap();
-
-        // Entrypoint script paths are reported without their extension
-        let script = root.join("Scripts").join("RunTests");
+        // Main lives next to Sibling, not inside it, so only the outer repository counts
+        let script = root.join("Sibling").join("..").join("Main.luau");
         assert_eq!(find_git_root(&script), Some(root.clone()));
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn find_git_root_starts_inside_init_entrypoint_folders() {
-        let root = scratch_dir("init-entrypoint");
-        let repo = root.join("Repo");
-        fs::create_dir_all(root.join(".git")).unwrap();
-        fs::create_dir_all(repo.join(".git")).unwrap();
-        fs::write(repo.join("init.luau"), "").unwrap();
+    fn script_file_prefers_registered_entrypoint_files() {
+        let lua = Lua::new();
+        let entrypoint = Path::new("/repo/Package");
+        let module = Path::new("/repo/Source/Module.luau");
 
-        // Running Repo/init.luau reports its path as Repo, which is the script's own folder
-        assert_eq!(find_git_root(&repo), Some(repo.clone()));
-        fs::remove_dir_all(root).unwrap();
-    }
+        // Unregistered paths are already files, so they come back unchanged
+        assert_eq!(script_file(&lua, entrypoint), entrypoint);
 
-    #[test]
-    fn find_git_root_ignores_folders_canceled_by_parent_components() {
-        let root = scratch_dir("parent-components");
-        fs::create_dir_all(root.join("Sibling").join(".git")).unwrap();
-        fs::write(root.join("Main.luau"), "").unwrap();
-
-        // Main lives next to Sibling, not inside it, so only the outer folders count
-        let script = root.join("Sibling").join("..").join("Main");
-        assert_ne!(find_git_root(&script), Some(root.join("Sibling")));
-        assert_eq!(script_folder(&script), Some(root.clone()));
-        fs::remove_dir_all(root).unwrap();
+        register_script_file(&lua, "/repo/Package", Path::new("/repo/Source/init.luau")).unwrap();
+        assert_eq!(
+            script_file(&lua, entrypoint),
+            Path::new("/repo/Source/init.luau")
+        );
+        assert_eq!(script_file(&lua, module), module);
     }
 }
