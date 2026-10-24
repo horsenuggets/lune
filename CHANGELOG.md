@@ -8,6 +8,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.11.1-horse.16.0` - October 24th, 2026
+
+### Changed
+
+- Synced with upstream Lune `0.11.1`, so every change listed under `0.11.1`, `0.11.0`, and `0.10.5` below is now included. This moves to mlua `0.12` and a newer Luau, which adds the `const` keyword for bindings that can't be reassigned
+
+### Added
+
+- Added experimental support for getting and setting property names of now-migrated properties in `@lune/roblox`, from upstream. This doesn't work for all property migrations, but simpler ones such as the `Content` datatype work well
+
+### Fixed
+
+- Fixed not being able to set Instance reference properties to `nil`, from upstream
+
 ## `0.10.4-horse.15.0` - October 23rd, 2026
 
 ### Added
@@ -18,6 +32,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed `net.request` sending absolute-form request lines (`GET http://host/path`), which some servers such as `wrangler dev` reject, by sending origin-form request lines with a `Host` header that includes non-default ports
 - Fixed the scheduler panicking with "Thread must be tracked" when a tracked thread finished after its result had already been taken
+
+## `0.11.1` - October 21st, 2026
+
+This release addresses a security vulnerability with HTTPS certificates. If you are using `net.request`, especially with untrusted / dynamic input, it is suggested that you upgrade Lune. You can read more about the vulnerability [here](https://rustsec.org/advisories/RUSTSEC-2026-0382).
+
+### Fixed
+
+- Fixed a regression where passing fractional numeric args to certain datatype constructors in `@lune/roblox` would error in Lune `0.12` while they did not in `0.11` nor in Roblox
+
+## `0.11.0` - October 11th, 2026
+
+This version of Lune contains one breaking change for scripts - the `stop` function on web server handles returned by `net.serve` is now a method, meaning `handle.stop()` is now `handle:stop()`.
+If you use any of the Lune crates as a dependency, Lune now also uses `mlua` version `0.12`, and you may need to upgrade as well.
+
+### Added
+
+- Added a `size` field to the metadata returned by `fs.metadata`, containing the file size in bytes, or `nil` for directories ([#405])
+- Added `FromName` and `FromValue` methods to the `Enum` datatype in the `roblox` standard library ([#423])
+
+### Changed
+
+- Web server handles returned by `net.serve` now use standard Lua method calling convention and colon syntax, just like web sockets - `handle.stop()` is now `handle:stop()`
+- Improved the documentation for `roblox.getAuthCookie` and for web sockets in the `net` standard library
+- Updated to Luau version `0.740`
+- Updated to rbx-dom database version `0.741`
+
+### Fixed
+
+- Fixed the `close` method on web sockets always erroring with "Socket has been closed" instead of closing the socket ([#400])
+- Fixed the documentation for `serde.hmac` saying it returns a base64 string, when it returns a hex string ([#417])
+- Fixed `CFrame.lookAt`, `CFrame.lookAlong` and `CFrame.new(pos, lookAt)` producing incorrect rotations when not rotating purely around the Y axis ([#419])
+- Fixed `Color3:ToHex` truncating color channels instead of rounding them, and returning uppercase hex digits instead of lowercase ([#410])
+- Fixed `net.serve` responding with a `500` error when a response table does not contain a `status`, which now defaults to `200`
+- Fixed methods and properties added using `roblox.implementMethod` and `roblox.implementProperty` being shadowed by children with the same name
+- Fixed `Enum` and `EnumItem` values in the `roblox` standard library not having a stable identity, making them unusable as table keys
+- Fixed type definitions for the `net` standard library missing the `http` and `ws` submodules, as well as the `ip` and `port` fields on `ServeHandle`
+- Fixed the `MetadataKind` type definition including `symlink`, which `fs.metadata` never returns since symlinks are always followed ([#405])
+- Fixed the documentation for `captures` in the `regex` standard library describing it as finding all matches, when it only returns the capture groups of the first match
+
+### Internal Changes
+
+- Upgraded to `mlua` version `0.12` - if you use any of the Lune crates as a dependency, you may also need to upgrade
+- Removed the deprecated `jit` module alias from the `lune-utils` crate - please use the `process` module directly instead
+- Updated all dependencies to their latest major versions, and removed several unused ones
+
+[#405]: https://github.com/lune-org/lune/pull/405
+[#423]: https://github.com/lune-org/lune/pull/423
+[#400]: https://github.com/lune-org/lune/pull/400
+[#417]: https://github.com/lune-org/lune/pull/417
+[#419]: https://github.com/lune-org/lune/pull/419
+[#410]: https://github.com/lune-org/lune/pull/410
+
+## `0.10.5` - July 2nd, 2026
+
+### Added
+
+- Added `QueryDescendants` to instances in the `roblox` standard library.
+- Added `registerClass` and `registerService` functions to the `roblox` standard library, letting classes and services that
+  the reflection database does not know about - such as those only present in specific Roblox builds - be implemented and used:
+
+  ```luau
+  local roblox = require("@lune/roblox")
+
+  roblox.registerService("FileSystemService")
+
+  roblox.implementMethod("FileSystemService", "ReadFile", function(_, path: string)
+      return -- ... read and return the file contents ...
+  end)
+
+  local game = roblox.Instance.new("DataModel")
+  local fss = game:GetService("FileSystemService")
+  ```
+
+### Changed
+
+- Refactored the `roblox` standard library to support multiple independent doms. Instances now have stable references,
+  and place or model files containing colliding referents can be loaded at the same time without conflicts.
+- Updated to Luau version `0.709`
+- Updated to rbx-dom database version `0.728`
+
+### Fixed
+
+- Fixed `task.wait` not gracefully handling negative, `NaN`, and other non-finite durations
+- Fixed datatype arithmetic in `@lune/roblox` not working with a scalar on the left-hand side, such as `2 * Vector3.new(1, 2, 3)`
+- Fixed various completeness and correctness issues across datatypes in the `roblox` standard library
+- Fixed web socket close codes not being set to `1005` (no status) or `1006` (abnormal closure) when a connection was closed without one
+- Fixed error stack traces truncating real file paths on Windows
+- Fixed `NumberSequence.new(start, end)` silently ignoring its second constructor argument
+- Fixed `ColorSequence.new(start, end)` silently ignoring its second constructor argument ([#391])
+- Fixed the `close` method on a child process writer not closing it ([#359])
+- Fixed truncation of `lune build` output paths containing dots on non-Windows targets ([#396])
+- Fixed deserialization of Roblox place/model files failing due to Tags now serializing using SharedString ([#397])
+
+[#391]: https://github.com/lune-org/lune/pull/391
+[#359]: https://github.com/lune-org/lune/pull/359
+[#396]: https://github.com/lune-org/lune/pull/396
+[#397]: https://github.com/lune-org/lune/pull/397
 
 ## `0.10.4-horse.14.5` - April 1st, 2026
 

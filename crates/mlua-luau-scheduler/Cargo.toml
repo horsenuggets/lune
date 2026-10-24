@@ -1,6 +1,6 @@
 [package]
 name = "mlua-luau-scheduler"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/lune-org/lune"
@@ -22,7 +22,7 @@ futures-lite = "2.6"
 rustc-hash = "2.1"
 tracing = "0.1"
 
-mlua = { version = "0.11.4", features = [
+mlua = { version = "0.12.2", features = [
     "luau",
     "luau-jit",
     "async",
@@ -33,7 +33,7 @@ mlua = { version = "0.11.4", features = [
 async-fs = "2.1"
 async-io = "2.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-tracy = "0.11"
+tracing-tracy = "0.12"
 
 [[example]]
 name = "basic_sleep"
