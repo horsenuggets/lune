@@ -13,7 +13,7 @@ use super::super::*;
 /**
     An implementation of the [UDim](https://create.roblox.com/docs/reference/engine/datatypes/UDim) Roblox datatype.
 
-    This implements all documented properties, methods & constructors of the `UDim` class as of October 2025.
+    This implements all documented properties, methods & constructors of the `UDim` class as of May 2026.
 */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UDim {
@@ -31,10 +31,10 @@ impl LuaExportsTable for UDim {
     const EXPORT_NAME: &'static str = "UDim";
 
     fn create_exports_table(lua: Lua) -> LuaResult<LuaTable> {
-        let udim_new = |_: &Lua, (scale, offset): (Option<f32>, Option<i32>)| {
+        let udim_new = |_: &Lua, (scale, offset): (Option<f32>, Option<f64>)| {
             Ok(UDim {
                 scale: scale.unwrap_or_default(),
-                offset: offset.unwrap_or_default(),
+                offset: offset.unwrap_or_default() as i32,
             })
         };
 

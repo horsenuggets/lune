@@ -20,7 +20,7 @@ mod target;
 use self::base_exe::get_or_download_base_executable;
 use self::bundler::{Bundler, normalize_bundle_path};
 use self::files::{remove_source_file_ext, write_executable_file_to};
-use self::target::BuildTarget;
+use self::target::{BuildTarget, BuildTargetOS};
 
 /// Strip shebang line from source code if present
 fn strip_shebang(mut contents: Vec<u8>) -> Vec<u8> {
@@ -90,7 +90,7 @@ impl BuildCommand {
         // Derive paths to use, and make sure the output path is
         // not the same as the input, so that we don't overwrite it
         // For directory modules, use just the directory name (in cwd) as the output name
-        let output_path = self.output.clone().unwrap_or_else(|| {
+        let mut output_path = self.output.clone().unwrap_or_else(|| {
             if is_directory_module {
                 // For directory modules, use the directory name in the current directory
                 // This avoids conflicts where output would equal the input directory
@@ -102,7 +102,19 @@ impl BuildCommand {
                 remove_source_file_ext(&self.input)
             }
         });
-        let output_path = output_path.with_extension(target.exe_extension());
+        // NOTE: Appending instead of using `with_extension` keeps names
+        // with dots in them intact, such as "my.tool" on non-Windows targets
+        if target.os == BuildTargetOS::Windows {
+            let has_exe_ext = output_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
+            if !has_exe_ext {
+                let mut os_string = output_path.into_os_string();
+                os_string.push(".exe");
+                output_path = PathBuf::from(os_string);
+            }
+        }
         if output_path == self.input || output_path == entry_file {
             if self.output.is_some() {
                 bail!("output path cannot be the same as input path");
@@ -180,5 +192,72 @@ impl BuildCommand {
         write_executable_file_to(&output_path, patched_bin).await?;
 
         Ok(ExitCode::SUCCESS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::build::target::{BuildTargetArch, BuildTargetOS};
+    use std::path::Path;
+
+    #[test]
+    fn test_output_path_handling() {
+        let windows_target = BuildTarget {
+            os: BuildTargetOS::Windows,
+            arch: BuildTargetArch::X86_64,
+        };
+        let unix_target = BuildTarget {
+            os: BuildTargetOS::Linux,
+            arch: BuildTargetArch::X86_64,
+        };
+
+        // Case 1: Windows target, no .exe extension
+        let p = PathBuf::from("SomeTool-v1.2.3-windows-x86_64");
+        let mut output_path = p;
+        if windows_target.os == BuildTargetOS::Windows {
+            let has_exe_ext = output_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
+            if !has_exe_ext {
+                let mut os_string = output_path.into_os_string();
+                os_string.push(".exe");
+                output_path = PathBuf::from(os_string);
+            }
+        }
+        assert_eq!(output_path, Path::new("SomeTool-v1.2.3-windows-x86_64.exe"));
+
+        // Case 2: Windows target, already has .exe extension
+        let p = PathBuf::from("SomeTool-v1.2.3-windows-x86_64.exe");
+        let mut output_path = p;
+        if windows_target.os == BuildTargetOS::Windows {
+            let has_exe_ext = output_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
+            if !has_exe_ext {
+                let mut os_string = output_path.into_os_string();
+                os_string.push(".exe");
+                output_path = PathBuf::from(os_string);
+            }
+        }
+        assert_eq!(output_path, Path::new("SomeTool-v1.2.3-windows-x86_64.exe"));
+
+        // Case 3: Unix target, has dot in filename
+        let p = PathBuf::from("SomeTool-v1.2.3-linux-x86_64");
+        let mut output_path = p;
+        if unix_target.os == BuildTargetOS::Windows {
+            let has_exe_ext = output_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
+            if !has_exe_ext {
+                let mut os_string = output_path.into_os_string();
+                os_string.push(".exe");
+                output_path = PathBuf::from(os_string);
+            }
+        }
+        assert_eq!(output_path, Path::new("SomeTool-v1.2.3-linux-x86_64"));
     }
 }

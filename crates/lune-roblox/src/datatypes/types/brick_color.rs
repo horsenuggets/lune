@@ -13,7 +13,7 @@ use super::{super::*, Color3};
 /**
     An implementation of the [BrickColor](https://create.roblox.com/docs/reference/engine/datatypes/BrickColor) Roblox datatype.
 
-    This implements all documented properties, methods & constructors of the `BrickColor` class as of October 2025.
+    This implements all documented properties, methods & constructors of the `BrickColor` class as of May 2026.
 */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BrickColor {
@@ -28,18 +28,21 @@ impl LuaExportsTable for BrickColor {
     const EXPORT_NAME: &'static str = "BrickColor";
 
     fn create_exports_table(lua: Lua) -> LuaResult<LuaTable> {
-        type ArgsNumber = u16;
+        type ArgsNumber = f64;
         type ArgsName = String;
-        type ArgsRgb = (u8, u8, u8);
+        type ArgsRgb = (f32, f32, f32);
         type ArgsColor3 = LuaUserDataRef<Color3>;
 
         let brick_color_new = |lua: &Lua, args: LuaMultiValue| {
-            if let Ok(number) = ArgsNumber::from_lua_multi(args.clone(), lua) {
-                Ok(color_from_number(number))
+            // NOTE: The rgb tuple must be tried before the single number, since
+            // `u16::from_lua_multi` would otherwise consume just the first argument
+            // and silently ignore the remaining two, parsing `new(1, 0, 0)` as `new(1)`.
+            if let Ok((r, g, b)) = ArgsRgb::from_lua_multi(args.clone(), lua) {
+                Ok(color_from_rgb(r, g, b))
+            } else if let Ok(number) = ArgsNumber::from_lua_multi(args.clone(), lua) {
+                Ok(color_from_number(number as u16))
             } else if let Ok(name) = ArgsName::from_lua_multi(args.clone(), lua) {
                 Ok(color_from_name(name))
-            } else if let Ok((r, g, b)) = ArgsRgb::from_lua_multi(args.clone(), lua) {
-                Ok(color_from_rgb(r, g, b))
             } else if let Ok(color) = ArgsColor3::from_lua_multi(args.clone(), lua) {
                 Ok(Self::from(*color))
             } else {
@@ -50,7 +53,8 @@ impl LuaExportsTable for BrickColor {
             }
         };
 
-        let brick_color_palette = |_: &Lua, index: u16| {
+        let brick_color_palette = |_: &Lua, index: f64| {
+            let index = index as u16;
             if index == 0 {
                 Err(LuaError::RuntimeError("Invalid index".to_string()))
             } else if let Some(number) = BRICK_COLOR_PALETTE.get((index - 1) as usize) {
@@ -112,10 +116,7 @@ impl fmt::Display for BrickColor {
 
 impl From<Color3> for BrickColor {
     fn from(value: Color3) -> Self {
-        let r = value.r.clamp(u8::MIN as f32, u8::MAX as f32) as u8;
-        let g = value.g.clamp(u8::MIN as f32, u8::MAX as f32) as u8;
-        let b = value.b.clamp(u8::MIN as f32, u8::MAX as f32) as u8;
-        color_from_rgb(r, g, b)
+        color_from_rgb(value.r, value.g, value.b)
     }
 }
 
@@ -181,10 +182,10 @@ fn color_from_name(name: impl AsRef<str>) -> BrickColor {
         .into()
 }
 
-fn color_from_rgb(r: u8, g: u8, b: u8) -> BrickColor {
-    let r = r as i16;
-    let g = g as i16;
-    let b = b as i16;
+fn color_from_rgb(r: f32, g: f32, b: f32) -> BrickColor {
+    let r = (r * 255.0).clamp(u8::MIN as f32, u8::MAX as f32) as i16;
+    let g = (g * 255.0).clamp(u8::MIN as f32, u8::MAX as f32) as i16;
+    let b = (b * 255.0).clamp(u8::MIN as f32, u8::MAX as f32) as i16;
     BRICK_COLOR_VALUES
         .iter()
         .fold(
@@ -193,7 +194,8 @@ fn color_from_rgb(r: u8, g: u8, b: u8) -> BrickColor {
                 let cr = color.2.0 as i16;
                 let cg = color.2.1 as i16;
                 let cb = color.2.2 as i16;
-                let distance = ((r - cr) + (g - cg) + (b - cb)).unsigned_abs();
+                let distance =
+                    (r - cr).unsigned_abs() + (g - cg).unsigned_abs() + (b - cb).unsigned_abs();
                 if distance < closest_distance {
                     (Some(color), distance)
                 } else {

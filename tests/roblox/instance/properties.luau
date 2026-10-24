@@ -4,6 +4,7 @@ local Instance = roblox.Instance
 local Vector3 = roblox.Vector3
 local CFrame = roblox.CFrame
 local Enum = roblox.Enum
+local UDim = roblox.UDim
 
 local part = Instance.new("Part")
 
@@ -33,6 +34,14 @@ part.Shape = Enum.PartType.Ball
 
 assert(part.Shape == Enum.PartType.Ball)
 
+-- Instance (ref) properties should work with either an instance and nil
+
+local highlight = Instance.new("Highlight")
+highlight.Adornee = part
+assert(highlight.Adornee == part)
+highlight.Adornee = nil
+assert(highlight.Adornee == nil)
+
 -- Enums should roundtrip through serde without problem
 
 local decal = Instance.new("Decal")
@@ -58,6 +67,13 @@ assert(meshPart.Material == Enum.Material.Plastic)
 assert(meshPart.Size == Vector3.new(4, 1.2, 2))
 assert(meshPart.CustomPhysicalProperties == nil)
 
+-- We should be able to get/set SharedStrings
+
+local SANITY_STRING = "Hello, world!"
+meshPart.PhysicalConfigData = SANITY_STRING
+
+assert(meshPart.PhysicalConfigData == SANITY_STRING)
+
 -- Instance reference properties should work
 
 local objectValue = Instance.new("ObjectValue")
@@ -65,3 +81,36 @@ local objectValue = Instance.new("ObjectValue")
 assert(objectValue.Value == nil)
 objectValue.Value = meshPart
 assert(objectValue.Value == meshPart)
+
+-- A property that was migrated to something else internally still works
+
+local corner1 = Instance.new("UICorner")
+assert(corner1.CornerRadius == UDim.new(0, 8))
+
+local corner2 = Instance.new("UICorner")
+corner2.CornerRadius = UDim.new(0, 4)
+assert(corner2.CornerRadius == UDim.new(0, 4))
+assert(corner2.TopLeftRadius == UDim.new(0, 4))
+assert(corner2.BottomRightRadius == UDim.new(0, 4))
+
+local animation1 = Instance.new("Animation")
+assert(animation1.AnimationId == "")
+
+local animation2 = Instance.new("Animation")
+animation2.AnimationId = "rbxassetid://123"
+assert(animation2.AnimationId == "rbxassetid://123")
+
+local gui1 = Instance.new("ScreenGui")
+assert(gui1.IgnoreGuiInset == false)
+
+local gui2 = Instance.new("ScreenGui")
+gui2.IgnoreGuiInset = true
+assert(gui2.IgnoreGuiInset == true)
+assert(gui2.ScreenInsets == Enum.ScreenInsets.DeviceSafeInsets)
+
+local mesh1 = Instance.new("CharacterMesh")
+assert(mesh1.MeshId == 0)
+
+local mesh2 = Instance.new("CharacterMesh")
+mesh2.MeshId = 1234
+assert(mesh2.MeshId == 1234)
