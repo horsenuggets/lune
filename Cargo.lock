@@ -1654,7 +1654,7 @@ dependencies = [
 
 [[package]]
 name = "lune"
-version = "0.11.1-horse.16.0"
+version = "0.11.1-horse.16.1"
 dependencies = [
  "anyhow",
  "async-fs",
@@ -1704,6 +1704,7 @@ dependencies = [
  "async-channel",
  "async-fs",
  "console",
+ "dunce",
  "lune-roblox",
  "lune-std-datetime",
  "lune-std-fs",
