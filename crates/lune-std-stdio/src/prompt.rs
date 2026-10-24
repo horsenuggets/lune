@@ -33,8 +33,9 @@ impl Theme for PasswordTheme {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 pub enum PromptKind {
+    #[default]
     Text,
     Password,
     Confirm,
@@ -50,12 +51,6 @@ impl PromptKind {
         Self::Select,
         Self::MultiSelect,
     ];
-}
-
-impl Default for PromptKind {
-    fn default() -> Self {
-        Self::Text
-    }
 }
 
 impl FromStr for PromptKind {

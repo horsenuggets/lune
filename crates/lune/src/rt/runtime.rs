@@ -112,7 +112,7 @@ impl Runtime {
             .unwrap_or(true);
         if coverage_enabled {
             lua.set_compiler(
-                mlua::Compiler::default()
+                mlua::prelude::LuaCompiler::default()
                     .set_optimization_level(1)
                     .set_coverage_level(1)
                     .set_debug_level(1),

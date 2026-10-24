@@ -225,6 +225,7 @@ create_tests! {
     net_serve_handles: "net/serve/handles",
     net_serve_non_blocking: "net/serve/non_blocking",
     net_serve_requests: "net/serve/requests",
+    net_serve_responses: "net/serve/responses",
     net_serve_websockets: "net/serve/websockets",
 
     net_socket_basic: "net/socket/basic",
@@ -293,10 +294,12 @@ create_tests! {
 
     roblox_files_deserialize_model: "roblox/files/deserializeModel",
     roblox_files_deserialize_place: "roblox/files/deserializePlace",
+    roblox_files_multi_dom: "roblox/files/multiDom",
     roblox_files_serialize_model: "roblox/files/serializeModel",
     roblox_files_serialize_place: "roblox/files/serializePlace",
 
     roblox_instance_attributes: "roblox/instance/attributes",
+    roblox_instance_identity: "roblox/instance/identity",
     roblox_instance_new: "roblox/instance/new",
     roblox_instance_properties: "roblox/instance/properties",
     roblox_instance_tags: "roblox/instance/tags",
@@ -306,8 +309,10 @@ create_tests! {
     roblox_instance_classes_terrain: "roblox/instance/classes/Terrain",
 
     roblox_instance_custom_async: "roblox/instance/custom/async",
+    roblox_instance_custom_classes: "roblox/instance/custom/classes",
     roblox_instance_custom_methods: "roblox/instance/custom/methods",
     roblox_instance_custom_properties: "roblox/instance/custom/properties",
+    roblox_instance_custom_services: "roblox/instance/custom/services",
 
     roblox_instance_methods_clear_all_children: "roblox/instance/methods/ClearAllChildren",
     roblox_instance_methods_clone: "roblox/instance/methods/Clone",
@@ -325,6 +330,16 @@ create_tests! {
     roblox_instance_methods_is_a: "roblox/instance/methods/IsA",
     roblox_instance_methods_is_ancestor_of: "roblox/instance/methods/IsAncestorOf",
     roblox_instance_methods_is_descendant_of: "roblox/instance/methods/IsDescendantOf",
+
+    roblox_instance_query_classes: "roblox/instance/query/Classes",
+    roblox_instance_query_tags_and_names: "roblox/instance/query/TagsAndNames",
+    roblox_instance_query_properties: "roblox/instance/query/Properties",
+    roblox_instance_query_attributes: "roblox/instance/query/Attributes",
+    roblox_instance_query_compounds: "roblox/instance/query/Compounds",
+    roblox_instance_query_combinators: "roblox/instance/query/Combinators",
+    roblox_instance_query_selector_lists: "roblox/instance/query/SelectorLists",
+    roblox_instance_query_pseudo_classes: "roblox/instance/query/PseudoClasses",
+    roblox_instance_query_errors: "roblox/instance/query/Errors",
 
     roblox_misc_typeof: "roblox/misc/typeof",
 

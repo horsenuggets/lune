@@ -7,10 +7,16 @@ assert(type(stream.localPort) == "number", "localPort should be a number")
 assert(type(stream.remoteIp) == "string", "remoteIp should be a string")
 assert(stream.remotePort == 80, "remotePort should be 80")
 
--- Check for either IPv4 (e.g., 192.168.1.1) or IPv6 (e.g., 2001:db8::1)
-local isIpv4 = string.match(stream.remoteIp, "^%d+%.%d+%.%d+%.%d+$") ~= nil
-local isIpv6 = string.match(stream.remoteIp, "^[%x:]+$") ~= nil
-assert(isIpv4 or isIpv6, "remoteIp should be a valid IP address")
+-- connection may be made over IPv4 or IPv6
+local function isIpAddress(ip: string): boolean
+	if string.match(ip, "^%d+%.%d+%.%d+%.%d+$") then
+		return true -- IPv4
+	end
+	-- IPv6
+	return string.find(ip, ":") ~= nil and string.match(ip, "^[%x:%.]+$") ~= nil
+end
+
+assert(isIpAddress(stream.remoteIp), "remoteIp should be a valid IP address")
 
 assert(stream.localPort > 0 and stream.localPort <= 65535, "localPort should be in valid range")
 

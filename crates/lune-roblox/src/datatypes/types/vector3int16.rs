@@ -7,6 +7,7 @@ use rbx_dom_weak::types::Vector3int16 as DomVector3int16;
 
 use lune_utils::TableBuilder;
 
+use crate::datatypes::util::int16_from;
 use crate::exports::LuaExportsTable;
 
 use super::super::*;
@@ -16,7 +17,7 @@ use super::super::*;
     Roblox datatype, backed by [`glam::IVec3`].
 
     This implements all documented properties, methods &
-    constructors of the Vector3int16 class as of October 2025.
+    constructors of the Vector3int16 class as of May 2026.
 */
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vector3int16(pub IVec3);
@@ -25,11 +26,11 @@ impl LuaExportsTable for Vector3int16 {
     const EXPORT_NAME: &'static str = "Vector3int16";
 
     fn create_exports_table(lua: Lua) -> LuaResult<LuaTable> {
-        let vector3int16_new = |_: &Lua, (x, y, z): (Option<i16>, Option<i16>, Option<i16>)| {
+        let vector3int16_new = |_: &Lua, (x, y, z): (Option<f64>, Option<f64>, Option<f64>)| {
             Ok(Vector3int16(IVec3 {
-                x: x.unwrap_or_default() as i32,
-                y: y.unwrap_or_default() as i32,
-                z: z.unwrap_or_default() as i32,
+                x: int16_from(x)?,
+                y: int16_from(y)?,
+                z: int16_from(z)?,
             }))
         };
 
@@ -52,14 +53,14 @@ impl LuaUserData for Vector3int16 {
         methods.add_meta_method(LuaMetaMethod::Unm, userdata_impl_unm);
         methods.add_meta_method(LuaMetaMethod::Add, userdata_impl_add);
         methods.add_meta_method(LuaMetaMethod::Sub, userdata_impl_sub);
-        methods.add_meta_method(LuaMetaMethod::Mul, userdata_impl_mul_i32);
+        methods.add_meta_function(LuaMetaMethod::Mul, userdata_impl_mul_i32::<Self>);
         methods.add_meta_method(LuaMetaMethod::Div, userdata_impl_div_i32);
     }
 }
 
 impl fmt::Display for Vector3int16 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}, {}", self.0.x, self.0.y)
+        write!(f, "{}, {}, {}", self.0.x, self.0.y, self.0.z)
     }
 }
 
