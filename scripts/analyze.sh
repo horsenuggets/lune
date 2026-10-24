@@ -13,5 +13,7 @@ luau-lsp analyze \
 	--ignore="tests/require/project_test/**" \
 	--ignore="tests/require/script_ref.luau" \
 	--ignore="tests/require/script_ref_module.luau" \
+	--ignore="tests/globals/project.luau" \
+	--ignore="tests/globals/project/**" \
 	--ignore="tests/globals/script.luau" \
 	.lune crates scripts tests

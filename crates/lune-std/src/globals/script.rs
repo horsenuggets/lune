@@ -8,49 +8,80 @@ use mlua::prelude::*;
 /// Registry key for storing the current script path stack
 const SCRIPT_PATH_STACK_KEY: &str = "__lune_script_path_stack";
 
+/// What a `ScriptReference` points at.
+#[derive(Debug, Clone)]
+enum ReferenceTarget {
+    /// A fixed path (used for script.Parent, child lookups, etc.)
+    Static(PathBuf),
+    /// The current script, resolved from the script path stack (used for the global `script`)
+    CurrentScript,
+    /// The nearest Git repository containing a script, resolved at access time. None means
+    /// the current script (used for the global `project`).
+    ProjectOf(Option<PathBuf>),
+}
+
 /// A reference to a script or module location in the file system.
-/// This provides a Roblox-like `script` global that can be used for navigation.
-///
-/// Can be either:
-/// - Static: contains a fixed path (used for script.Parent, child lookups, etc.)
-/// - Dynamic: resolves path from the current script path stack (used for the global `script`)
+/// This provides Roblox-like `script` and `project` globals that can be used for navigation.
 #[derive(Debug, Clone)]
 pub struct ScriptReference {
-    /// The path to this script/module.
-    /// None means this is a dynamic reference that should look up the current path.
-    path: Option<PathBuf>,
+    target: ReferenceTarget,
 }
 
 impl ScriptReference {
     /// Create a new static script reference from a path
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
-            path: Some(path.into()),
+            target: ReferenceTarget::Static(path.into()),
         }
     }
 
     /// Create a new dynamic script reference that resolves path at access time
     pub fn dynamic() -> Self {
-        Self { path: None }
+        Self {
+            target: ReferenceTarget::CurrentScript,
+        }
+    }
+
+    /// Create a reference to the nearest Git repository containing the given script
+    pub fn project_of(script_path: impl Into<PathBuf>) -> Self {
+        Self {
+            target: ReferenceTarget::ProjectOf(Some(script_path.into())),
+        }
+    }
+
+    /// Create a reference to the nearest Git repository containing the current script
+    pub fn dynamic_project() -> Self {
+        Self {
+            target: ReferenceTarget::ProjectOf(None),
+        }
     }
 
     /// Get the path, resolving dynamically if needed
     fn resolve_path(&self, lua: &Lua) -> LuaResult<PathBuf> {
-        match &self.path {
-            Some(p) => Ok(p.clone()),
-            None => {
-                let path_str = get_script_path_from_stack(lua)?;
-                Ok(PathBuf::from(path_str))
+        match &self.target {
+            ReferenceTarget::Static(p) => Ok(p.clone()),
+            ReferenceTarget::CurrentScript => Ok(PathBuf::from(get_script_path_from_stack(lua)?)),
+            ReferenceTarget::ProjectOf(script_path) => {
+                let script_path = match script_path {
+                    Some(p) => p.clone(),
+                    None => PathBuf::from(get_script_path_from_stack(lua)?),
+                };
+                find_git_root(&script_path).ok_or_else(|| {
+                    LuaError::runtime(format!(
+                        "No Git repository was found containing \"{}\".",
+                        script_path.display()
+                    ))
+                })
             }
         }
     }
 
     /// Get the full path as a string (for static references only)
     pub fn path_string(&self) -> String {
-        self.path
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "[dynamic]".to_string())
+        match &self.target {
+            ReferenceTarget::Static(p) => p.display().to_string(),
+            _ => "[dynamic]".to_string(),
+        }
     }
 
     /// Get just the file/folder name from a path
@@ -86,6 +117,23 @@ impl ScriptReference {
         child_path.push(name);
         ScriptReference::new(child_path)
     }
+}
+
+/// Find the nearest Git repository root by searching up from the given path for a `.git`
+/// entry. `.git` is a directory in a normal checkout and a file in worktrees and
+/// submodules, so both count. The path doesn't need to exist, since script paths for
+/// entrypoints don't include their extension.
+fn find_git_root(start_path: &Path) -> Option<PathBuf> {
+    let start = std::path::absolute(start_path).ok()?;
+    let start = if start.is_dir() {
+        start.as_path()
+    } else {
+        start.parent()?
+    };
+    start
+        .ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .map(Path::to_path_buf)
 }
 
 /// Find the project root by searching up from the given path for default.project.json
@@ -451,4 +499,78 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
     let userdata = lua.create_userdata(script)?;
 
     Ok(LuaValue::UserData(userdata))
+}
+
+pub fn create_project(lua: Lua) -> LuaResult<LuaValue> {
+    get_or_create_stack(&lua)?;
+
+    // Resolves to the Git repository of whichever script accesses it
+    let project = ScriptReference::dynamic_project();
+    let userdata = lua.create_userdata(project)?;
+
+    Ok(LuaValue::UserData(userdata))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Creates an empty, canonicalized scratch directory unique to the given test
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("lune-find-git-root-{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::canonicalize(dir).unwrap()
+    }
+
+    #[test]
+    fn find_git_root_finds_git_directory_above_file() {
+        let root = scratch_dir("directory");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join("Scripts")).unwrap();
+        let script = root.join("Scripts").join("RunTests.luau");
+        fs::write(&script, "").unwrap();
+
+        assert_eq!(find_git_root(&script), Some(root.clone()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn find_git_root_finds_git_file_for_worktrees_and_submodules() {
+        let root = scratch_dir("file");
+        let worktree = root.join("Submodules").join("Child");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(&worktree).unwrap();
+        fs::write(worktree.join(".git"), "gitdir: ../../.git/modules/Child").unwrap();
+        let script = worktree.join("Module.luau");
+        fs::write(&script, "").unwrap();
+
+        // The nearest repository wins over the outer one
+        assert_eq!(find_git_root(&script), Some(worktree));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn find_git_root_accepts_directories() {
+        let root = scratch_dir("dir-input");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join("Source")).unwrap();
+
+        assert_eq!(find_git_root(&root.join("Source")), Some(root.clone()));
+        assert_eq!(find_git_root(&root), Some(root.clone()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn find_git_root_accepts_paths_without_extensions() {
+        let root = scratch_dir("extensionless");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join("Scripts")).unwrap();
+        fs::write(root.join("Scripts").join("RunTests.luau"), "").unwrap();
+
+        // Entrypoint script paths are reported without their extension
+        let script = root.join("Scripts").join("RunTests");
+        assert_eq!(find_git_root(&script), Some(root.clone()));
+        fs::remove_dir_all(root).unwrap();
+    }
 }

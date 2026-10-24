@@ -651,10 +651,11 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                             })?
                         };
 
-                    // Create a custom environment for this module with a static script reference
+                    // Create a custom environment for this module with static script and
+                    // project references
                     let module_env = lua.create_table()?;
-                    let module_script = ScriptReference::new(&resolved_path);
-                    module_env.set("script", module_script)?;
+                    module_env.set("script", ScriptReference::new(&resolved_path))?;
+                    module_env.set("project", ScriptReference::project_of(&resolved_path))?;
 
                     // Set metatable to inherit from globals
                     let env_mt = lua.create_table()?;
@@ -772,10 +773,11 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                             })?
                         };
 
-                    // Create a custom environment for this module with a static script reference
+                    // Create a custom environment for this module with static script and
+                    // project references
                     let module_env = lua.create_table()?;
-                    let module_script = ScriptReference::new(&resolved_path);
-                    module_env.set("script", module_script)?;
+                    module_env.set("script", ScriptReference::new(&resolved_path))?;
+                    module_env.set("project", ScriptReference::project_of(&resolved_path))?;
 
                     // Set metatable to inherit from globals
                     let env_mt = lua.create_table()?;
