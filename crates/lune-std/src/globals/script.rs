@@ -119,18 +119,17 @@ impl ScriptReference {
     }
 }
 
-/// Find the nearest Git repository root by searching up from the given path for a `.git`
-/// entry. `.git` is a directory in a normal checkout and a file in worktrees and
-/// submodules, so both count. The path doesn't need to exist, since script paths for
-/// entrypoints don't include their extension.
-fn find_git_root(start_path: &Path) -> Option<PathBuf> {
-    let start = std::path::absolute(start_path).ok()?;
-    let start = if start.is_dir() {
-        start.as_path()
-    } else {
-        start.parent()?
-    };
-    start
+/// Find the nearest Git repository root containing the given script by searching up from
+/// its folder for a `.git` entry. `.git` is a directory in a normal checkout and a file in
+/// worktrees and submodules, so both count.
+///
+/// The script path doesn't need to exist, since entrypoint paths don't include their
+/// extension. It's never treated as a folder either, because an extensionless entrypoint
+/// path can share its name with a sibling folder.
+fn find_git_root(script_path: &Path) -> Option<PathBuf> {
+    std::path::absolute(script_path)
+        .ok()?
+        .parent()?
         .ancestors()
         .find(|dir| dir.join(".git").exists())
         .map(Path::to_path_buf)
@@ -446,13 +445,22 @@ fn get_or_create_stack(lua: &Lua) -> LuaResult<LuaTable> {
     }
 }
 
-/// Get the current script path by walking the Lua call stack
+/// Get the path of the script that's accessing a dynamic reference
 fn get_script_path_from_stack(lua: &Lua) -> LuaResult<String> {
-    // First check the registry stack (for required modules)
+    // Check the calling frame before the registry stack. A require that yields leaves its
+    // module on top of the registry stack while other threads run, so the registry can
+    // name a different script than the one doing the access.
+    if let Some(path) = get_script_path_from_frames(lua) {
+        return Ok(path);
+    }
     if let Some(path) = get_current_script_path(lua)? {
         return Ok(path);
     }
+    Ok("[unknown]".to_string())
+}
 
+/// Get the path of the innermost Lua frame that belongs to a script file
+fn get_script_path_from_frames(lua: &Lua) -> Option<String> {
     // Use mlua's native stack inspection instead of debug.info
     // We need to find the first Lua frame that has a valid source file
     // This tells us which script/module the current code was defined in
@@ -481,12 +489,12 @@ fn get_script_path_from_stack(lua: &Lua) -> LuaResult<String> {
 
         match result {
             None => break, // No more stack frames
-            Some(Some(path)) => return Ok(path),
+            Some(Some(path)) => return Some(path),
             Some(None) => continue, // Skip this frame
         }
     }
 
-    Ok("[unknown]".to_string())
+    None
 }
 
 pub fn create(lua: Lua) -> LuaResult<LuaValue> {
@@ -551,13 +559,16 @@ mod tests {
     }
 
     #[test]
-    fn find_git_root_accepts_directories() {
-        let root = scratch_dir("dir-input");
+    fn find_git_root_ignores_sibling_folder_with_script_name() {
+        let root = scratch_dir("sibling-folder");
+        let scripts = root.join("Scripts");
         fs::create_dir_all(root.join(".git")).unwrap();
-        fs::create_dir_all(root.join("Source")).unwrap();
+        fs::create_dir_all(scripts.join("Build").join(".git")).unwrap();
+        fs::write(scripts.join("Build.luau"), "").unwrap();
 
-        assert_eq!(find_git_root(&root.join("Source")), Some(root.clone()));
-        assert_eq!(find_git_root(&root), Some(root.clone()));
+        // The extensionless entrypoint path names the Build folder, which is its own
+        // repository, but the script itself lives in the outer one
+        assert_eq!(find_git_root(&scripts.join("Build")), Some(root.clone()));
         fs::remove_dir_all(root).unwrap();
     }
 
