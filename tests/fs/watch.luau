@@ -223,6 +223,35 @@ test("single file watching with atomic saves", function()
 	end
 end)
 
+-- Watchers only ever report a file's stored name, so watching a file by another
+-- spelling (possible on case-insensitive filesystems) must fail loudly instead of
+-- silently receiving nothing
+test("single file watching requires the stored spelling", function()
+	local dir = makeDir("casing")
+	fs.writeFile(`{dir}/config.json`, "{}")
+	if not fs.isFile(`{dir}/CONFIG.json`) then
+		return -- Case-sensitive filesystem, nothing to test here
+	end
+
+	-- Goes through the helper so an unexpectedly successful watch still gets stopped
+	local success, err = pcall(watch, `{dir}/CONFIG.json`, nil, function() end)
+	assert(not success, "Watching a file by a different spelling should throw")
+	assert(
+		string.find(tostring(err), "config.json", 1, true) ~= nil,
+		`The error should name the stored spelling, got "{err}"`
+	)
+
+	local events: { WatchEvent } = {}
+	watch(`{dir}/config.json`, nil, function(event)
+		table.insert(events, event)
+	end)
+	task.wait(SETTLE)
+	fs.writeFile(`{dir}/config.json`, `\{"saved": 1}`)
+	waitFor(function()
+		return find(events, "/casing/config.json") ~= nil
+	end, "an event for a file watched by its stored spelling")
+end)
+
 test("debouncing", function()
 	local dir = makeDir("debounce")
 	local events: { WatchEvent } = {}
