@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added `fs.watch` for watching files and directories for changes, backed by FSEvents on macOS, inotify on Linux, and ReadDirectoryChangesW on Windows. It supports `recursive` and `debounce` options, keeps working for single files that editors save through atomic renames, and returns a handle with a `stop` function like `net.serve`
+- Added `fs.watch` for watching files and directories for changes, backed by FSEvents on macOS, inotify on Linux, and ReadDirectoryChangesW on Windows. It supports `recursive` and `debounce` options, keeps working for single files that editors save through atomic renames, and returns a handle with a `stop` function like `net.serve`. Single files must be watched by the name they're stored under, since watchers on case-insensitive filesystems only report that name, so other spellings throw an error that names it
 
 ### Fixed
 
