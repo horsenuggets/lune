@@ -223,6 +223,59 @@ test("single file watching with atomic saves", function()
 	end
 end)
 
+-- On case-insensitive filesystems (Windows and macOS by default), a file can be
+-- watched using different casing than it is stored with, and should still work
+
+test("single file watching with different casing", function()
+	local dir = makeDir("casing")
+	fs.writeFile(`{dir}/config.json`, "{}")
+	if not fs.isFile(`{dir}/CONFIG.json`) then
+		return -- Case-sensitive filesystem, nothing to test here
+	end
+
+	local events: { WatchEvent } = {}
+	watch(`{dir}/CONFIG.json`, nil, function(event)
+		table.insert(events, event)
+	end)
+	task.wait(SETTLE)
+
+	fs.writeFile(`{dir}/config.json`, `\{"saved": 1}`)
+	waitFor(function()
+		return find(events, "/casing/config.json") ~= nil
+	end, "an event for a file watched using different casing")
+end)
+
+-- Debouncing should keep the final state of a path, even when
+-- it is created, removed and created again within one window
+
+test("debouncing keeps the final state", function()
+	local dir = makeDir("debounce_state")
+	local events: { WatchEvent } = {}
+	watch(dir, { debounce = 0.3 }, function(event)
+		table.insert(events, event)
+	end)
+	task.wait(SETTLE)
+
+	fs.writeFile(`{dir}/flip.txt`, "one")
+	fs.removeFile(`{dir}/flip.txt`)
+	fs.writeFile(`{dir}/flip.txt`, "two")
+	waitFor(function()
+		return find(events, "/debounce_state/flip.txt") ~= nil
+	end, "a debounced event for a recreated file")
+	task.wait(0.6)
+
+	local last: WatchEvent? = nil
+	for _, event in events do
+		if involves(event, "/debounce_state/flip.txt") then
+			last = event
+		end
+	end
+	assert(
+		last ~= nil and last.kind ~= "remove",
+		"The last event for a recreated file should not be a removal"
+	)
+end)
+
 test("debouncing", function()
 	local dir = makeDir("debounce")
 	local events: { WatchEvent } = {}

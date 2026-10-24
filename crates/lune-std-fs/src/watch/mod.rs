@@ -1,4 +1,11 @@
-use std::{cell::Cell, io::ErrorKind as IoErrorKind, rc::Rc, time::Duration};
+use std::{
+    cell::Cell,
+    ffi::{OsStr, OsString},
+    io::ErrorKind as IoErrorKind,
+    path::Path,
+    rc::Rc,
+    time::Duration,
+};
 
 use async_channel::Receiver;
 use async_io::Timer;
@@ -59,7 +66,8 @@ pub fn fs_watch(
                 LuaError::RuntimeError(format!("Could not find the parent directory of '{path}'"))
             })?
             .to_path_buf();
-        (parent, Some(target_path), RecursiveMode::NonRecursive)
+        let file = parent.join(stored_file_name(&parent, &target_path));
+        (parent, Some(file), RecursiveMode::NonRecursive)
     };
     let canonical_root = std::fs::canonicalize(&root).ok();
 
@@ -112,6 +120,55 @@ fn parse_args(
             callback.type_name()
         ))),
     }
+}
+
+/**
+    Finds the name that a watched file is stored under in its parent directory.
+
+    On case-insensitive filesystems (the default on Windows and macOS), a file can
+    be watched using any casing, but OS-level watchers report the stored casing,
+    which would never match the requested path and silently drop every event.
+*/
+fn stored_file_name(parent: &Path, file: &Path) -> OsString {
+    let Some(requested) = file.file_name() else {
+        return OsString::new();
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return requested.to_os_string();
+    };
+    let canonical_file = std::fs::canonicalize(file).ok();
+    pick_stored_file_name(
+        requested,
+        entries.flatten().map(|entry| entry.file_name()),
+        |candidate| {
+            canonical_file.is_some()
+                && std::fs::canonicalize(parent.join(candidate)).ok() == canonical_file
+        },
+    )
+}
+
+/**
+    Picks the stored name of a file out of the entries in its parent directory.
+
+    An exact match always wins. Otherwise, the first entry that only differs in
+    (ASCII) casing and that `is_same_file` confirms to be the same file is used,
+    which keeps distinct files apart on case-sensitive filesystems.
+*/
+fn pick_stored_file_name(
+    requested: &OsStr,
+    entries: impl IntoIterator<Item = OsString>,
+    is_same_file: impl Fn(&OsStr) -> bool,
+) -> OsString {
+    let mut case_variant = None;
+    for entry in entries {
+        if entry == requested {
+            return entry;
+        }
+        if case_variant.is_none() && entry.eq_ignore_ascii_case(requested) && is_same_file(&entry) {
+            case_variant = Some(entry);
+        }
+    }
+    case_variant.unwrap_or_else(|| requested.to_os_string())
 }
 
 enum Received {
@@ -289,5 +346,37 @@ mod tests {
         assert!(parse_args(&lua, options, LuaValue::Boolean(true)).is_err());
         let callback = LuaValue::Function(lua.create_function(|_, ()| Ok(())).unwrap());
         assert!(parse_args(&lua, LuaValue::Boolean(true), callback).is_err());
+    }
+
+    fn names(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn stored_file_name_prefers_exact_matches() {
+        let entries = names(&["CONFIG.json", "config.json"]);
+        let picked = pick_stored_file_name(OsStr::new("config.json"), entries, |_| true);
+        assert_eq!(picked, "config.json");
+    }
+
+    #[test]
+    fn stored_file_name_resolves_case_variants_of_the_same_file() {
+        let entries = names(&["other.txt", "config.json"]);
+        let picked = pick_stored_file_name(OsStr::new("CONFIG.json"), entries, |_| true);
+        assert_eq!(picked, "config.json");
+    }
+
+    #[test]
+    fn stored_file_name_keeps_distinct_files_apart() {
+        // On case-sensitive filesystems, a case variant is a different file
+        let entries = names(&["config.json"]);
+        let picked = pick_stored_file_name(OsStr::new("CONFIG.json"), entries, |_| false);
+        assert_eq!(picked, "CONFIG.json");
+    }
+
+    #[test]
+    fn stored_file_name_falls_back_to_the_requested_name() {
+        let picked = pick_stored_file_name(OsStr::new("missing.json"), names(&["a"]), |_| true);
+        assert_eq!(picked, "missing.json");
     }
 }
