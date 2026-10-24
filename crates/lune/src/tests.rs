@@ -142,6 +142,7 @@ create_tests! {
     fs_dirs: "fs/dirs",
     fs_metadata: "fs/metadata",
     fs_move: "fs/move",
+    fs_watch: "fs/watch",
 }
 
 #[cfg(feature = "std-luau")]
