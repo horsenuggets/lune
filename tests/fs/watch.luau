@@ -233,7 +233,8 @@ test("single file watching requires the stored spelling", function()
 		return -- Case-sensitive filesystem, nothing to test here
 	end
 
-	local success, err = pcall(fs.watch, `{dir}/CONFIG.json`, function() end)
+	-- Goes through the helper so an unexpectedly successful watch still gets stopped
+	local success, err = pcall(watch, `{dir}/CONFIG.json`, nil, function() end)
 	assert(not success, "Watching a file by a different spelling should throw")
 	assert(
 		string.find(tostring(err), "config.json", 1, true) ~= nil,
