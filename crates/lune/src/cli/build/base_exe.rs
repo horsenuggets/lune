@@ -11,7 +11,7 @@ use crate::standalone::metadata::CURRENT_EXE;
 use super::{
     files::write_executable_file_to,
     result::{BuildError, BuildResult},
-    target::{BuildTarget, CACHE_DIR},
+    target::BuildTarget,
 };
 
 const RELEASE_REQUEST_HEADERS: &[(&str, &str)] = &[
@@ -109,10 +109,11 @@ pub async fn get_or_download_base_executable(target: BuildTarget) -> BuildResult
     let binary_file_contents = binary_file_handle.await?;
 
     // Finally, write the extracted binary to the cache
-    if !CACHE_DIR.exists() {
-        fs::create_dir_all(CACHE_DIR.as_path()).await?;
+    let cache_path = target.cache_path();
+    if let Some(cache_dir) = cache_path.parent() {
+        fs::create_dir_all(cache_dir).await?;
     }
-    write_executable_file_to(target.cache_path(), binary_file_contents).await?;
+    write_executable_file_to(&cache_path, binary_file_contents).await?;
     println!("Downloaded successfully and added to cache");
 
     Ok(target.cache_path())
