@@ -1,6 +1,6 @@
 [package]
 name = "lune-roblox"
-version = "0.3.4"
+version = "0.4.1"
 edition = "2024"
 license = "MPL-2.0"
 repository = "https://github.com/lune-org/lune"
@@ -17,16 +17,16 @@ default = ["mlua"]
 mlua = ["dep:mlua", "dep:lune-utils"]
 
 [dependencies]
-mlua = { version = "0.11.4", optional = true, features = ["luau"] }
+mlua = { version = "0.12.2", optional = true, features = ["luau"] }
 
-glam = "0.30"
-rand = "0.9"
+glam = "0.34"
+rand = "0.10"
 thiserror = "2.0"
 
-rbx_binary = "2.0"
+rbx_binary = "3.0"
 rbx_dom_weak = "4.0"
-rbx_reflection = "6.0"
-rbx_reflection_database = "2.0"
-rbx_xml = "2.0"
+rbx_reflection = "7.0"
+rbx_reflection_database = "3.0"
+rbx_xml = "3.0"
 
-lune-utils = { version = "0.3.4", optional = true, path = "../lune-utils" }
+lune-utils = { version = "0.4.0", optional = true, path = "../lune-utils" }

@@ -16,7 +16,7 @@ use super::super::*;
 /**
     An implementation of the [Color3](https://create.roblox.com/docs/reference/engine/datatypes/Color3) Roblox datatype.
 
-    This implements all documented properties, methods & constructors of the Color3 class as of October 2025.
+    This implements all documented properties, methods & constructors of the Color3 class as of May 2026.
 
     It also implements math operations for addition, subtraction, multiplication, and division,
     all of which are suspiciously missing from the Roblox implementation of the Color3 datatype.
@@ -32,11 +32,11 @@ impl LuaExportsTable for Color3 {
     const EXPORT_NAME: &'static str = "Color3";
 
     fn create_exports_table(lua: Lua) -> LuaResult<LuaTable> {
-        let color3_from_rgb = |_: &Lua, (r, g, b): (Option<u8>, Option<u8>, Option<u8>)| {
+        let color3_from_rgb = |_: &Lua, (r, g, b): (Option<f32>, Option<f32>, Option<f32>)| {
             Ok(Color3 {
-                r: (r.unwrap_or_default() as f32) / 255f32,
-                g: (g.unwrap_or_default() as f32) / 255f32,
-                b: (b.unwrap_or_default() as f32) / 255f32,
+                r: r.unwrap_or_default() / 255f32,
+                g: g.unwrap_or_default() / 255f32,
+                b: b.unwrap_or_default() / 255f32,
             })
         };
 
@@ -174,9 +174,15 @@ impl LuaUserData for Color3 {
         methods.add_method("ToHex", |_, this, ()| {
             Ok(format!(
                 "{:02x}{:02x}{:02x}",
-                (this.r * 255.0).clamp(u8::MIN as f32, u8::MAX as f32) as u8,
-                (this.g * 255.0).clamp(u8::MIN as f32, u8::MAX as f32) as u8,
-                (this.b * 255.0).clamp(u8::MIN as f32, u8::MAX as f32) as u8,
+                (this.r * 255.0)
+                    .clamp(u8::MIN as f32, u8::MAX as f32)
+                    .round() as u8,
+                (this.g * 255.0)
+                    .clamp(u8::MIN as f32, u8::MAX as f32)
+                    .round() as u8,
+                (this.b * 255.0)
+                    .clamp(u8::MIN as f32, u8::MAX as f32)
+                    .round() as u8,
             ))
         });
         // Metamethods
@@ -185,7 +191,7 @@ impl LuaUserData for Color3 {
         methods.add_meta_method(LuaMetaMethod::Unm, userdata_impl_unm);
         methods.add_meta_method(LuaMetaMethod::Add, userdata_impl_add);
         methods.add_meta_method(LuaMetaMethod::Sub, userdata_impl_sub);
-        methods.add_meta_method(LuaMetaMethod::Mul, userdata_impl_mul_f32);
+        methods.add_meta_function(LuaMetaMethod::Mul, userdata_impl_mul_f32::<Self>);
         methods.add_meta_method(LuaMetaMethod::Div, userdata_impl_div_f32);
     }
 }
