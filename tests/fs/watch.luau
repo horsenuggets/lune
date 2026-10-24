@@ -243,6 +243,42 @@ test("single file watching with different casing", function()
 	waitFor(function()
 		return find(events, "/casing/config.json") ~= nil
 	end, "an event for a file watched using different casing")
+
+	-- Renaming the file to a different casing should not break the watcher
+	fs.move(`{dir}/config.json`, `{dir}/Config.json`, true)
+	waitFor(function()
+		return find(events, "/casing/Config.json") ~= nil
+	end, "an event for a case-only rename of a watched file")
+
+	local countBefore = #events
+	fs.writeFile(`{dir}/Config.json`, `\{"saved": 2}`)
+	waitFor(function()
+		for index = countBefore + 1, #events do
+			if involves(events[index], "/casing/Config.json") then
+				return true
+			end
+		end
+		return false
+	end, "an event for a watched file after a case-only rename")
+end)
+
+test("single file watching with different non-ASCII casing", function()
+	local dir = makeDir("casing_unicode")
+	fs.writeFile(`{dir}/ä.json`, "{}")
+	if not fs.isFile(`{dir}/Ä.json`) then
+		return -- Case-sensitive filesystem, nothing to test here
+	end
+
+	local events: { WatchEvent } = {}
+	watch(`{dir}/Ä.json`, nil, function(event)
+		table.insert(events, event)
+	end)
+	task.wait(SETTLE)
+
+	fs.writeFile(`{dir}/ä.json`, `\{"saved": 1}`)
+	waitFor(function()
+		return find(events, "/casing_unicode/ä.json") ~= nil
+	end, "an event for a file watched using different non-ASCII casing")
 end)
 
 -- Debouncing should keep the final state of a path, even when

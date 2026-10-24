@@ -1,11 +1,4 @@
-use std::{
-    cell::Cell,
-    ffi::{OsStr, OsString},
-    io::ErrorKind as IoErrorKind,
-    path::Path,
-    rc::Rc,
-    time::Duration,
-};
+use std::{cell::Cell, io::ErrorKind as IoErrorKind, path::Path, rc::Rc, time::Duration};
 
 use async_channel::Receiver;
 use async_io::Timer;
@@ -21,7 +14,7 @@ mod handle;
 mod options;
 mod queue;
 
-use self::event::{WatchEvent, WatchTarget, push_debounced};
+use self::event::{WatchEvent, WatchTarget, flip_case, push_debounced};
 use self::handle::WatchHandle;
 use self::options::FsWatchOptions;
 use self::queue::{EventQueue, QUEUE_CAPACITY, event_queue};
@@ -66,12 +59,13 @@ pub fn fs_watch(
                 LuaError::RuntimeError(format!("Could not find the parent directory of '{path}'"))
             })?
             .to_path_buf();
-        let file = parent.join(stored_file_name(&parent, &target_path));
-        (parent, Some(file), RecursiveMode::NonRecursive)
+        (parent, Some(target_path), RecursiveMode::NonRecursive)
     };
     let canonical_root = std::fs::canonicalize(&root).ok();
+    let case_insensitive = file.as_deref().is_some_and(is_case_insensitive);
 
-    let target = WatchTarget::new(root.clone(), canonical_root, file);
+    let target = WatchTarget::new(root.clone(), canonical_root, file)
+        .with_case_insensitive(case_insensitive);
     let (forwarder, queue) = event_queue(target, QUEUE_CAPACITY);
     let mut watcher = notify::recommended_watcher(move |res| {
         // NOTE: This runs on a thread owned by notify, so we only queue
@@ -123,52 +117,39 @@ fn parse_args(
 }
 
 /**
-    Finds the name that a watched file is stored under in its parent directory.
+    Checks if the filesystem looks up the name of the given file case-insensitively,
+    by looking up the same name with its case flipped and checking if it is the same file.
 
-    On case-insensitive filesystems (the default on Windows and macOS), a file can
-    be watched using any casing, but OS-level watchers report the stored casing,
-    which would never match the requested path and silently drop every event.
+    On case-insensitive filesystems (the default on Windows and macOS), OS-level
+    watchers report the casing a file is stored with, which may differ from the
+    casing it was watched with, and may change through case-only renames.
 */
-fn stored_file_name(parent: &Path, file: &Path) -> OsString {
-    let Some(requested) = file.file_name() else {
-        return OsString::new();
+fn is_case_insensitive(file: &Path) -> bool {
+    let (Some(parent), Some(name)) = (file.parent(), file.file_name()) else {
+        return false;
     };
-    let Ok(entries) = std::fs::read_dir(parent) else {
-        return requested.to_os_string();
+    let Some(flipped) = flip_case(name) else {
+        return false;
     };
-    let canonical_file = std::fs::canonicalize(file).ok();
-    pick_stored_file_name(
-        requested,
-        entries.flatten().map(|entry| entry.file_name()),
-        |candidate| {
-            canonical_file.is_some()
-                && std::fs::canonicalize(parent.join(candidate)).ok() == canonical_file
-        },
-    )
+    is_same_file(file, &parent.join(flipped))
 }
 
-/**
-    Picks the stored name of a file out of the entries in its parent directory.
-
-    An exact match always wins. Otherwise, the first entry that only differs in
-    (ASCII) casing and that `is_same_file` confirms to be the same file is used,
-    which keeps distinct files apart on case-sensitive filesystems.
-*/
-fn pick_stored_file_name(
-    requested: &OsStr,
-    entries: impl IntoIterator<Item = OsString>,
-    is_same_file: impl Fn(&OsStr) -> bool,
-) -> OsString {
-    let mut case_variant = None;
-    for entry in entries {
-        if entry == requested {
-            return entry;
-        }
-        if case_variant.is_none() && entry.eq_ignore_ascii_case(requested) && is_same_file(&entry) {
-            case_variant = Some(entry);
-        }
+#[cfg(unix)]
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
     }
-    case_variant.unwrap_or_else(|| requested.to_os_string())
+}
+
+#[cfg(not(unix))]
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    // NOTE: Canonical paths on Windows use the stored casing of every component
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 enum Received {
@@ -346,37 +327,5 @@ mod tests {
         assert!(parse_args(&lua, options, LuaValue::Boolean(true)).is_err());
         let callback = LuaValue::Function(lua.create_function(|_, ()| Ok(())).unwrap());
         assert!(parse_args(&lua, LuaValue::Boolean(true), callback).is_err());
-    }
-
-    fn names(list: &[&str]) -> Vec<OsString> {
-        list.iter().map(OsString::from).collect()
-    }
-
-    #[test]
-    fn stored_file_name_prefers_exact_matches() {
-        let entries = names(&["CONFIG.json", "config.json"]);
-        let picked = pick_stored_file_name(OsStr::new("config.json"), entries, |_| true);
-        assert_eq!(picked, "config.json");
-    }
-
-    #[test]
-    fn stored_file_name_resolves_case_variants_of_the_same_file() {
-        let entries = names(&["other.txt", "config.json"]);
-        let picked = pick_stored_file_name(OsStr::new("CONFIG.json"), entries, |_| true);
-        assert_eq!(picked, "config.json");
-    }
-
-    #[test]
-    fn stored_file_name_keeps_distinct_files_apart() {
-        // On case-sensitive filesystems, a case variant is a different file
-        let entries = names(&["config.json"]);
-        let picked = pick_stored_file_name(OsStr::new("CONFIG.json"), entries, |_| false);
-        assert_eq!(picked, "CONFIG.json");
-    }
-
-    #[test]
-    fn stored_file_name_falls_back_to_the_requested_name() {
-        let picked = pick_stored_file_name(OsStr::new("missing.json"), names(&["a"]), |_| true);
-        assert_eq!(picked, "missing.json");
     }
 }
