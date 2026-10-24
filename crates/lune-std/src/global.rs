@@ -16,6 +16,7 @@ pub enum LuneStandardGlobal {
     #[cfg(feature = "roblox")]
     NumberRange,
     Print,
+    Project,
     Require,
     Script,
     #[cfg(feature = "task")]
@@ -44,6 +45,7 @@ impl LuneStandardGlobal {
         #[cfg(feature = "roblox")]
         Self::NumberRange,
         Self::Print,
+        Self::Project,
         Self::Require,
         Self::Script,
         #[cfg(feature = "task")]
@@ -71,6 +73,7 @@ impl LuneStandardGlobal {
             #[cfg(feature = "roblox")]
             Self::NumberRange => "NumberRange",
             Self::Print => "print",
+            Self::Project => "project",
             Self::Require => "require",
             Self::Script => "script",
             #[cfg(feature = "task")]
@@ -104,6 +107,7 @@ impl LuneStandardGlobal {
             #[cfg(feature = "roblox")]
             Self::NumberRange => crate::globals::roblox_globals::create_number_range(lua),
             Self::Print => crate::globals::print::create(lua),
+            Self::Project => crate::globals::script::create_project(lua),
             Self::Require => crate::globals::require::create(lua),
             Self::Script => crate::globals::script::create(lua),
             #[cfg(feature = "task")]
@@ -139,6 +143,7 @@ impl FromStr for LuneStandardGlobal {
             #[cfg(feature = "roblox")]
             "numberrange" => Self::NumberRange,
             "print" => Self::Print,
+            "project" => Self::Project,
             "require" => Self::Require,
             "script" => Self::Script,
             #[cfg(feature = "task")]

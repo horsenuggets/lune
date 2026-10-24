@@ -8,6 +8,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.11.1-horse.16.1` - October 24th, 2026
+
+### Added
+
+- Added a `project` global that refers to the nearest Git repository containing the current script, so scripts can use `project.Source` instead of `script.Parent.Parent.Source` and keep working when they move. A `.git` file counts as well as a `.git` folder, so worktrees and submodules resolve to their own root
+
+### Fixed
+
+- Fixed the `script` global resolving to a module that another thread was still requiring, instead of the script that accessed it
+
 ## `0.11.1-horse.16.0` - October 24th, 2026
 
 ### Changed
