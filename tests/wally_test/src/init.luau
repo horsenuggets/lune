@@ -19,31 +19,31 @@ print("Script.Parent:", script.Parent)
 --   - ReplicatedStorage.Packages -> Packages folder
 --   - ServerScriptService.Main -> src folder
 -- So from script.Parent (the project root), we can access ReplicatedStorage
-local projectRoot = script.Parent -- src -> project root (where default.project.json is)
+const projectRoot = script.Parent -- src -> project root (where default.project.json is)
 print("Project root:", projectRoot)
 
-local ReplicatedStorage = projectRoot.ReplicatedStorage
+const ReplicatedStorage = projectRoot.ReplicatedStorage
 print("ReplicatedStorage:", ReplicatedStorage)
 
-local Packages = ReplicatedStorage.Packages
+const Packages = ReplicatedStorage.Packages
 print("Packages:", Packages)
 
 -- Try to require Signal using the script global pattern
-local SignalModule = Packages.Signal
+const SignalModule = Packages.Signal
 print("Signal module reference:", SignalModule)
 
 -- Get the require path and require it
-local requirePath = SignalModule:RequirePath()
+const requirePath = SignalModule:RequirePath()
 print("Signal require path:", requirePath)
 
-local Signal = require(requirePath)
+const Signal = require(requirePath)
 print("Signal module loaded:", Signal)
 
 -- Test basic Signal functionality
 assert(Signal ~= nil, "Signal should not be nil")
 assert(Signal.new ~= nil, "Signal.new should exist")
 
-local signal = Signal.new()
+const signal = Signal.new()
 assert(signal ~= nil, "Creating a new signal should work")
 print("Created signal:", signal)
 
@@ -71,11 +71,11 @@ print("Signal tests passed!")
 -- This demonstrates that the project.json $path mapping works (promise/lib is loaded)
 -- but packages that depend on Roblox DataModel APIs won't work without modifications
 print("\nTesting Promise package (expects to fail due to Roblox APIs)...")
-local PromiseModule = Packages.Promise
+const PromiseModule = Packages.Promise
 print("Promise module reference:", PromiseModule)
 
-local promiseSuccess, promiseResult = pcall(function()
-	local requirePath = PromiseModule:RequirePath()
+const promiseSuccess, promiseResult = pcall(function()
+	const requirePath = PromiseModule:RequirePath()
 	print("Promise require path:", requirePath)
 	return require(requirePath)
 end)
@@ -85,7 +85,7 @@ if promiseSuccess then
 	print("Promise tests passed!")
 else
 	-- Expected failure: Promise uses game:GetService() which doesn't exist in Lune
-	local errorStr = tostring(promiseResult)
+	const errorStr = tostring(promiseResult)
 	if string.find(errorStr, "GetService") then
 		print("Promise failed as expected (Roblox API dependency: game:GetService)")
 		print("The default.project.json path mapping worked correctly!")
