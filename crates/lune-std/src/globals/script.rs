@@ -150,9 +150,10 @@ fn script_file(lua: &Lua, script_path: &Path) -> PathBuf {
 /// from its folder for a `.git` entry. `.git` is a directory in a normal checkout and a
 /// file in worktrees and submodules, so both count.
 fn find_git_root(script_file: &Path) -> Option<PathBuf> {
-    // Canonicalize so that ".." components can't walk into a folder the script isn't in.
-    // dunce avoids verbatim paths on Windows, which reject forward slashes.
-    dunce::canonicalize(script_file.parent()?)
+    // Make the path absolute first, since a bare relative file name has an empty parent.
+    // Then canonicalize so that ".." components can't walk into a folder the script isn't
+    // in. dunce avoids verbatim paths on Windows, which reject forward slashes.
+    dunce::canonicalize(std::path::absolute(script_file).ok()?.parent()?)
         .ok()?
         .ancestors()
         .find(|dir| dir.join(".git").exists())
@@ -593,6 +594,15 @@ mod tests {
         let script = root.join("Sibling").join("..").join("Main.luau");
         assert_eq!(find_git_root(&script), Some(root.clone()));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn find_git_root_accepts_bare_relative_file_names() {
+        // Unit tests run from the crate folder, which is inside the Lune repository
+        let cwd = dunce::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        let root = find_git_root(Path::new("Cargo.toml")).expect("should find the repository");
+        assert!(cwd.starts_with(&root));
+        assert!(root.join(".git").exists());
     }
 
     #[test]
