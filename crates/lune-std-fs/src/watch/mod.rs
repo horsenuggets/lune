@@ -14,7 +14,7 @@ mod handle;
 mod options;
 mod queue;
 
-use self::event::{WatchEvent, WatchTarget, push_unique};
+use self::event::{WatchEvent, WatchTarget, push_debounced};
 use self::handle::WatchHandle;
 use self::options::FsWatchOptions;
 use self::queue::{EventQueue, QUEUE_CAPACITY, event_queue};
@@ -217,7 +217,7 @@ async fn run_watcher(
                     None
                 };
                 match or(next, quiet).await {
-                    Some(Some(event)) => push_unique(&mut batch, event),
+                    Some(Some(event)) => push_debounced(&mut batch, event, QUEUE_CAPACITY),
                     Some(None) => return,
                     None => break,
                 }
