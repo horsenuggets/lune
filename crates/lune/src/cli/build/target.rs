@@ -151,8 +151,33 @@ impl BuildTarget {
         self.os.exe_suffix()
     }
 
+    /**
+        Returns where the downloaded runtime for this target is cached.
+
+        The path includes the Lune version, since the runtime is downloaded for the
+        version doing the build. Without it, a runtime cached by an older Lune would be
+        reused forever and silently embed an outdated runtime in standalone builds.
+    */
     pub fn cache_path(&self) -> PathBuf {
-        CACHE_DIR.join(format!("{self}{}", self.os.exe_extension()))
+        CACHE_DIR
+            .join(env!("CARGO_PKG_VERSION"))
+            .join(format!("{self}{}", self.os.exe_extension()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_path_is_scoped_to_the_lune_version() {
+        let target: BuildTarget = "linux-x86_64".parse().unwrap();
+        let path = target.cache_path();
+        assert_eq!(
+            path.parent().unwrap(),
+            CACHE_DIR.join(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(path.file_name().unwrap(), "linux-x86_64");
     }
 }
 
