@@ -1,5 +1,6 @@
 terraform {
-  required_version = ">= 1.0"
+  # The CopilotReview module in luau-cicd uses terraform_data and check blocks.
+  required_version = ">= 1.5"
 
   required_providers {
     github = {
@@ -42,4 +43,10 @@ module "repo" {
     "Validate version",
     "Verify diff matches main",
   ]
+}
+
+# The Copilot review ruleset used to be defined here and now comes from LuauRepo.
+moved {
+  from = github_repository_ruleset.copilot_code_review
+  to   = module.repo.github_repository_ruleset.copilot_code_review
 }
