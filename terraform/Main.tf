@@ -1,5 +1,6 @@
 terraform {
-  required_version = ">= 1.0"
+  # The CopilotReview module in luau-cicd uses terraform_data and check blocks.
+  required_version = ">= 1.5"
 
   required_providers {
     github = {
@@ -16,6 +17,9 @@ provider "github" {
 module "repo" {
   source     = "../submodules/luau-cicd/Terraform/Modules/LuauRepo"
   repository = "lune"
+
+  # Upstream sync PRs land with a merge commit to keep upstream history on main.
+  allow_merge_commit = true
 
   main_checks = [
     "Analyze and lint Luau files",
@@ -41,27 +45,8 @@ module "repo" {
   ]
 }
 
-# Automatically request a Copilot code review on every non-draft PR targeting
-# main or release, matching the established horsenuggets convention. The
-# LuauRepo module only configures branch protection and status checks, so the
-# Copilot review gate lives in its own ruleset here.
-resource "github_repository_ruleset" "copilot_code_review" {
-  name        = "Copilot Code Review"
-  repository  = "lune"
-  target      = "branch"
-  enforcement = "active"
-
-  conditions {
-    ref_name {
-      include = ["refs/heads/main", "refs/heads/release"]
-      exclude = []
-    }
-  }
-
-  rules {
-    copilot_code_review {
-      review_on_push             = true
-      review_draft_pull_requests = false
-    }
-  }
+# The Copilot review ruleset used to be defined here and now comes from LuauRepo.
+moved {
+  from = github_repository_ruleset.copilot_code_review
+  to   = module.repo.github_repository_ruleset.copilot_code_review
 }

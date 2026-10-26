@@ -33,3 +33,8 @@ scripts/physical_properties_enum_map.rs
 
 # Wally packages (should be installed via wally install)
 **/Packages/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
