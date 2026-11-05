@@ -20,4 +20,8 @@ const Stories = Catalog.CreateCatalog("Rooted", {
 assert(#Stories == 1)
 print(Catalog.RenderStory(Stories[1]))
 
+const Dynamic = Context:Import("/Dynamic.ts")
+const Extra = Dynamic.Load("Extra")
+assert(Extra.Value == 42)
+
 Context:Close()

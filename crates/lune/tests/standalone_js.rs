@@ -151,6 +151,8 @@ fn standalone_honors_module_root_without_source_files() {
         .arg(&main)
         .arg("--output")
         .arg(&binary)
+        .arg("--js-include")
+        .arg("Source/Extra.ts")
         .current_dir(&root));
     assert_success(&build, "rooted standalone build");
 
@@ -158,5 +160,71 @@ fn standalone_honors_module_root_without_source_files() {
     let empty = tempfile::tempdir().unwrap();
     let standalone = run(Command::new(&binary).current_dir(empty.path()));
     assert_success(&standalone, "rooted standalone execution without sources");
+    assert_eq!(standalone.stdout, normal.stdout);
+}
+
+#[test]
+fn standalone_supports_first_import_from_a_subdirectory() {
+    let (_temporary, root) = fixture_root_from("standalone-js-subdir", "Subdir");
+    let main = root.join("main.luau");
+    let binary = root.join(if cfg!(windows) {
+        "Subdir.exe"
+    } else {
+        "Subdir"
+    });
+
+    let normal = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("run")
+        .arg(&main)
+        .current_dir(&root));
+    assert_success(&normal, "normal subdirectory execution");
+
+    let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .current_dir(&root));
+    assert_success(&build, "subdirectory standalone build");
+
+    fs::rename(root.join("main.luau"), root.join("main-hidden.luau")).unwrap();
+    fs::rename(root.join("Sub"), root.join("SubHidden")).unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    let standalone = run(Command::new(&binary).current_dir(empty.path()));
+    assert_success(&standalone, "subdirectory standalone execution");
+    assert_eq!(standalone.stdout, normal.stdout);
+}
+
+#[test]
+fn standalone_keeps_multiple_module_roots_separate() {
+    let (_temporary, root) = fixture_root_from("standalone-js-multiroot", "Multiroot");
+    let main = root.join("main.luau");
+    let binary = root.join(if cfg!(windows) {
+        "Multiroot.exe"
+    } else {
+        "Multiroot"
+    });
+
+    let normal = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("run")
+        .arg(&main)
+        .current_dir(&root));
+    assert_success(&normal, "normal multi-root execution");
+    assert_eq!(String::from_utf8_lossy(&normal.stdout), "A\nB\n");
+
+    let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .current_dir(&root));
+    assert_success(&build, "multi-root standalone build");
+
+    fs::rename(root.join("main.luau"), root.join("main-hidden.luau")).unwrap();
+    fs::rename(root.join("A"), root.join("AHidden")).unwrap();
+    fs::rename(root.join("B"), root.join("BHidden")).unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    let standalone = run(Command::new(&binary).current_dir(empty.path()));
+    assert_success(&standalone, "multi-root standalone execution");
     assert_eq!(standalone.stdout, normal.stdout);
 }
