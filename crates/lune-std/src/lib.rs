@@ -41,6 +41,11 @@ pub fn inject_globals(lua: Lua) -> LuaResult<()> {
     Errors when out of memory, or if *default* Lua globals are missing.
 */
 pub fn inject_std(lua: Lua) -> LuaResult<()> {
+    #[cfg(feature = "js")]
+    lua.set_app_data(lune_std_js::source::ScriptPathProvider(
+        self::globals::script::get_current_script_path,
+    ));
+
     for library in LuneStandardLibrary::ALL {
         let alias = format!("@lune/{}", library.name());
         let module = library.module(lua.clone())?;

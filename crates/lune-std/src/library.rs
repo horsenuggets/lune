@@ -10,6 +10,7 @@ use mlua::prelude::*;
 pub enum LuneStandardLibrary {
     #[cfg(feature = "datetime")] DateTime,
     #[cfg(feature = "fs")]       Fs,
+    #[cfg(feature = "js")]       Js,
     #[cfg(feature = "luau")]     Luau,
     #[cfg(feature = "net")]      Net,
     #[cfg(feature = "task")]     Task,
@@ -28,6 +29,7 @@ impl LuneStandardLibrary {
     pub const ALL: &'static [Self] = &[
         #[cfg(feature = "datetime")] Self::DateTime,
         #[cfg(feature = "fs")]       Self::Fs,
+        #[cfg(feature = "js")]       Self::Js,
         #[cfg(feature = "luau")]     Self::Luau,
         #[cfg(feature = "net")]      Self::Net,
         #[cfg(feature = "task")]     Self::Task,
@@ -48,6 +50,7 @@ impl LuneStandardLibrary {
         match self {
             #[cfg(feature = "datetime")] Self::DateTime => "datetime",
             #[cfg(feature = "fs")]       Self::Fs       => "fs",
+            #[cfg(feature = "js")]       Self::Js       => "js",
             #[cfg(feature = "luau")]     Self::Luau     => "luau",
             #[cfg(feature = "net")]      Self::Net      => "net",
             #[cfg(feature = "task")]     Self::Task     => "task",
@@ -71,6 +74,7 @@ impl LuneStandardLibrary {
     	match self {
             #[cfg(feature = "datetime")] Self::DateTime => lune_std_datetime::typedefs(),
             #[cfg(feature = "fs")]       Self::Fs       => lune_std_fs::typedefs(),
+            #[cfg(feature = "js")]       Self::Js       => lune_std_js::typedefs(),
             #[cfg(feature = "luau")]     Self::Luau     => lune_std_luau::typedefs(),
             #[cfg(feature = "net")]      Self::Net      => lune_std_net::typedefs(),
             #[cfg(feature = "task")]     Self::Task     => lune_std_task::typedefs(),
@@ -98,6 +102,7 @@ impl LuneStandardLibrary {
         let res: LuaResult<LuaTable> = match self {
             #[cfg(feature = "datetime")] Self::DateTime => lune_std_datetime::module(mod_lua),
             #[cfg(feature = "fs")]       Self::Fs       => lune_std_fs::module(mod_lua),
+            #[cfg(feature = "js")]       Self::Js       => lune_std_js::module(mod_lua),
             #[cfg(feature = "luau")]     Self::Luau     => lune_std_luau::module(mod_lua),
             #[cfg(feature = "net")]      Self::Net      => lune_std_net::module(mod_lua),
             #[cfg(feature = "task")]     Self::Task     => lune_std_task::module(mod_lua),
@@ -127,6 +132,7 @@ impl FromStr for LuneStandardLibrary {
         Ok(match low.as_str() {
             #[cfg(feature = "datetime")] "datetime" => Self::DateTime,
             #[cfg(feature = "fs")]       "fs"       => Self::Fs,
+            #[cfg(feature = "js")]       "js"       => Self::Js,
             #[cfg(feature = "luau")]     "luau"     => Self::Luau,
             #[cfg(feature = "net")]      "net"      => Self::Net,
             #[cfg(feature = "task")]     "task"     => Self::Task,
