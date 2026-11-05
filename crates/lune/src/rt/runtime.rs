@@ -654,6 +654,14 @@ impl Runtime {
                 script_path
             };
             lune_std::push_script_path(&self.lua, script_path)?;
+            #[cfg(feature = "std-js")]
+            {
+                let base = std::path::Path::new(script_path)
+                    .parent()
+                    .map(std::path::Path::to_path_buf);
+                self.lua
+                    .set_app_data(lune_std_js::source::JsModuleBase(base));
+            }
         }
 
         // Load our "main" thread

@@ -27,8 +27,10 @@ use crate::{
     loader::SharedModuleCache,
     module::ModuleId,
     options::{JsContextOptions, JsEvaluateOptions},
-    paths::module_base_for_path,
-    source::{BundleSourceProvider, HostSourceProvider, ScriptPathProvider, SourceProvider},
+    paths::{module_base_for_path, module_root_key},
+    source::{
+        BundleSourceProvider, HostSourceProvider, JsModuleBase, ScriptPathProvider, SourceProvider,
+    },
     store::ModuleGraph,
 };
 
@@ -190,6 +192,9 @@ impl JsContext {
         options: JsContextOptions,
     ) -> Result<Self, JsError> {
         let module_cache = SharedModuleCache::new();
+        module_cache.set_namespace(module_root_key(
+            options.module_root.as_deref().and_then(Path::to_str),
+        ));
         if let Some(provider) = lua
             .app_data_ref::<Option<Arc<BundleSourceProvider>>>()
             .and_then(|provider| provider.clone())
@@ -304,15 +309,32 @@ impl JsContext {
         if let Some(provider) = bundled {
             let base = module_base_for_path(Path::new(&script_path), Path::new("/"), false)
                 .map_err(|error| JsError::new(error.to_string()))?;
+            let key = module_root_key(
+                self.inner
+                    .options
+                    .module_root
+                    .as_deref()
+                    .and_then(Path::to_str),
+            );
+            let base = ModuleId::parse(format!("{key}{base}"))
+                .map_err(|error| JsError::new(error.to_string()))?;
+            let specifier = if specifier.starts_with('/') {
+                format!("{key}{specifier}")
+            } else {
+                specifier.to_string()
+            };
             return Ok(ModuleImportRequest {
                 provider,
                 base,
-                specifier: specifier.to_string(),
+                specifier,
             });
         }
 
         let script_path = PathBuf::from(script_path);
-        let provider = self.host_provider(&script_path)?;
+        let base_directory = lua
+            .app_data_ref::<JsModuleBase>()
+            .and_then(|base| base.0.clone());
+        let provider = self.host_provider(&script_path, base_directory)?;
         let base = module_base_for_path(&script_path, provider.root(), true)
             .map_err(|error| JsError::new(error.to_string()))?;
         Ok(ModuleImportRequest {
@@ -326,20 +348,28 @@ impl JsContext {
     ///
     /// A stable root keeps every module ID in a context unambiguous, even when imports
     /// originate from different Luau directories.
-    fn host_provider(&self, caller: &Path) -> Result<Arc<HostSourceProvider>, JsError> {
+    fn host_provider(
+        &self,
+        caller: &Path,
+        base_directory: Option<PathBuf>,
+    ) -> Result<Arc<HostSourceProvider>, JsError> {
         if let Some(provider) = self.inner.host_provider.borrow().as_ref() {
             return Ok(provider.clone());
         }
-        let caller_directory = caller.parent().ok_or_else(|| {
+        // Default to the entry script's directory so every caller shares one root,
+        // matching the build's project root.
+        let base_directory =
+            base_directory.or_else(|| caller.parent().map(std::path::Path::to_path_buf));
+        let base_directory = base_directory.ok_or_else(|| {
             JsError::new("Cannot resolve a JavaScript import without a directory")
         })?;
         let root = self.inner.options.module_root.clone().map_or_else(
-            || caller_directory.to_path_buf(),
+            || base_directory.clone(),
             |root| {
                 if root.is_absolute() {
                     root
                 } else {
-                    caller_directory.join(root)
+                    base_directory.join(root)
                 }
             },
         );
@@ -353,6 +383,8 @@ impl JsContext {
         self.inner
             .module_cache
             .set_fallback(provider.clone() as Arc<dyn SourceProvider>);
+        // Host modules use plain root-relative IDs; only bundles are namespaced.
+        self.inner.module_cache.set_namespace("");
         Ok(provider)
     }
 

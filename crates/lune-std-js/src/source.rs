@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    sync::RwLock,
+    sync::{Arc, RwLock},
 };
 
 use mlua::prelude::*;
@@ -14,6 +14,10 @@ use crate::{
 
 #[derive(Clone, Copy)]
 pub struct ScriptPathProvider(pub fn(&Lua) -> LuaResult<Option<String>>);
+
+/// Directory of the entry Luau script, used as the default JavaScript module root.
+#[derive(Clone, Debug)]
+pub struct JsModuleBase(pub Option<PathBuf>);
 
 #[derive(Clone, Debug)]
 pub enum ModuleSource {
@@ -28,6 +32,47 @@ impl ModuleSource {
     #[must_use]
     pub fn original(source: impl Into<String>) -> Self {
         Self::Original(source.into())
+    }
+}
+
+/// Prefixes module IDs with a namespace while delegating to another provider.
+#[derive(Clone)]
+pub struct NamespacedProvider {
+    inner: Arc<dyn SourceProvider + Send + Sync>,
+    namespace: String,
+}
+
+impl NamespacedProvider {
+    #[must_use]
+    pub fn new(namespace: impl Into<String>, inner: Arc<dyn SourceProvider + Send + Sync>) -> Self {
+        Self {
+            inner,
+            namespace: namespace.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    fn bare(&self, id: &ModuleId) -> Result<ModuleId, ModuleError> {
+        let bare = id
+            .as_str()
+            .strip_prefix(&self.namespace)
+            .filter(|bare| bare.starts_with('/'))
+            .unwrap_or(id.as_str());
+        ModuleId::parse(bare)
+    }
+}
+
+impl SourceProvider for NamespacedProvider {
+    fn load(&self, id: &ModuleId) -> Result<ModuleSource, ModuleError> {
+        self.inner.load(&self.bare(id)?)
+    }
+
+    fn exists(&self, id: &ModuleId) -> Result<bool, ModuleError> {
+        self.inner.exists(&self.bare(id)?)
     }
 }
 

@@ -18,6 +18,7 @@ use crate::{
 pub struct SharedModuleCache {
     fallback: Rc<RefCell<Option<Arc<dyn SourceProvider>>>>,
     modules: Rc<RefCell<BTreeMap<ModuleId, TransformedModule>>>,
+    namespace: Rc<RefCell<String>>,
 }
 
 impl SharedModuleCache {
@@ -33,6 +34,24 @@ impl SharedModuleCache {
 
     fn fallback(&self) -> Option<Arc<dyn SourceProvider>> {
         self.fallback.borrow().clone()
+    }
+
+    /// Namespaces absolute module specifiers for bundled roots.
+    pub fn set_namespace(&self, namespace: impl Into<String>) {
+        *self.namespace.borrow_mut() = namespace.into();
+    }
+
+    fn namespace(&self) -> String {
+        self.namespace.borrow().clone()
+    }
+
+    fn absolute(&self, name: &str) -> String {
+        let namespace = self.namespace();
+        if namespace.is_empty() || name.starts_with(&namespace) {
+            name.to_string()
+        } else {
+            format!("{namespace}{name}")
+        }
     }
 
     pub fn insert_graph(&self, graph: ModuleGraph) {
@@ -106,9 +125,10 @@ impl Resolver for SharedModuleCache {
         // when no provider is installed.
         let authoritative = self.fallback();
         let resolved = if name.starts_with('/') {
+            let absolute = self.absolute(name);
             match authoritative {
-                Some(provider) => resolve_entry(provider.as_ref(), name),
-                None => resolve_entry(self, name),
+                Some(provider) => resolve_entry(provider.as_ref(), &absolute),
+                None => resolve_entry(self, &absolute),
             }
         } else {
             let base = ModuleId::parse(base)

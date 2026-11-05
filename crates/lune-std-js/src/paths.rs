@@ -4,6 +4,25 @@ use lune_utils::path::LuauModulePath;
 
 use crate::module::{ModuleError, ModuleId};
 
+/// Namespaces embedded modules by their literal `ModuleRoot` so multiple roots
+/// can coexist in one binary without colliding module IDs.
+#[must_use]
+pub fn module_root_key(root: Option<&str>) -> String {
+    let Some(root) = root else {
+        return String::new();
+    };
+    let mut root = root.replace('\\', "/");
+    while let Some(stripped) = root.strip_prefix("./") {
+        root = stripped.to_string();
+    }
+    let root = root.trim_matches('/');
+    if root.is_empty() {
+        String::new()
+    } else {
+        format!("/@{root}")
+    }
+}
+
 /// Builds the synthetic importer identity for a Luau caller.
 ///
 /// The caller's directory is represented inside the module namespace so relative
