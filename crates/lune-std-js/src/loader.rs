@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 
 use rquickjs::{
     Ctx, Error, Module,
@@ -9,12 +9,14 @@ use crate::{
     module::{ModuleError, ModuleId, TransformedModule},
     resolver::{resolve_entry, resolve_module},
     source::{ModuleSource, SourceProvider},
+    source_map::PortableSourceMap,
     store::ModuleGraph,
 };
 
 /** A mutable, context-local module cache shared by `QuickJS`'s resolver and loader. */
 #[derive(Clone, Default)]
 pub struct SharedModuleCache {
+    fallback: Rc<RefCell<Option<Arc<dyn SourceProvider>>>>,
     modules: Rc<RefCell<BTreeMap<ModuleId, TransformedModule>>>,
 }
 
@@ -22,6 +24,15 @@ impl SharedModuleCache {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Sets the provider used to resolve and transform dynamic imports on demand.
+    pub fn set_fallback(&self, provider: Arc<dyn SourceProvider>) {
+        self.fallback.borrow_mut().replace(provider);
+    }
+
+    fn fallback(&self) -> Option<Arc<dyn SourceProvider>> {
+        self.fallback.borrow().clone()
     }
 
     pub fn insert_graph(&self, graph: ModuleGraph) {
@@ -47,6 +58,14 @@ impl SharedModuleCache {
     #[must_use]
     pub fn contains(&self, id: &ModuleId) -> bool {
         self.modules.borrow().contains_key(id)
+    }
+
+    #[must_use]
+    pub fn source_map(&self, id: &ModuleId) -> Option<PortableSourceMap> {
+        self.modules
+            .borrow()
+            .get(id)
+            .and_then(|module| module.source_map().cloned())
     }
 }
 
@@ -82,16 +101,22 @@ impl Resolver for SharedModuleCache {
                 "Import attributes are not supported",
             ));
         }
-        if name.starts_with('/') {
-            return resolve_entry(self, name)
-                .map(|id| id.to_string())
-                .map_err(|error| Error::new_resolving_message("/", name, error.to_string()));
-        }
-        let base = ModuleId::parse(base)
-            .map_err(|error| Error::new_resolving_message(base, name, error.to_string()))?;
-        resolve_module(self, &base, name)
+        let resolved = if name.starts_with('/') {
+            resolve_entry(self, name).or_else(|error| match self.fallback() {
+                Some(provider) => resolve_entry(provider.as_ref(), name),
+                None => Err(error),
+            })
+        } else {
+            let base = ModuleId::parse(base)
+                .map_err(|error| Error::new_resolving_message(base, name, error.to_string()))?;
+            resolve_module(self, &base, name).or_else(|error| match self.fallback() {
+                Some(provider) => resolve_module(provider.as_ref(), &base, name),
+                None => Err(error),
+            })
+        };
+        resolved
             .map(|id| id.to_string())
-            .map_err(|error| Error::new_resolving_message(base.as_str(), name, error.to_string()))
+            .map_err(|error| Error::new_resolving_message(base, name, error.to_string()))
     }
 }
 
@@ -110,10 +135,26 @@ impl Loader for SharedModuleCache {
         }
         let id = ModuleId::parse(name)
             .map_err(|error| Error::new_loading_message(name, error.to_string()))?;
-        let modules = self.modules.borrow();
-        let module = modules
+        let cached = self
+            .modules
+            .borrow()
             .get(&id)
-            .ok_or_else(|| Error::new_loading_message(name, "Module is not embedded"))?;
-        Module::declare(ctx.clone(), name, module.code())
+            .map(|module| module.code().to_owned());
+        let code = if let Some(code) = cached {
+            code
+        } else {
+            let provider = self
+                .fallback()
+                .ok_or_else(|| Error::new_loading_message(name, "Module is not embedded"))?;
+            let graph = ModuleGraph::load(provider.as_ref(), id)
+                .map_err(|error| Error::new_loading_message(name, error.to_string()))?;
+            let code = graph
+                .get(graph.entry())
+                .map(|module| module.code().to_owned())
+                .ok_or_else(|| Error::new_loading_message(name, "Module is not embedded"))?;
+            self.insert_graph(graph);
+            code
+        };
+        Module::declare(ctx.clone(), name, code)
     }
 }

@@ -63,7 +63,7 @@ fn rejects_bare_specifiers_urls_and_root_escapes() {
 }
 
 #[test]
-fn loads_cycles_and_literal_dynamic_dependencies() {
+fn loads_cycles_and_discovers_dynamic_dependencies() {
     let provider = memory(&[
         (
             "/Main.ts",
@@ -83,14 +83,54 @@ fn loads_cycles_and_literal_dynamic_dependencies() {
         ("/Extra.ts", "export const Value = 42;"),
     ]);
 
+    // Runtime graph loading keeps dynamic imports lazy, while bundling follows them.
     let graph = ModuleGraph::load(&provider, id("/Main.ts")).unwrap();
-    assert_eq!(graph.len(), 4);
+    assert_eq!(graph.len(), 3);
+    let bundled = ModuleGraph::load_with_dynamic(&provider, id("/Main.ts")).unwrap();
+    assert_eq!(bundled.len(), 4);
     let dynamic = graph.get(&id("/Main.ts")).unwrap();
     assert!(
         dynamic
             .dependencies()
             .iter()
             .any(|dependency| dependency.kind == DependencyKind::Dynamic)
+    );
+}
+
+#[test]
+fn skips_type_only_imports_and_missing_dynamic_targets() {
+    let provider = memory(&[
+        (
+            "/Main.ts",
+            r#"
+                import type { OnlyType } from "./Types.js";
+                import { Value } from "./Value.js";
+                export async function Load() {
+                    return import("./Optional.js");
+                }
+                export const Result: OnlyType = Value + 2;
+            "#,
+        ),
+        ("/Value.ts", "export const Value = 40;"),
+    ]);
+
+    // Neither the erased type import nor the unexecuted dynamic import is required at runtime.
+    let graph = ModuleGraph::load(&provider, id("/Main.ts")).unwrap();
+    assert_eq!(graph.len(), 2);
+    let dependencies = graph.get(&id("/Main.ts")).unwrap().dependencies();
+    assert!(
+        dependencies
+            .iter()
+            .all(|dependency| dependency.specifier != "./Types.js")
+    );
+}
+
+#[test]
+fn resolves_absolute_imports_with_extension_substitution() {
+    let provider = memory(&[("/Value.ts", "export const Value = 42;")]);
+    assert_eq!(
+        lune_std_js::resolver::resolve_entry(&provider, "/Value.js").unwrap(),
+        id("/Value.ts")
     );
 }
 
@@ -112,8 +152,10 @@ fn evaluates_a_transformed_cycle_with_top_level_await() {
         ("/CycleB.ts", "export function ReadB() { return 'B'; }"),
         ("/Extra.ts", "export const Value = 40 + 2;"),
     ]);
-    let graph = ModuleGraph::load(&provider, id("/Main.ts")).unwrap();
+    let provider = std::sync::Arc::new(provider);
+    let graph = ModuleGraph::load(provider.as_ref(), id("/Main.ts")).unwrap();
     let cache = SharedModuleCache::new();
+    cache.set_fallback(provider);
     cache.insert_graph(graph);
 
     async_io::block_on(async {

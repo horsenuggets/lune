@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use async_io::Timer;
 use lune_utils::path::LuauModulePath;
 use mlua::prelude::*;
 use mlua_luau_scheduler::LuaSpawnExt;
@@ -23,7 +24,7 @@ use rquickjs::{
 
 use crate::{
     convert::{js_to_lua_many, lua_returns_to_js, lua_to_js},
-    error::{JsError, catch, format_caught_error, throw},
+    error::{JsError, catch, format_caught_error_with_maps, remap_error, throw},
     loader::SharedModuleCache,
     module::ModuleId,
     options::{JsContextOptions, JsEvaluateOptions},
@@ -56,14 +57,16 @@ impl AbortReason {
 struct ActiveOperation {
     abort: Option<AbortReason>,
     execution_remaining: Option<Duration>,
+    generation: u64,
     operation_deadline: Option<Instant>,
     running_since: Option<Instant>,
 }
 
 impl ActiveOperation {
-    fn new(options: &JsContextOptions) -> Self {
+    fn new(options: &JsContextOptions, generation: u64) -> Self {
         Self {
             abort: None,
+            generation,
             execution_remaining: options.execution_limit,
             operation_deadline: options
                 .operation_timeout
@@ -79,8 +82,10 @@ struct Inner {
     state: QuickJsState,
     options: JsContextOptions,
     module_cache: SharedModuleCache,
+    host_provider: RefCell<Option<Arc<HostSourceProvider>>>,
     closed: Cell<bool>,
     active: RefCell<Option<ActiveOperation>>,
+    next_generation: Cell<u64>,
     next_waiter: Cell<u64>,
     waiters: RefCell<Vec<(u64, Waker)>>,
 }
@@ -129,6 +134,7 @@ impl Inner {
 }
 
 struct OperationGuard {
+    generation: u64,
     inner: Rc<Inner>,
 }
 
@@ -140,11 +146,14 @@ impl OperationGuard {
         if inner.active.borrow().is_some() {
             return Err(JsError::reentrant());
         }
+        let generation = inner.next_generation.get() + 1;
+        inner.next_generation.set(generation);
         inner
             .active
             .borrow_mut()
-            .replace(ActiveOperation::new(&inner.options));
+            .replace(ActiveOperation::new(&inner.options, generation));
         Ok(Self {
+            generation,
             inner: inner.clone(),
         })
     }
@@ -153,6 +162,11 @@ impl OperationGuard {
 impl Drop for OperationGuard {
     fn drop(&mut self) {
         self.inner.active.borrow_mut().take();
+        // Aborted callbacks must never resume during a later operation.
+        self.inner
+            .callbacks
+            .borrow_mut()
+            .retain(|callback| callback.borrow().generation != self.generation);
     }
 }
 
@@ -176,6 +190,12 @@ impl JsContext {
         options: JsContextOptions,
     ) -> Result<Self, JsError> {
         let module_cache = SharedModuleCache::new();
+        if let Some(provider) = lua
+            .app_data_ref::<Option<Arc<BundleSourceProvider>>>()
+            .and_then(|provider| provider.clone())
+        {
+            module_cache.set_fallback(provider);
+        }
         runtime
             .set_loader(module_cache.clone(), module_cache.clone())
             .await;
@@ -183,8 +203,10 @@ impl JsContext {
             state: QuickJsState { context, runtime },
             options,
             module_cache,
+            host_provider: RefCell::new(None),
             closed: Cell::new(false),
             active: RefCell::new(None),
+            next_generation: Cell::new(0),
             callbacks: RefCell::new(Vec::new()),
             next_waiter: Cell::new(0),
             waiters: RefCell::new(Vec::new()),
@@ -205,14 +227,6 @@ impl JsContext {
             })
             .await?;
         Ok(this)
-    }
-
-    fn check_open(&self) -> Result<(), JsError> {
-        if self.inner.closed.get() {
-            Err(JsError::closed())
-        } else {
-            Ok(())
-        }
     }
 
     async fn evaluate(
@@ -237,7 +251,9 @@ impl JsContext {
             }),
         )
         .await;
-        let promise = self.prefer_abort(promise)?;
+        let promise = self
+            .prefer_abort(promise)
+            .map_err(|error| remap_error(error, &self.inner.module_cache))?;
         let value = self.settle(promise).await?;
         self.convert_value(lua, value).await
     }
@@ -245,11 +261,7 @@ impl JsContext {
     async fn import(&self, lua: Lua, specifier: String) -> Result<LuaValue, JsError> {
         let _operation = OperationGuard::begin(&self.inner)?;
         let request = self.prepare_import(&lua, &specifier)?;
-        let graph = lua
-            .spawn_blocking(move || request.load())
-            .await
-            .map_err(|error| JsError::new(error.to_string()))?;
-        self.inner.check_active()?;
+        let graph = self.load_graph(lua.clone(), request).await?;
         let entry = graph.entry().to_string();
         self.inner.module_cache.insert_graph(graph);
 
@@ -261,9 +273,27 @@ impl JsContext {
             }),
         )
         .await;
-        let promise = self.prefer_abort(promise)?;
+        let promise = self
+            .prefer_abort(promise)
+            .map_err(|error| remap_error(error, &self.inner.module_cache))?;
         let value = self.settle(promise).await?;
         self.convert_value(lua, value).await
+    }
+
+    /// Loads a module graph in a worker while staying responsive to close and deadlines.
+    async fn load_graph(
+        &self,
+        lua: Lua,
+        request: ModuleImportRequest,
+    ) -> Result<ModuleGraph, JsError> {
+        let mut task = lua.spawn_blocking(move || request.load());
+        loop {
+            self.inner.check_active()?;
+            if let Some(result) = futures_lite::future::poll_once(&mut task).await {
+                return result.map_err(|error| JsError::new(error.to_string()));
+            }
+            Timer::after(Duration::from_millis(5)).await;
+        }
     }
 
     fn prepare_import(&self, lua: &Lua, specifier: &str) -> Result<ModuleImportRequest, JsError> {
@@ -281,27 +311,47 @@ impl JsContext {
         }
 
         let script_path = PathBuf::from(script_path);
-        let script_directory = script_path.parent().ok_or_else(|| {
-            JsError::new("Cannot resolve a JavaScript import without a script directory")
+        let provider = self.host_provider(&script_path)?;
+        let base = module_base_for_path(&script_path, provider.root(), true)?;
+        Ok(ModuleImportRequest {
+            provider,
+            base,
+            specifier: specifier.to_string(),
+        })
+    }
+
+    /// Returns the context-wide host provider, creating it from the first caller when needed.
+    ///
+    /// A stable root keeps every module ID in a context unambiguous, even when imports
+    /// originate from different Luau directories.
+    fn host_provider(&self, caller: &Path) -> Result<Arc<HostSourceProvider>, JsError> {
+        if let Some(provider) = self.inner.host_provider.borrow().as_ref() {
+            return Ok(provider.clone());
+        }
+        let caller_directory = caller.parent().ok_or_else(|| {
+            JsError::new("Cannot resolve a JavaScript import without a directory")
         })?;
         let root = self.inner.options.module_root.clone().map_or_else(
-            || script_directory.to_path_buf(),
+            || caller_directory.to_path_buf(),
             |root| {
                 if root.is_absolute() {
                     root
                 } else {
-                    script_directory.join(root)
+                    caller_directory.join(root)
                 }
             },
         );
-        let provider =
-            HostSourceProvider::new(&root).map_err(|error| JsError::new(error.to_string()))?;
-        let base = module_base_for_path(&script_path, provider.root(), true)?;
-        Ok(ModuleImportRequest {
-            provider: Arc::new(provider),
-            base,
-            specifier: specifier.to_string(),
-        })
+        let provider = Arc::new(
+            HostSourceProvider::new(&root).map_err(|error| JsError::new(error.to_string()))?,
+        );
+        self.inner
+            .host_provider
+            .borrow_mut()
+            .replace(provider.clone());
+        self.inner
+            .module_cache
+            .set_fallback(provider.clone() as Arc<dyn SourceProvider>);
+        Ok(provider)
     }
 
     pub(crate) async fn call_function(
@@ -332,7 +382,9 @@ impl JsContext {
             }),
         )
         .await;
-        let promise = self.prefer_abort(promise)?;
+        let promise = self
+            .prefer_abort(promise)
+            .map_err(|error| remap_error(error, &self.inner.module_cache))?;
         let value = self.settle(promise).await?;
         self.convert_value(lua, value).await
     }
@@ -354,7 +406,23 @@ impl JsContext {
     }
 
     async fn drive_callbacks(&self) -> Result<bool, JsError> {
-        let callbacks = self.inner.callbacks.borrow().clone();
+        let generation = self
+            .inner
+            .active
+            .borrow()
+            .as_ref()
+            .map(|active| active.generation);
+        let Some(generation) = generation else {
+            return Ok(false);
+        };
+        let callbacks = self
+            .inner
+            .callbacks
+            .borrow()
+            .iter()
+            .filter(|callback| callback.borrow().generation == generation)
+            .cloned()
+            .collect::<Vec<_>>();
         if callbacks.is_empty() {
             return Ok(false);
         }
@@ -402,7 +470,7 @@ impl JsContext {
         let mut jobs_since_yield = 0usize;
         loop {
             self.inner.check_active()?;
-            let callbacks_pending = self.drive_callbacks().await?;
+            let _callbacks_pending = self.drive_callbacks().await?;
             match self.inspect_promise(&promise).await? {
                 Settlement::Pending => {}
                 Settlement::Fulfilled(value) => return Ok(value),
@@ -421,19 +489,20 @@ impl JsContext {
             .await;
             match job {
                 Ok(true) => jobs_since_yield += 1,
-                Ok(false) if callbacks_pending => YieldNow::default().await,
                 Ok(false) if self.inner.state.runtime.is_job_pending().await => {
                     YieldNow::default().await;
                 }
+                // No JS work is runnable, so sleep until a callback, timer, or close wakes us.
                 Ok(false) => IdleWait::new(self.inner.clone()).await,
                 Err(error) => {
+                    let cache = self.inner.module_cache.clone();
                     let error = MeasuredFuture::new(
                         self.inner.clone(),
-                        error.0.with(|ctx| {
-                            format_caught_error(CaughtError::from_error(
-                                &ctx,
-                                rquickjs::Error::Exception,
-                            ))
+                        error.0.with(move |ctx| {
+                            format_caught_error_with_maps(
+                                CaughtError::from_error(&ctx, rquickjs::Error::Exception),
+                                Some(&cache),
+                            )
                         }),
                     )
                     .await;
@@ -447,9 +516,10 @@ impl JsContext {
         &self,
         promise: &Persistent<Promise<'static>>,
     ) -> Result<Settlement, JsError> {
+        let cache = self.inner.module_cache.clone();
         let result = MeasuredFuture::new(
             self.inner.clone(),
-            self.inner.state.context.with(|ctx| {
+            self.inner.state.context.with(move |ctx| {
                 let promise = catch(&ctx, promise.clone().restore(&ctx))?;
                 match promise.state() {
                     PromiseState::Pending => Ok(Settlement::Pending),
@@ -463,7 +533,10 @@ impl JsContext {
                             .result::<Value>()
                             .expect("rejected promise")
                             .expect_err("rejected promises always contain an error");
-                        Err(format_caught_error(CaughtError::from_error(&ctx, error)))
+                        Err(format_caught_error_with_maps(
+                            CaughtError::from_error(&ctx, error),
+                            Some(&cache),
+                        ))
                     }
                 }
             }),
@@ -486,20 +559,22 @@ impl JsContext {
         callback: LuaFunction,
         asynchronous: bool,
     ) -> Result<(), JsError> {
-        self.check_open()?;
+        let _operation = OperationGuard::begin(&self.inner)?;
         let inner = self.inner.clone();
-        self.inner
-            .state
-            .context
-            .with(move |ctx| {
+        let result = MeasuredFuture::new(
+            self.inner.clone(),
+            self.inner.state.context.with(move |ctx| {
                 let function = if asynchronous {
                     create_async_callback(&ctx, &lua, &inner, callback)?
                 } else {
                     create_sync_callback(&ctx, &lua, &inner, callback)?
                 };
                 catch(&ctx, ctx.globals().set(name, function))
-            })
-            .await
+            }),
+        )
+        .await;
+        self.prefer_abort(result)
+            .map_err(|error| remap_error(error, &self.inner.module_cache))
     }
 
     fn close(&self) {
@@ -596,33 +671,33 @@ fn module_base_for_path(
     root: &Path,
     canonical_host: bool,
 ) -> Result<ModuleId, JsError> {
-    let relative: PathBuf = if canonical_host {
-        let resolved = LuauModulePath::resolve(path)
-            .map_err(|error| JsError::new(format!("Cannot resolve Luau script path. {error:?}")))?;
-        let script_file = resolved.target().as_file().ok_or_else(|| {
-            JsError::new("JavaScript imports require a Luau script file, not a directory")
-        })?;
-        let canonical = script_file.canonicalize().map_err(|error| {
-            JsError::new(format!("Cannot canonicalize Luau script path. {error}"))
-        })?;
-        canonical
-            .strip_prefix(root)
-            .map_err(|_| {
-                JsError::new(format!(
-                    "Luau script \"{}\" is outside JavaScript ModuleRoot \"{}\"",
-                    canonical.display(),
-                    root.display()
-                ))
+    let relative = if canonical_host {
+        let canonical = if let Ok(canonical) = path.canonicalize() {
+            canonical
+        } else {
+            let resolved = LuauModulePath::resolve(path).map_err(|error| {
+                JsError::new(format!("Cannot resolve Luau script path. {error:?}"))
+            })?;
+            let script_file = resolved.target().as_file().ok_or_else(|| {
+                JsError::new("JavaScript imports require a Luau script file, not a directory")
+            })?;
+            script_file.canonicalize().map_err(|error| {
+                JsError::new(format!("Cannot canonicalize Luau script path. {error}"))
             })?
-            .to_path_buf()
+        };
+        canonical.strip_prefix(root).map(Path::to_path_buf).ok()
     } else {
-        path.strip_prefix(root)
-            .map_err(|_| JsError::new("Luau script is outside the standalone module root"))?
-            .to_path_buf()
+        path.strip_prefix(root).map(Path::to_path_buf).ok()
     };
-    let parent = relative.parent().unwrap_or(Path::new(""));
-    let base = format!("/{}/__Luau.ts", parent.display()).replace('\\', "/");
-    ModuleId::parse(base).map_err(|error| JsError::new(error.to_string()))
+    // Callers outside the root can still import absolute paths that live inside it.
+    let base = match relative {
+        Some(relative) => {
+            let parent = relative.parent().unwrap_or(Path::new(""));
+            format!("/{}/__Luau.ts", parent.display())
+        }
+        None => "/__External/__Luau.ts".to_string(),
+    };
+    ModuleId::parse(base.replace('\\', "/")).map_err(|error| JsError::new(error.to_string()))
 }
 
 enum Settlement {
@@ -673,17 +748,17 @@ fn create_dynamic_callback<'js>(
                     .map_err(|error| throw(&callback_ctx, error.to_string()))?;
                 let operation_name = format!("{} from {base}", request.specifier);
                 let callback_lua = lua.clone();
+                let load_context = JsContext {
+                    inner: inner.clone(),
+                };
 
                 let load_promise = Promise::wrap_future(&callback_ctx, async move {
-                    let graph = callback_lua
-                        .spawn_blocking(move || request.load())
+                    let graph = load_context
+                        .load_graph(callback_lua, request)
                         .await
                         .map_err(|error| {
                             Error::new_loading_message(&operation_name, error.to_string())
                         })?;
-                    inner.check_active().map_err(|error| {
-                        Error::new_loading_message(&operation_name, error.to_string())
-                    })?;
                     let entry = graph.entry().to_string();
                     inner.module_cache.insert_graph(graph);
                     Ok::<String, Error>(entry)
@@ -770,10 +845,16 @@ fn create_async_callback<'js>(
                     inner: Rc::downgrade(&inner),
                     future: Box::pin(callback.call_async(arguments)),
                 };
+                let generation = inner
+                    .active
+                    .borrow()
+                    .as_ref()
+                    .map_or(0, |active| active.generation);
                 inner
                     .callbacks
                     .borrow_mut()
                     .push(Rc::new(RefCell::new(AsyncCallback {
+                        generation,
                         future: Some(Box::pin(future)),
                         resolve: Persistent::save(&callback_ctx, resolve),
                         reject: Persistent::save(&callback_ctx, reject),
@@ -790,6 +871,7 @@ type AsyncCallbackFuture = Pin<Box<dyn Future<Output = Result<LuaMultiValue, JsE
 
 struct AsyncCallback {
     future: Option<AsyncCallbackFuture>,
+    generation: u64,
     resolve: Persistent<Function<'static>>,
     reject: Persistent<Function<'static>>,
     result: Option<Result<LuaMultiValue, JsError>>,
@@ -954,21 +1036,30 @@ impl Drop for WaitRegistration {
 }
 
 struct IdleWait {
+    aborts_on_tick: bool,
     inner: Rc<Inner>,
-    timer: Option<ThreadTimer>,
+    timer: ThreadTimer,
     registration: WaitRegistration,
 }
 
 impl IdleWait {
+    /// Ticks at the operation deadline, or every 10 ms when the operation has none.
+    ///
+    /// The short tick avoids losing a wakeup from a callback future that became ready
+    /// between polling and registration, without busy-spinning.
     fn new(inner: Rc<Inner>) -> Self {
-        let timer = inner
+        let deadline = inner
             .active
             .borrow()
             .as_ref()
-            .and_then(|active| active.operation_deadline)
-            .map(ThreadTimer::new);
+            .and_then(|active| active.operation_deadline);
+        let timer = deadline.map_or_else(
+            || ThreadTimer::new(Instant::now() + Duration::from_millis(10)),
+            ThreadTimer::new,
+        );
         let registration = WaitRegistration::new(inner.clone());
         Self {
+            aborts_on_tick: deadline.is_some(),
             inner,
             timer,
             registration,
@@ -984,10 +1075,10 @@ impl Future for IdleWait {
         if this.inner.check_active().is_err() {
             return Poll::Ready(());
         }
-        if let Some(timer) = this.timer.as_mut()
-            && Pin::new(timer).poll(cx).is_ready()
-        {
-            this.inner.abort(AbortReason::OperationTimeout);
+        if Pin::new(&mut this.timer).poll(cx).is_ready() {
+            if this.aborts_on_tick {
+                this.inner.abort(AbortReason::OperationTimeout);
+            }
             return Poll::Ready(());
         }
         this.registration.register(cx.waker());

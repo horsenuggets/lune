@@ -13,7 +13,9 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
+async-io = "2.4"
 futures = { version = "0.3", default-features = false, features = ["std"] }
+futures-lite = "2.6"
 mlua = { version = "0.12.2", features = ["luau", "async"] }
 mlua-luau-scheduler = { version = "0.3.0", path = "../mlua-luau-scheduler" }
 # Keep the transitive browser-targeting dependency on the repository's Rust 1.92 toolchain.
@@ -33,7 +35,6 @@ rquickjs = { version = "0.14", features = ["futures", "loader"] }
 lune-utils = { version = "0.4.0", path = "../lune-utils" }
 
 [dev-dependencies]
-async-io = "2.4"
 tempfile = "3"
 
 [[test]]

@@ -34,12 +34,15 @@ pub fn resolve_entry(provider: &dyn SourceProvider, path: &str) -> Result<Module
             "The entrypoint \"{path}\" must be an absolute virtual path"
         )));
     }
-    let id = ModuleId::parse(path)?;
-    if provider.exists(&id)? {
-        Ok(id)
-    } else {
-        Err(ModuleError::NotFound(path.to_string()))
+    let virtual_path = VirtualPath::parse(path)
+        .map_err(|error| ModuleError::InvalidPath(format!("{path} ({error})")))?;
+    for candidate in resolution_candidates(&virtual_path, path.ends_with('/'))? {
+        let id = ModuleId::new(candidate)?;
+        if provider.exists(&id)? {
+            return Ok(id);
+        }
     }
+    Err(ModuleError::NotFound(path.to_string()))
 }
 
 pub fn validate_specifier(specifier: &str) -> Result<(), ModuleError> {

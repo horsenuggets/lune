@@ -68,6 +68,26 @@ pub fn transform_module(id: ModuleId, source: &str) -> Result<TransformedModule,
         )));
     }
 
+    // Collect runtime dependencies after erasure so `import type` declarations do not
+    // become mandatory modules. Dynamic imports were rewritten above, so reuse the
+    // original pass for those.
+    let mut runtime_dependencies = DependencyVisitor::default();
+    runtime_dependencies.visit_program(&parsed.program);
+    if let Some(error) = runtime_dependencies.error {
+        return Err(error);
+    }
+    let mut merged = runtime_dependencies
+        .specifiers
+        .into_iter()
+        .filter(|dependency| dependency.kind == DependencyKind::Static)
+        .collect::<BTreeSet<_>>();
+    merged.extend(
+        dependencies
+            .specifiers
+            .into_iter()
+            .filter(|dependency| dependency.kind == DependencyKind::Dynamic),
+    );
+
     let generated = Codegen::new()
         .with_options(CodegenOptions {
             source_map_path: Some(Path::new(id.as_str()).to_path_buf()),
@@ -81,7 +101,7 @@ pub fn transform_module(id: ModuleId, source: &str) -> Result<TransformedModule,
 
     Ok(TransformedModule {
         code: generated.code,
-        dependencies: dependencies.specifiers.into_iter().collect(),
+        dependencies: merged.into_iter().collect(),
         has_computed_dynamic_import: dependencies.has_computed_dynamic_import,
         id,
         source_map,
@@ -258,10 +278,12 @@ mod tests {
         assert!(!module.code().contains(": Story"));
         assert!(!module.code().contains("import type"));
         let dependencies = module.dependencies();
-        assert_eq!(dependencies.len(), 4);
-        assert!(dependencies.iter().any(|dependency| {
-            dependency.specifier == "./Story.js" && dependency.kind == DependencyKind::Static
-        }));
+        assert_eq!(dependencies.len(), 3);
+        assert!(
+            dependencies
+                .iter()
+                .all(|dependency| dependency.specifier != "./Story.js")
+        );
         assert!(dependencies.iter().any(|dependency| {
             dependency.specifier == "./More.js" && dependency.kind == DependencyKind::Static
         }));

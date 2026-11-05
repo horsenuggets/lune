@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    module::{ModuleError, ModuleId, TransformedModule},
+    module::{DependencyKind, ModuleError, ModuleId, TransformedModule},
     resolver::{resolve_entry, resolve_module},
     source::{ModuleSource, SourceProvider},
     transform::{inspect_generated_module, transform_module},
@@ -15,9 +15,23 @@ pub struct ModuleGraph {
 }
 
 impl ModuleGraph {
-    pub fn load(
-        provider: &(dyn SourceProvider + Send + Sync),
+    /// Loads only static dependencies so runtime dynamic imports stay lazy.
+    pub fn load(provider: &dyn SourceProvider, entry: ModuleId) -> Result<Self, ModuleError> {
+        Self::load_inner(provider, entry, false)
+    }
+
+    /// Loads static and literal dynamic dependencies, for standalone embedding.
+    pub fn load_with_dynamic(
+        provider: &dyn SourceProvider,
         entry: ModuleId,
+    ) -> Result<Self, ModuleError> {
+        Self::load_inner(provider, entry, true)
+    }
+
+    fn load_inner(
+        provider: &dyn SourceProvider,
+        entry: ModuleId,
+        follow_dynamic: bool,
     ) -> Result<Self, ModuleError> {
         let mut modules = BTreeMap::new();
         let mut pending = vec![entry.clone()];
@@ -36,7 +50,9 @@ impl ModuleGraph {
 
             let mut dependencies = Vec::new();
             for dependency in transformed.dependencies() {
-                dependencies.push(resolve_module(provider, &id, &dependency.specifier)?);
+                if follow_dynamic || dependency.kind == DependencyKind::Static {
+                    dependencies.push(resolve_module(provider, &id, &dependency.specifier)?);
+                }
             }
             modules.insert(id, transformed);
             pending.extend(dependencies);
@@ -46,7 +62,7 @@ impl ModuleGraph {
     }
 
     pub fn load_specifier(
-        provider: &(dyn SourceProvider + Send + Sync),
+        provider: &dyn SourceProvider,
         base: &ModuleId,
         specifier: &str,
     ) -> Result<Self, ModuleError> {
@@ -54,12 +70,26 @@ impl ModuleGraph {
         Self::load(provider, entry)
     }
 
-    pub fn load_entry(
-        provider: &(dyn SourceProvider + Send + Sync),
+    pub fn load_specifier_with_dynamic(
+        provider: &dyn SourceProvider,
+        base: &ModuleId,
+        specifier: &str,
+    ) -> Result<Self, ModuleError> {
+        let entry = resolve_module(provider, base, specifier)?;
+        Self::load_with_dynamic(provider, entry)
+    }
+
+    pub fn load_entry(provider: &dyn SourceProvider, path: &str) -> Result<Self, ModuleError> {
+        let entry = resolve_entry(provider, path)?;
+        Self::load(provider, entry)
+    }
+
+    pub fn load_entry_with_dynamic(
+        provider: &dyn SourceProvider,
         path: &str,
     ) -> Result<Self, ModuleError> {
         let entry = resolve_entry(provider, path)?;
-        Self::load(provider, entry)
+        Self::load_with_dynamic(provider, entry)
     }
 
     #[must_use]

@@ -242,8 +242,8 @@ impl Bundler {
 
         for (caller, specifier) in &self.js_imports {
             let base = self.js_base_for_luau(caller)?;
-            let graph =
-                ModuleGraph::load_specifier(&provider, &base, specifier).map_err(|error| {
+            let graph = ModuleGraph::load_specifier_with_dynamic(&provider, &base, specifier)
+                .map_err(|error| {
                     anyhow!(error).context(format!(
                         "failed to bundle JavaScript import \"{specifier}\" from \"{}\"",
                         caller.display()
@@ -261,7 +261,7 @@ impl Bundler {
                         path.display()
                     ))
                 })?;
-                let graph = ModuleGraph::load(&provider, id).map_err(|error| {
+                let graph = ModuleGraph::load_with_dynamic(&provider, id).map_err(|error| {
                     anyhow!(error).context(format!(
                         "failed to bundle included JavaScript module: {}",
                         path.display()
