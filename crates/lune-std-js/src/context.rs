@@ -11,7 +11,6 @@ use std::{
 };
 
 use async_io::Timer;
-use lune_utils::path::LuauModulePath;
 use mlua::prelude::*;
 use mlua_luau_scheduler::LuaSpawnExt;
 use rquickjs::{
@@ -28,6 +27,7 @@ use crate::{
     loader::SharedModuleCache,
     module::ModuleId,
     options::{JsContextOptions, JsEvaluateOptions},
+    paths::module_base_for_path,
     source::{BundleSourceProvider, HostSourceProvider, ScriptPathProvider, SourceProvider},
     store::ModuleGraph,
 };
@@ -302,7 +302,8 @@ impl JsContext {
             .app_data_ref::<Option<Arc<BundleSourceProvider>>>()
             .and_then(|provider| provider.clone());
         if let Some(provider) = bundled {
-            let base = module_base_for_path(Path::new(&script_path), Path::new("/"), false)?;
+            let base = module_base_for_path(Path::new(&script_path), Path::new("/"), false)
+                .map_err(|error| JsError::new(error.to_string()))?;
             return Ok(ModuleImportRequest {
                 provider,
                 base,
@@ -312,7 +313,8 @@ impl JsContext {
 
         let script_path = PathBuf::from(script_path);
         let provider = self.host_provider(&script_path)?;
-        let base = module_base_for_path(&script_path, provider.root(), true)?;
+        let base = module_base_for_path(&script_path, provider.root(), true)
+            .map_err(|error| JsError::new(error.to_string()))?;
         Ok(ModuleImportRequest {
             provider,
             base,
@@ -666,40 +668,6 @@ fn current_script_path(lua: &Lua) -> Result<String, JsError> {
         .ok_or_else(|| JsError::new("JavaScript imports must be resolved from a Luau source file"))
 }
 
-fn module_base_for_path(
-    path: &Path,
-    root: &Path,
-    canonical_host: bool,
-) -> Result<ModuleId, JsError> {
-    let relative = if canonical_host {
-        let canonical = if let Ok(canonical) = path.canonicalize() {
-            canonical
-        } else {
-            let resolved = LuauModulePath::resolve(path).map_err(|error| {
-                JsError::new(format!("Cannot resolve Luau script path. {error:?}"))
-            })?;
-            let script_file = resolved.target().as_file().ok_or_else(|| {
-                JsError::new("JavaScript imports require a Luau script file, not a directory")
-            })?;
-            script_file.canonicalize().map_err(|error| {
-                JsError::new(format!("Cannot canonicalize Luau script path. {error}"))
-            })?
-        };
-        canonical.strip_prefix(root).map(Path::to_path_buf).ok()
-    } else {
-        path.strip_prefix(root).map(Path::to_path_buf).ok()
-    };
-    // Callers outside the root can still import absolute paths that live inside it.
-    let base = match relative {
-        Some(relative) => {
-            let parent = relative.parent().unwrap_or(Path::new(""));
-            format!("/{}/__Luau.ts", parent.display())
-        }
-        None => "/__External/__Luau.ts".to_string(),
-    };
-    ModuleId::parse(base.replace('\\', "/")).map_err(|error| JsError::new(error.to_string()))
-}
-
 enum Settlement {
     Pending,
     Fulfilled(Persistent<Value<'static>>),
@@ -1038,6 +1006,8 @@ impl Drop for WaitRegistration {
 struct IdleWait {
     aborts_on_tick: bool,
     inner: Rc<Inner>,
+    // The first poll sleeps; any later poll means a callback or close woke us.
+    sleeping: bool,
     timer: ThreadTimer,
     registration: WaitRegistration,
 }
@@ -1061,6 +1031,7 @@ impl IdleWait {
         Self {
             aborts_on_tick: deadline.is_some(),
             inner,
+            sleeping: true,
             timer,
             registration,
         }
@@ -1081,8 +1052,13 @@ impl Future for IdleWait {
             }
             return Poll::Ready(());
         }
-        this.registration.register(cx.waker());
-        Poll::Pending
+        if this.sleeping {
+            this.sleeping = false;
+            this.registration.register(cx.waker());
+            return Poll::Pending;
+        }
+        // A callback, timer, or close woke us; return control to the settlement loop.
+        Poll::Ready(())
     }
 }
 

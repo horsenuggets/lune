@@ -485,6 +485,24 @@ fn exposes_yielding_async_callbacks() -> LuaResult<()> {
 }
 
 #[test]
+fn yielding_callbacks_finish_before_operation_deadlines() -> LuaResult<()> {
+    let (_, values) = run(r#"
+        local js = require("@lune/js")
+        local context = js.newContext({ OperationTimeoutMs = 1_000 })
+        context:ExposeAsync("addLater", function(a, b)
+            sleep(1)
+            return a + b
+        end)
+        local result = context:Evaluate("addLater(20, 22)")
+        context:Close()
+        return result
+        "#)?;
+
+    assert_eq!(values, vec![LuaValue::Number(42.0)]);
+    Ok(())
+}
+
+#[test]
 fn rejects_reentrant_operations() -> LuaResult<()> {
     let (_, values) = run(r#"
         local js = require("@lune/js")

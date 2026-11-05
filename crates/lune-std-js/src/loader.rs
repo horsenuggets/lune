@@ -101,18 +101,22 @@ impl Resolver for SharedModuleCache {
                 "Import attributes are not supported",
             ));
         }
+        // The authoritative provider decides candidate precedence (for example `.js`
+        // before a cached `.ts` substitute). The cache is only the authoritative source
+        // when no provider is installed.
+        let authoritative = self.fallback();
         let resolved = if name.starts_with('/') {
-            resolve_entry(self, name).or_else(|error| match self.fallback() {
+            match authoritative {
                 Some(provider) => resolve_entry(provider.as_ref(), name),
-                None => Err(error),
-            })
+                None => resolve_entry(self, name),
+            }
         } else {
             let base = ModuleId::parse(base)
                 .map_err(|error| Error::new_resolving_message(base, name, error.to_string()))?;
-            resolve_module(self, &base, name).or_else(|error| match self.fallback() {
+            match authoritative {
                 Some(provider) => resolve_module(provider.as_ref(), &base, name),
-                None => Err(error),
-            })
+                None => resolve_module(self, &base, name),
+            }
         };
         resolved
             .map(|id| id.to_string())

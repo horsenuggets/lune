@@ -13,6 +13,7 @@ mod function;
 pub mod loader;
 pub mod module;
 mod options;
+pub mod paths;
 pub mod resolver;
 pub mod source;
 pub mod source_map;
