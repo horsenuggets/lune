@@ -7,7 +7,7 @@ use regex::Regex;
 use serde::Deserialize;
 
 use lune::JsArtifact;
-use lune_std_js::{module::ModuleId, source::HostSourceProvider, store::ModuleGraph};
+use lune_std_js::{source::HostSourceProvider, store::ModuleGraph};
 
 use super::js_imports::discover_js_imports;
 
@@ -39,7 +39,7 @@ pub struct Bundler {
     /// Alias mappings: alias -> canonical path (relativized at the end)
     aliases_canonical: HashMap<String, PathBuf>,
     /// JavaScript imports discovered in Luau source files.
-    js_imports: Vec<(PathBuf, String)>,
+    js_imports: Vec<(PathBuf, String, Option<String>)>,
     /// Regex to find require calls
     require_regex: Regex,
 }
@@ -194,10 +194,16 @@ impl Bundler {
         })?;
         self.js_imports.extend(
             discovery
-                .specifiers
+                .imports
                 .into_iter()
-                .map(|specifier| (canonical.clone(), specifier)),
+                .map(|(specifier, module_root)| (canonical.clone(), specifier, module_root)),
         );
+        for specifier in discovery.unknown_specifiers {
+            eprintln!(
+                "Warning: JavaScript import \"{specifier}\" in \"{}\" has an untraced receiver; use --js-include if it belongs to a JavaScript context",
+                file_path.display()
+            );
+        }
         if discovery.has_dynamic_imports {
             eprintln!(
                 "Warning: dynamic JavaScript imports in \"{}\" may require --js-include",
@@ -232,16 +238,18 @@ impl Bundler {
             return Ok(BTreeMap::new());
         }
 
-        let provider = HostSourceProvider::new(&self.base_dir).map_err(|error| {
-            anyhow!(error).context(format!(
-                "failed to open JavaScript source root: {}",
-                self.base_dir.display()
-            ))
-        })?;
         let mut artifacts = BTreeMap::new();
 
-        for (caller, specifier) in &self.js_imports {
-            let base = self.js_base_for_luau(caller)?;
+        for (caller, specifier, module_root) in &self.js_imports {
+            let root = self.js_root_for_luau(caller, module_root.as_deref())?;
+            let provider = HostSourceProvider::new(&root).map_err(|error| {
+                anyhow!(error).context(format!(
+                    "failed to open JavaScript source root: {}",
+                    root.display()
+                ))
+            })?;
+            let base = lune_std_js::paths::module_base_for_path(caller, provider.root(), true)
+                .map_err(|error| anyhow!(error.to_string()))?;
             let graph = ModuleGraph::load_specifier_with_dynamic(&provider, &base, specifier)
                 .map_err(|error| {
                     anyhow!(error).context(format!(
@@ -251,6 +259,13 @@ impl Bundler {
                 })?;
             Self::extend_js_artifacts(&mut artifacts, graph);
         }
+
+        let provider = HostSourceProvider::new(&self.base_dir).map_err(|error| {
+            anyhow!(error).context(format!(
+                "failed to open JavaScript source root: {}",
+                self.base_dir.display()
+            ))
+        })?;
 
         for pattern in js_include {
             let paths = expand_js_include(pattern)?;
@@ -274,11 +289,20 @@ impl Bundler {
         Ok(artifacts)
     }
 
-    fn js_base_for_luau(&self, caller: &Path) -> Result<ModuleId> {
-        let caller = self.normalize_path(caller);
-        let parent = Path::new(&caller).parent().unwrap_or(Path::new("/"));
-        ModuleId::parse(format!("{}/__Luau.ts", parent.display()).replace('\\', "/"))
-            .map_err(|error| anyhow!(error.to_string()))
+    /// Resolves the JavaScript module root for a caller and optional `ModuleRoot`.
+    fn js_root_for_luau(&self, caller: &Path, module_root: Option<&str>) -> Result<PathBuf> {
+        let caller_directory = caller.parent().unwrap_or(self.base_dir.as_path());
+        Ok(module_root.map_or_else(
+            || caller_directory.to_path_buf(),
+            |module_root| {
+                let root = PathBuf::from(module_root);
+                if root.is_absolute() {
+                    root
+                } else {
+                    caller_directory.join(root)
+                }
+            },
+        ))
     }
 
     fn extend_js_artifacts(artifacts: &mut BTreeMap<String, JsArtifact>, graph: ModuleGraph) {
