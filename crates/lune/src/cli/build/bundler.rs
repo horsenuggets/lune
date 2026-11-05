@@ -1,10 +1,15 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use regex::Regex;
 use serde::Deserialize;
+
+use lune::JsArtifact;
+use lune_std_js::{module::ModuleId, source::HostSourceProvider, store::ModuleGraph};
+
+use super::js_imports::discover_js_imports;
 
 /// Structure representing a .luaurc configuration file
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -17,6 +22,7 @@ struct LuauConfig {
 pub struct BundleResult {
     pub files: HashMap<String, Vec<u8>>,
     pub aliases: HashMap<String, String>,
+    pub js_modules: BTreeMap<String, JsArtifact>,
 }
 
 /// A bundler that resolves all dependencies of a Luau file
@@ -32,6 +38,8 @@ pub struct Bundler {
     files_canonical: HashMap<PathBuf, Vec<u8>>,
     /// Alias mappings: alias -> canonical path (relativized at the end)
     aliases_canonical: HashMap<String, PathBuf>,
+    /// JavaScript imports discovered in Luau source files.
+    js_imports: Vec<(PathBuf, String)>,
     /// Regex to find require calls
     require_regex: Regex,
 }
@@ -46,6 +54,7 @@ impl Bundler {
             processed: HashSet::new(),
             files_canonical: HashMap::new(),
             aliases_canonical: HashMap::new(),
+            js_imports: Vec::new(),
             // Match require("...") or require('...')
             require_regex: Regex::new(r#"require\s*\(\s*["']([^"']+)["']\s*\)"#)?,
         })
@@ -119,9 +128,10 @@ impl Bundler {
     }
 
     /// Bundle all dependencies starting from the entry file
-    pub fn bundle(&mut self, entry_path: &Path) -> Result<BundleResult> {
+    pub fn bundle(&mut self, entry_path: &Path, js_include: &[String]) -> Result<BundleResult> {
         // First pass: collect all files with canonical paths
         self.process_file(entry_path)?;
+        let js_modules = self.process_js_modules(js_include)?;
 
         // Now relativize all paths using the (possibly expanded) base_dir
         let mut files = HashMap::new();
@@ -136,7 +146,11 @@ impl Bundler {
             aliases.insert(alias.clone(), relative_path);
         }
 
-        Ok(BundleResult { files, aliases })
+        Ok(BundleResult {
+            files,
+            aliases,
+            js_modules,
+        })
     }
 
     /// Process a single file and its dependencies
@@ -165,6 +179,32 @@ impl Bundler {
         let source_str = String::from_utf8_lossy(&source);
         let file_dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
+        let discovery = discover_js_imports(&source_str).map_err(|errors| {
+            anyhow!(
+                errors
+                    .into_iter()
+                    .map(|error| error.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+            .context(format!(
+                "failed to parse Luau file: {}",
+                file_path.display()
+            ))
+        })?;
+        self.js_imports.extend(
+            discovery
+                .specifiers
+                .into_iter()
+                .map(|specifier| (canonical.clone(), specifier)),
+        );
+        if discovery.has_dynamic_imports {
+            eprintln!(
+                "Warning: dynamic JavaScript imports in \"{}\" may require --js-include",
+                file_path.display()
+            );
+        }
+
         let require_paths: Vec<String> = self
             .require_regex
             .captures_iter(&source_str)
@@ -185,6 +225,78 @@ impl Bundler {
         }
 
         Ok(())
+    }
+
+    fn process_js_modules(&self, js_include: &[String]) -> Result<BTreeMap<String, JsArtifact>> {
+        if self.js_imports.is_empty() && js_include.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let provider = HostSourceProvider::new(&self.base_dir).map_err(|error| {
+            anyhow!(error).context(format!(
+                "failed to open JavaScript source root: {}",
+                self.base_dir.display()
+            ))
+        })?;
+        let mut artifacts = BTreeMap::new();
+
+        for (caller, specifier) in &self.js_imports {
+            let base = self.js_base_for_luau(caller)?;
+            let graph =
+                ModuleGraph::load_specifier(&provider, &base, specifier).map_err(|error| {
+                    anyhow!(error).context(format!(
+                        "failed to bundle JavaScript import \"{specifier}\" from \"{}\"",
+                        caller.display()
+                    ))
+                })?;
+            Self::extend_js_artifacts(&mut artifacts, graph);
+        }
+
+        for pattern in js_include {
+            let paths = expand_js_include(pattern)?;
+            for path in paths {
+                let id = provider.module_id_for_path(&path).map_err(|error| {
+                    anyhow!(error).context(format!(
+                        "failed to identify included JavaScript module: {}",
+                        path.display()
+                    ))
+                })?;
+                let graph = ModuleGraph::load(&provider, id).map_err(|error| {
+                    anyhow!(error).context(format!(
+                        "failed to bundle included JavaScript module: {}",
+                        path.display()
+                    ))
+                })?;
+                Self::extend_js_artifacts(&mut artifacts, graph);
+            }
+        }
+
+        Ok(artifacts)
+    }
+
+    fn js_base_for_luau(&self, caller: &Path) -> Result<ModuleId> {
+        let caller = self.normalize_path(caller);
+        let parent = Path::new(&caller).parent().unwrap_or(Path::new("/"));
+        ModuleId::parse(format!("{}/__Luau.ts", parent.display()).replace('\\', "/"))
+            .map_err(|error| anyhow!(error.to_string()))
+    }
+
+    fn extend_js_artifacts(artifacts: &mut BTreeMap<String, JsArtifact>, graph: ModuleGraph) {
+        for (id, module) in graph.into_modules() {
+            if module.has_computed_dynamic_import() {
+                eprintln!(
+                    "Warning: computed dynamic imports in \"{id}\" require matching --js-include paths"
+                );
+            }
+            let (_, code, source_map) = module.into_bundle_parts();
+            artifacts.insert(
+                id.to_string(),
+                JsArtifact {
+                    code: code.into_bytes(),
+                    source_map: source_map.map(|map| map.to_json_string().into_bytes()),
+                },
+            );
+        }
     }
 
     /// Normalize a path for use as a bundle key.
@@ -315,6 +427,30 @@ impl Bundler {
         self.configs.insert(dir.to_path_buf(), config.clone());
         config
     }
+}
+
+fn expand_js_include(pattern: &str) -> Result<Vec<PathBuf>> {
+    if !pattern.contains(['*', '?', '[']) {
+        let path = PathBuf::from(pattern);
+        if !path.is_file() {
+            bail!("included JavaScript module does not exist: {pattern}");
+        }
+        return Ok(vec![path]);
+    }
+
+    let mut paths = Vec::new();
+    for entry in
+        glob::glob(pattern).with_context(|| format!("invalid --js-include pattern: {pattern}"))?
+    {
+        let path = entry.with_context(|| format!("failed to expand pattern: {pattern}"))?;
+        if path.is_file() {
+            paths.push(path);
+        }
+    }
+    if paths.is_empty() {
+        bail!("--js-include pattern matched no files: {pattern}");
+    }
+    Ok(paths)
 }
 
 /// Normalize a canonical path into a portable bundle key.
