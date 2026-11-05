@@ -30,8 +30,12 @@ fn encode_component(value: &str) -> String {
 /// Returns whether `id` lies within the namespace at a component boundary.
 #[must_use]
 pub fn is_within_namespace(id: &str, namespace: &str) -> bool {
-    namespace.is_empty()
-        || id == namespace
+    if namespace.is_empty() {
+        // `/@` is reserved for explicit module roots and must stay out of the
+        // default namespace.
+        return !id.starts_with("/@");
+    }
+    id == namespace
         || id
             .strip_prefix(namespace)
             .is_some_and(|rest| rest.starts_with('/'))
@@ -117,5 +121,6 @@ mod tests {
         assert!(!is_within_namespace("/@AB/Value.ts", "/@A"));
         assert!(is_within_namespace("/@AB/Value.ts", "/@AB"));
         assert!(is_within_namespace("/anything", ""));
+        assert!(!is_within_namespace("/@%2E%2E/Value.ts", ""));
     }
 }

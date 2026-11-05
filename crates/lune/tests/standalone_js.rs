@@ -325,3 +325,34 @@ fn standalone_rooted_subdirectory_worker_matches_normal_execution() {
     assert_success(&standalone, "rooted subdirectory standalone execution");
     assert_eq!(standalone.stdout, normal.stdout);
 }
+
+#[test]
+fn standalone_relocates_roots_above_the_entry_directory() {
+    let (_temporary, root) = fixture_root_from("standalone-js-parent-root", "ParentRoot");
+    let main = root.join("app").join("main.luau");
+    let binary = root.join(if cfg!(windows) {
+        "ParentRoot.exe"
+    } else {
+        "ParentRoot"
+    });
+
+    let normal = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("run")
+        .arg(&main)
+        .current_dir(&root));
+    assert_success(&normal, "normal parent-root execution");
+
+    let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .current_dir(&root));
+    assert_success(&build, "parent-root standalone build");
+
+    fs::rename(root.join("app"), root.join("appHidden")).unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    let standalone = run(Command::new(&binary).current_dir(empty.path()));
+    assert_success(&standalone, "parent-root standalone execution");
+    assert_eq!(standalone.stdout, normal.stdout);
+}

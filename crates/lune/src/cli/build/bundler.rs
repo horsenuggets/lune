@@ -250,12 +250,32 @@ impl Bundler {
         Ok(())
     }
 
-    fn process_js_modules(&self, js_include: &[String]) -> Result<BTreeMap<String, JsArtifact>> {
+    fn process_js_modules(
+        &mut self,
+        js_include: &[String],
+    ) -> Result<BTreeMap<String, JsArtifact>> {
         if self.js_imports.is_empty() && js_include.is_empty() {
             return Ok(BTreeMap::new());
         }
 
         let mut artifacts = BTreeMap::new();
+
+        // Expand the bundle so roots above the entry directory keep a relocated
+        // virtual path that matches runtime `ModuleRoot` semantics.
+        let mut roots = BTreeSet::from([None]);
+        roots.extend(self.js_roots.iter().cloned());
+        roots.extend(
+            self.js_imports
+                .iter()
+                .map(|(_, _, module_root)| module_root.clone()),
+        );
+        let root_paths = roots
+            .iter()
+            .map(|module_root| self.js_root_for_luau(Path::new(""), module_root.as_deref()))
+            .collect::<Result<Vec<_>>>()?;
+        for root in &root_paths {
+            self.expand_base_dir(root);
+        }
 
         for (caller, specifier, module_root) in &self.js_imports {
             let root = self.js_root_for_luau(caller, module_root.as_deref())?;
@@ -288,13 +308,6 @@ impl Bundler {
 
         // Includes belong to whichever context root contains them. When no root does,
         // the project root namespace is used.
-        let mut roots = BTreeSet::from([None]);
-        roots.extend(self.js_roots.iter().cloned());
-        roots.extend(
-            self.js_imports
-                .iter()
-                .map(|(_, _, module_root)| module_root.clone()),
-        );
         for pattern in js_include {
             let paths = expand_js_include(pattern)?;
             for path in paths {
