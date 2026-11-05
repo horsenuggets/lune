@@ -1,0 +1,123 @@
+#![allow(clippy::cargo_common_metadata)]
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::{Command, Output},
+};
+
+fn copy_directory(source: &Path, destination: &Path) {
+    for entry in fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let target = destination.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            fs::create_dir_all(&target).unwrap();
+            copy_directory(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+fn fixture_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join(name);
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("standalone-js");
+    fs::create_dir_all(&root).unwrap();
+    copy_directory(&fixture, &root);
+    (temporary, root)
+}
+
+fn run(command: &mut Command) -> Output {
+    command.output().unwrap_or_else(|error| {
+        panic!("failed to execute {:?}. {error}", command);
+    })
+}
+
+fn assert_success(output: &Output, label: &str) {
+    assert!(
+        output.status.success(),
+        "{label} failed with {}\nstdout\n{}\nstderr\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn hide_sources(root: &Path) {
+    fs::rename(root.join("main.luau"), root.join("main-hidden.luau")).unwrap();
+    fs::rename(root.join("Source"), root.join("SourceHidden")).unwrap();
+}
+
+#[test]
+fn standalone_javascript_matches_normal_execution_without_source_files() {
+    let (_temporary, root) = fixture_root("Normal");
+    let main = root.join("main.luau");
+    let binary = root.join(if cfg!(windows) {
+        "Figterm.exe"
+    } else {
+        "Figterm"
+    });
+
+    let normal = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("run")
+        .arg(&main)
+        .current_dir(&root));
+    assert_success(&normal, "normal execution");
+    assert_eq!(
+        String::from_utf8_lossy(&normal.stdout),
+        "ProjectList.Default → XSH, SSH CFG [80x24]\nProjectList.Empty → No projects [40x12]\n"
+    );
+
+    let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .arg("--js-include")
+        .arg("Source/Extra.ts")
+        .current_dir(&root));
+    assert_success(&build, "standalone build");
+
+    hide_sources(&root);
+    let empty = tempfile::tempdir().unwrap();
+    let standalone = run(Command::new(&binary).current_dir(empty.path()));
+    assert_success(&standalone, "standalone execution without sources");
+    assert_eq!(standalone.stdout, normal.stdout);
+}
+
+#[test]
+fn missing_computed_import_never_falls_back_to_host_files() {
+    let (_temporary, root) = fixture_root("Missing");
+    let main = root.join("main.luau");
+    let binary = root.join(if cfg!(windows) {
+        "Missing.exe"
+    } else {
+        "Missing"
+    });
+
+    let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .current_dir(&root));
+    assert_success(&build, "standalone build without dynamic inclusion");
+
+    hide_sources(&root);
+    let empty = tempfile::tempdir().unwrap();
+    let standalone = run(Command::new(&binary).current_dir(empty.path()));
+    assert!(!standalone.status.success());
+    let errors = format!(
+        "{}{}",
+        String::from_utf8_lossy(&standalone.stdout),
+        String::from_utf8_lossy(&standalone.stderr)
+    );
+    assert!(
+        errors.contains("not embedded"),
+        "unexpected standalone error\n{errors}"
+    );
+}
