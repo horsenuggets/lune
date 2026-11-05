@@ -1,7 +1,10 @@
 use std::collections::BTreeSet;
 
 use full_moon::{
-    ast::{Expression, FunctionArgs, MethodCall},
+    ast::{
+        Call, Expression, FunctionArgs, FunctionCall, Index, LocalAssignment, Prefix, Suffix,
+        luau::ConstAssignment,
+    },
     tokenizer::{TokenReference, TokenType},
     visitors::Visitor,
 };
@@ -14,29 +17,102 @@ pub struct JsImportDiscovery {
 
 #[derive(Default)]
 struct ImportVisitor {
-    discovery: JsImportDiscovery,
+    context_names: BTreeSet<String>,
+    imports: Vec<ImportCall>,
 }
 
-impl Visitor for ImportVisitor {
-    fn visit_method_call(&mut self, call: &MethodCall) {
-        if call.name().token().to_string() != "Import" {
-            return;
-        }
+struct ImportCall {
+    receiver: String,
+    specifier: Option<String>,
+}
 
-        if let Some(specifier) = literal_argument(call.args()) {
-            self.discovery.specifiers.insert(specifier);
-        } else {
-            self.discovery.has_dynamic_imports = true;
+impl ImportVisitor {
+    fn record_binding<'a>(
+        &mut self,
+        names: impl Iterator<Item = TokenReference>,
+        expressions: impl Iterator<Item = &'a Expression>,
+    ) {
+        if expressions.into_iter().any(is_new_context_call) {
+            self.context_names
+                .extend(names.map(|name| name.token().to_string()));
         }
     }
 }
 
-/// Finds literal JavaScript imports without matching comments, strings, or dynamic expressions.
+impl Visitor for ImportVisitor {
+    fn visit_const_assignment(&mut self, assignment: &ConstAssignment) {
+        self.record_binding(
+            assignment.names().iter().cloned(),
+            assignment.expressions().iter(),
+        );
+    }
+
+    fn visit_local_assignment(&mut self, assignment: &LocalAssignment) {
+        self.record_binding(
+            assignment.names().iter().cloned(),
+            assignment.expressions().iter(),
+        );
+    }
+
+    fn visit_function_call(&mut self, call: &FunctionCall) {
+        let Prefix::Name(receiver) = call.prefix() else {
+            return;
+        };
+        let receiver = receiver.token().to_string();
+        for suffix in call.suffixes() {
+            let Suffix::Call(Call::MethodCall(method)) = suffix else {
+                continue;
+            };
+            if method.name().token().to_string() != "Import" {
+                continue;
+            }
+            let specifier = literal_argument(method.args());
+            self.imports.push(ImportCall {
+                receiver: receiver.clone(),
+                specifier,
+            });
+        }
+    }
+}
+
+/// Finds literal JavaScript imports on variables created with `newContext`.
+///
+/// Restricting to known context receivers keeps unrelated `:Import(...)` calls from
+/// pulling nonexistent JavaScript modules into standalone builds.
 pub fn discover_js_imports(source: &str) -> Result<JsImportDiscovery, Vec<full_moon::Error>> {
     let ast = full_moon::parse(source)?;
     let mut visitor = ImportVisitor::default();
     visitor.visit_ast(&ast);
-    Ok(visitor.discovery)
+
+    let mut discovery = JsImportDiscovery::default();
+    for import in visitor.imports {
+        if !visitor.context_names.contains(&import.receiver) {
+            continue;
+        }
+        match import.specifier {
+            Some(specifier) => {
+                discovery.specifiers.insert(specifier);
+            }
+            None => discovery.has_dynamic_imports = true,
+        }
+    }
+    Ok(discovery)
+}
+
+fn is_new_context_call(expression: &Expression) -> bool {
+    let Expression::FunctionCall(call) = expression else {
+        return false;
+    };
+    let suffixes = call.suffixes().collect::<Vec<_>>();
+    suffixes.windows(2).any(|pair| {
+        matches!(
+            pair,
+            [
+                Suffix::Index(Index::Dot { name, .. }),
+                Suffix::Call(Call::AnonymousCall(_))
+            ] if name.token().to_string() == "newContext"
+        )
+    })
 }
 
 fn literal_argument(arguments: &FunctionArgs) -> Option<String> {
@@ -83,8 +159,10 @@ mod tests {
     }
 
     #[test]
-    fn finds_literal_method_imports() {
+    fn finds_literal_method_imports_on_contexts() {
         let source = r#"
+            const js = require("@lune/js")
+            const Context = js.newContext()
             const First = Context:Import("./First.ts")
             const Second = Context:Import './Second.ts'
             const Third = Context:Import [[./Third.ts]]
@@ -97,22 +175,25 @@ mod tests {
     }
 
     #[test]
-    fn ignores_comments_strings_and_other_calls() {
+    fn ignores_unrelated_import_methods_and_other_calls() {
         let source = r#"
+            const Importer = { Import = function() end }
+            Importer:Import("asset.json")
+            local Other = Importer:Import("another.json")
+            local Value = Context:Evaluate("./Evaluate.ts")
+            local Text = 'Context:Import("./String.ts")'
             -- Context:Import("./Comment.ts")
-            const Text = 'Context:Import("./String.ts")'
-            const Value = Context.import("./Property.ts")
-            const Other = Context:Evaluate("./Evaluate.ts")
         "#;
         assert!(specifiers(source).is_empty());
     }
 
     #[test]
-    fn reports_dynamic_and_escaped_imports() {
+    fn reports_dynamic_and_escaped_imports_on_contexts() {
         let source = r#"
-            const First = Context:Import(Name)
-            const Second = Context:Import("./First.ts", Options)
-            const Third = Context:Import("./\u{46}irst.ts")
+            const Context = js.newContext()
+            Context:Import(Name)
+            Context:Import("./First.ts", Options)
+            Context:Import("./\u{46}irst.ts")
         "#;
         let discovery = discover_js_imports(source).unwrap();
         assert!(discovery.specifiers.is_empty());
