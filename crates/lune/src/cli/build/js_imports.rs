@@ -18,47 +18,62 @@ pub struct JsImportDiscovery {
     pub unknown_specifiers: BTreeSet<String>,
 }
 
-enum Binding {
-    Alias(String),
-    NewContext(Option<String>),
-}
-
 #[derive(Default)]
 struct ImportVisitor {
-    bindings: Vec<(Vec<String>, Binding)>,
+    contexts: Vec<BTreeMap<String, Option<String>>>,
     imports: Vec<ImportCall>,
 }
 
 struct ImportCall {
+    module_root: Option<Option<String>>,
     receiver: String,
     specifier: Option<String>,
 }
 
 impl ImportVisitor {
+    fn enter_scope(&mut self) {
+        self.contexts.push(BTreeMap::new());
+    }
+
+    fn lookup(&self, name: &str) -> Option<Option<String>> {
+        self.contexts
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).cloned())
+    }
+
     fn record_binding<'a>(
         &mut self,
         names: impl Iterator<Item = TokenReference>,
         expressions: impl Iterator<Item = &'a Expression>,
     ) {
-        let names = names
-            .map(|name| name.token().to_string())
-            .collect::<Vec<_>>();
-        for expression in expressions {
-            if let Some(module_root) = new_context_root(expression) {
-                self.bindings
-                    .push((names.clone(), Binding::NewContext(module_root)));
-                return;
-            }
-            if let Expression::Var(Var::Name(name)) = expression {
-                self.bindings
-                    .push((names.clone(), Binding::Alias(name.token().to_string())));
-                return;
+        for (name, expression) in names.zip(expressions) {
+            let name = name.token().to_string();
+            let binding = if let Some(module_root) = new_context_root(expression) {
+                Some(module_root)
+            } else if let Expression::Var(Var::Name(alias)) = expression {
+                self.lookup(&alias.token().to_string())
+            } else {
+                None
+            };
+            if let Some(binding) = binding {
+                if let Some(scope) = self.contexts.last_mut() {
+                    scope.insert(name, binding);
+                }
             }
         }
     }
 }
 
 impl Visitor for ImportVisitor {
+    fn visit_block(&mut self, _block: &full_moon::ast::Block) {
+        self.enter_scope();
+    }
+
+    fn visit_block_end(&mut self, _block: &full_moon::ast::Block) {
+        self.contexts.pop();
+    }
+
     fn visit_const_assignment(&mut self, assignment: &ConstAssignment) {
         self.record_binding(
             assignment.names().iter().cloned(),
@@ -78,6 +93,7 @@ impl Visitor for ImportVisitor {
             return;
         };
         let receiver = receiver.token().to_string();
+        let module_root = self.lookup(&receiver);
         for suffix in call.suffixes() {
             let Suffix::Call(Call::MethodCall(method)) = suffix else {
                 continue;
@@ -87,6 +103,7 @@ impl Visitor for ImportVisitor {
             }
             self.imports.push(ImportCall {
                 receiver: receiver.clone(),
+                module_root: module_root.clone(),
                 specifier: literal_argument(method.args()),
             });
         }
@@ -95,43 +112,17 @@ impl Visitor for ImportVisitor {
 
 /// Finds literal JavaScript imports on variables created with `newContext`.
 ///
-/// Context provenance is propagated through aliases, and the context's literal
-/// `ModuleRoot` is carried so builds resolve modules exactly like runtime execution.
+/// Contexts are tracked lexically, including aliases and literal `ModuleRoot`
+/// values, so builds resolve modules exactly like runtime execution.
 pub fn discover_js_imports(source: &str) -> Result<JsImportDiscovery, Vec<full_moon::Error>> {
     let ast = full_moon::parse(source)?;
     let mut visitor = ImportVisitor::default();
+    visitor.enter_scope();
     visitor.visit_ast(&ast);
-
-    let mut contexts = BTreeMap::new();
-    for (names, binding) in &visitor.bindings {
-        if let Binding::NewContext(module_root) = binding {
-            for name in names {
-                contexts.insert(name.clone(), module_root.clone());
-            }
-        }
-    }
-    // Resolve alias chains after collection so forward references also work.
-    loop {
-        let mut changed = false;
-        for (names, binding) in &visitor.bindings {
-            if let Binding::Alias(source) = binding
-                && let Some(module_root) = contexts.get(source).cloned()
-            {
-                for name in names {
-                    if contexts.insert(name.clone(), module_root.clone()).is_none() {
-                        changed = true;
-                    }
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
 
     let mut discovery = JsImportDiscovery::default();
     for import in visitor.imports {
-        let Some(module_root) = contexts.get(&import.receiver) else {
+        let Some(module_root) = import.module_root else {
             if let Some(specifier) = import.specifier {
                 discovery.unknown_specifiers.insert(specifier);
             }
@@ -139,7 +130,7 @@ pub fn discover_js_imports(source: &str) -> Result<JsImportDiscovery, Vec<full_m
         };
         match import.specifier {
             Some(specifier) => {
-                discovery.imports.insert((specifier, module_root.clone()));
+                discovery.imports.insert((specifier, module_root));
             }
             None => discovery.has_dynamic_imports = true,
         }
@@ -298,6 +289,47 @@ mod tests {
         let discovery = discover_js_imports(source).unwrap();
         assert!(discovery.imports.is_empty());
         assert!(discovery.has_dynamic_imports);
+    }
+
+    #[test]
+    fn pairs_multiple_names_with_their_own_expressions() {
+        let source = r#"
+            local First, Second =
+                js.newContext({ ModuleRoot = "./A" }),
+                js.newContext({ ModuleRoot = "./B" })
+            First:Import("/Value.ts")
+            Second:Import("/Value.ts")
+        "#;
+        let discovery = discover_js_imports(source).unwrap();
+        assert_eq!(
+            discovery.imports.into_iter().collect::<Vec<_>>(),
+            vec![
+                ("/Value.ts".to_string(), Some("./A".to_string())),
+                ("/Value.ts".to_string(), Some("./B".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn respects_lexical_scopes_for_same_names() {
+        let source = r#"
+            do
+                local Context = js.newContext({ ModuleRoot = "./A" })
+                Context:Import("/Value.ts")
+            end
+            do
+                local Context = js.newContext({ ModuleRoot = "./B" })
+                Context:Import("/Value.ts")
+            end
+        "#;
+        let discovery = discover_js_imports(source).unwrap();
+        assert_eq!(
+            discovery.imports.into_iter().collect::<Vec<_>>(),
+            vec![
+                ("/Value.ts".to_string(), Some("./A".to_string())),
+                ("/Value.ts".to_string(), Some("./B".to_string())),
+            ]
+        );
     }
 
     #[test]
