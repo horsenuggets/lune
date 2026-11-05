@@ -20,12 +20,16 @@ fn copy_directory(source: &Path, destination: &Path) {
 }
 
 fn fixture_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+    fixture_root_from("standalone-js", name)
+}
+
+fn fixture_root_from(fixture_name: &str, name: &str) -> (tempfile::TempDir, PathBuf) {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join(name);
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
-        .join("standalone-js");
+        .join(fixture_name);
     fs::create_dir_all(&root).unwrap();
     copy_directory(&fixture, &root);
     (temporary, root)
@@ -120,4 +124,39 @@ fn missing_computed_import_never_falls_back_to_host_files() {
         errors.contains("not embedded"),
         "unexpected standalone error\n{errors}"
     );
+}
+
+#[test]
+fn standalone_honors_module_root_without_source_files() {
+    let (_temporary, root) = fixture_root_from("standalone-js-rooted", "Rooted");
+    let main = root.join("main.luau");
+    let binary = root.join(if cfg!(windows) {
+        "Rooted.exe"
+    } else {
+        "Rooted"
+    });
+
+    let normal = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("run")
+        .arg(&main)
+        .current_dir(&root));
+    assert_success(&normal, "normal rooted execution");
+    assert_eq!(
+        String::from_utf8_lossy(&normal.stdout),
+        "Rooted.Default → XSH [80x24]\n"
+    );
+
+    let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .current_dir(&root));
+    assert_success(&build, "rooted standalone build");
+
+    hide_sources(&root);
+    let empty = tempfile::tempdir().unwrap();
+    let standalone = run(Command::new(&binary).current_dir(empty.path()));
+    assert_success(&standalone, "rooted standalone execution without sources");
+    assert_eq!(standalone.stdout, normal.stdout);
 }
