@@ -19,6 +19,23 @@ assert(Catalog.CountProjects(Stories[1]) == 2)
 const Cycle = Context:Import("./fixtures/Figterm/CycleA.ts")
 assert(Cycle.ReadCycle() == "AB")
 
+-- Same-named modules in different directories must not share an identity.
+const TopValue = Context:Import("./fixtures/Figterm/Value.ts")
+const Consumer = require("./fixtures/Figterm/Collision/Consumer")
+const NestedValue = Consumer(Context)
+assert(TopValue.Which == "top")
+assert(NestedValue.Which == "nested")
+
+-- Callers outside ModuleRoot may still import absolute modules inside it.
+const Outside = require("../js_outside/Outside")
+const OutsideCatalog = Outside(Context)
+assert(OutsideCatalog.CountProjects({ Name = "Outside", Projects = { "One" } }) == 1)
+
+-- Dynamic imports resolve lazily, so an unused missing target does not fail the import.
+const Optional = Context:Import("./fixtures/Figterm/Optional.ts")
+assert(Optional.Marker == 1)
+assert(pcall(Optional.Load) == false)
+
 const Async = Context:Import("./fixtures/Figterm/Async.ts")
 assert(Async.AsyncValue == 42)
 
@@ -29,7 +46,7 @@ assert(Extra.Value == 42)
 const Errors = Context:Import("./fixtures/Figterm/Error.ts")
 const Ok, Message = pcall(Errors.ThrowExpectedError)
 assert(not Ok)
-assert(string.find(tostring(Message), "Error.ts", 1, true) ~= nil)
+assert(string.find(tostring(Message), "Error.ts:4:", 1, true) ~= nil)
 
 assert(pcall(function()
 	Context:Import("./fixtures/Figterm/Missing.ts")

@@ -43,7 +43,7 @@ const ErrorOk, ErrorMessage = pcall(function()
     Errors.ThrowExpectedError()
 end)
 assert(not ErrorOk)
-assert(string.find(tostring(ErrorMessage), "Error.ts", 1, true))
+assert(string.find(tostring(ErrorMessage), "Error.ts:4:", 1, true))
 
 const Reject = Context:Import("./Source/Reject.ts")
 const RejectOk, RejectMessage = pcall(function()
