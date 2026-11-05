@@ -228,3 +228,68 @@ fn standalone_keeps_multiple_module_roots_separate() {
     assert_success(&standalone, "multi-root standalone execution");
     assert_eq!(standalone.stdout, normal.stdout);
 }
+
+#[test]
+fn standalone_include_only_root_still_uses_namespace() {
+    let (_temporary, root) = fixture_root_from("standalone-js-include-only", "IncludeOnly");
+    let main = root.join("main.luau");
+    let binary = root.join(if cfg!(windows) {
+        "IncludeOnly.exe"
+    } else {
+        "IncludeOnly"
+    });
+
+    let normal = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("run")
+        .arg(&main)
+        .current_dir(&root));
+    assert_success(&normal, "normal include-only execution");
+
+    let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .arg("--js-include")
+        .arg("Source/Value.ts")
+        .current_dir(&root));
+    assert_success(&build, "include-only standalone build");
+
+    hide_sources(&root);
+    let empty = tempfile::tempdir().unwrap();
+    let standalone = run(Command::new(&binary).current_dir(empty.path()));
+    assert_success(&standalone, "include-only standalone execution");
+    assert_eq!(standalone.stdout, normal.stdout);
+}
+
+#[test]
+fn standalone_anchors_roots_at_the_entry_directory() {
+    let (_temporary, root) = fixture_root_from("standalone-js-anchored", "Anchored");
+    let main = root.join("app").join("main.luau");
+    let binary = root.join(if cfg!(windows) {
+        "Anchored.exe"
+    } else {
+        "Anchored"
+    });
+
+    let normal = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("run")
+        .arg(&main)
+        .current_dir(&root));
+    assert_success(&normal, "normal anchored execution");
+
+    let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .current_dir(&root));
+    assert_success(&build, "anchored standalone build");
+
+    fs::rename(root.join("app"), root.join("appHidden")).unwrap();
+    fs::rename(root.join("Shared"), root.join("SharedHidden")).unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    let standalone = run(Command::new(&binary).current_dir(empty.path()));
+    assert_success(&standalone, "anchored standalone execution");
+    assert_eq!(standalone.stdout, normal.stdout);
+}

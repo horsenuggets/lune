@@ -29,7 +29,8 @@ use crate::{
     options::{JsContextOptions, JsEvaluateOptions},
     paths::{module_base_for_path, module_root_key},
     source::{
-        BundleSourceProvider, HostSourceProvider, JsModuleBase, ScriptPathProvider, SourceProvider,
+        AbsoluteNsProvider, BundleSourceProvider, HostSourceProvider, JsModuleBase,
+        ScriptPathProvider, SourceProvider,
     },
     store::ModuleGraph,
 };
@@ -199,7 +200,8 @@ impl JsContext {
             .app_data_ref::<Option<Arc<BundleSourceProvider>>>()
             .and_then(|provider| provider.clone())
         {
-            module_cache.set_fallback(provider);
+            let key = module_root_key(options.module_root.as_deref().and_then(Path::to_str));
+            module_cache.set_fallback(Arc::new(AbsoluteNsProvider::new(key, provider)));
         }
         runtime
             .set_loader(module_cache.clone(), module_cache.clone())
@@ -307,7 +309,11 @@ impl JsContext {
             .app_data_ref::<Option<Arc<BundleSourceProvider>>>()
             .and_then(|provider| provider.clone());
         if let Some(provider) = bundled {
-            let base = module_base_for_path(Path::new(&script_path), Path::new("/"), false)
+            let base_root = lua
+                .app_data_ref::<JsModuleBase>()
+                .and_then(|base| base.0.clone())
+                .unwrap_or_else(|| PathBuf::from("/"));
+            let base = module_base_for_path(Path::new(&script_path), &base_root, false)
                 .map_err(|error| JsError::new(error.to_string()))?;
             let key = module_root_key(
                 self.inner
@@ -323,6 +329,8 @@ impl JsContext {
             } else {
                 specifier.to_string()
             };
+            let provider: Arc<dyn SourceProvider + Send + Sync> =
+                Arc::new(AbsoluteNsProvider::new(key, provider));
             return Ok(ModuleImportRequest {
                 provider,
                 base,

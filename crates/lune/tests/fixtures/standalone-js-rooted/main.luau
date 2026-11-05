@@ -24,4 +24,7 @@ const Dynamic = Context:Import("/Dynamic.ts")
 const Extra = Dynamic.Load("Extra")
 assert(Extra.Value == 42)
 
+const Absolute = Context:Import("/Absolute.ts")
+assert(Absolute.AbsoluteValue == 42)
+
 Context:Close()

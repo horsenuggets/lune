@@ -14,7 +14,13 @@ pub fn resolve_module(
     specifier: &str,
 ) -> Result<ModuleId, ModuleError> {
     validate_specifier(specifier)?;
-    let path = join_specifier(base, specifier)?;
+    let path = if specifier.starts_with('/') {
+        let qualified = provider.qualify_absolute(specifier);
+        VirtualPath::parse(&qualified)
+            .map_err(|error| ModuleError::InvalidPath(error.to_string()))?
+    } else {
+        join_specifier(base, specifier)?
+    };
     for candidate in resolution_candidates(&path, specifier.ends_with('/'))? {
         let candidate = ModuleId::new(candidate)?;
         if provider.exists(&candidate)? {

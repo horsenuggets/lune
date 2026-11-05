@@ -45,6 +45,10 @@ pub struct Bundler {
     aliases_canonical: HashMap<String, PathBuf>,
     /// JavaScript imports discovered in Luau source files.
     js_imports: Vec<(PathBuf, String, Option<String>)>,
+    /// All context roots, even those without literal imports.
+    js_roots: BTreeSet<Option<String>>,
+    /// Entry directory used as the default JavaScript module root.
+    js_entry_dir: PathBuf,
     /// Regex to find require calls
     require_regex: Regex,
 }
@@ -53,13 +57,20 @@ impl Bundler {
     pub fn new(entry_path: &Path) -> Result<Self> {
         // Find the project root by searching upward for .luaurc files
         let base_dir = Self::find_project_root(entry_path);
+        let js_entry_dir = entry_path
+            .canonicalize()
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| base_dir.clone());
         Ok(Self {
             base_dir,
+            js_entry_dir,
             configs: HashMap::new(),
             processed: HashSet::new(),
             files_canonical: HashMap::new(),
             aliases_canonical: HashMap::new(),
             js_imports: Vec::new(),
+            js_roots: BTreeSet::new(),
             // Match require("...") or require('...')
             require_regex: Regex::new(r#"require\s*\(\s*["']([^"']+)["']\s*\)"#)?,
         })
@@ -203,6 +214,7 @@ impl Bundler {
                 .into_iter()
                 .map(|(specifier, module_root)| (canonical.clone(), specifier, module_root)),
         );
+        self.js_roots.extend(discovery.context_roots);
         for specifier in discovery.unknown_specifiers {
             eprintln!(
                 "Warning: JavaScript import \"{specifier}\" in \"{}\" has an untraced receiver; use --js-include if it belongs to a JavaScript context",
@@ -277,6 +289,7 @@ impl Bundler {
         // Includes belong to whichever context root contains them. When no root does,
         // the project root namespace is used.
         let mut roots = BTreeSet::from([None]);
+        roots.extend(self.js_roots.iter().cloned());
         roots.extend(
             self.js_imports
                 .iter()
@@ -333,13 +346,13 @@ impl Bundler {
     /// Resolves a JavaScript module root against the project root.
     fn js_root_for_luau(&self, _caller: &Path, module_root: Option<&str>) -> Result<PathBuf> {
         Ok(module_root.map_or_else(
-            || self.base_dir.clone(),
+            || self.js_entry_dir.clone(),
             |module_root| {
                 let root = PathBuf::from(module_root);
                 if root.is_absolute() {
                     root
                 } else {
-                    self.base_dir.join(root)
+                    self.js_entry_dir.join(root)
                 }
             },
         ))

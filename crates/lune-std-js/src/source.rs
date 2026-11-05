@@ -74,6 +74,53 @@ impl SourceProvider for NamespacedProvider {
     fn exists(&self, id: &ModuleId) -> Result<bool, ModuleError> {
         self.inner.exists(&self.bare(id)?)
     }
+
+    fn qualify_absolute(&self, specifier: &str) -> String {
+        if specifier.starts_with(&self.namespace) {
+            specifier.to_string()
+        } else {
+            format!("{}{specifier}", self.namespace)
+        }
+    }
+}
+
+/// Qualifies absolute specifiers for a provider whose keys are already namespaced.
+#[derive(Clone)]
+pub struct AbsoluteNsProvider {
+    inner: Arc<dyn SourceProvider + Send + Sync>,
+    namespace: String,
+}
+
+impl AbsoluteNsProvider {
+    #[must_use]
+    pub fn new(namespace: impl Into<String>, inner: Arc<dyn SourceProvider + Send + Sync>) -> Self {
+        Self {
+            inner,
+            namespace: namespace.into(),
+        }
+    }
+}
+
+impl SourceProvider for AbsoluteNsProvider {
+    fn load(&self, id: &ModuleId) -> Result<ModuleSource, ModuleError> {
+        self.inner.load(id)
+    }
+
+    fn exists(&self, id: &ModuleId) -> Result<bool, ModuleError> {
+        self.inner.exists(id)
+    }
+
+    fn is_bundle(&self) -> bool {
+        self.inner.is_bundle()
+    }
+
+    fn qualify_absolute(&self, specifier: &str) -> String {
+        if specifier.starts_with(&self.namespace) {
+            specifier.to_string()
+        } else {
+            format!("{}{specifier}", self.namespace)
+        }
+    }
 }
 
 /** Source access shared by asynchronous graph crawlers and build tooling. */
@@ -86,6 +133,11 @@ pub trait SourceProvider {
     /// consult the host filesystem.
     fn is_bundle(&self) -> bool {
         false
+    }
+
+    /// Qualifies an absolute specifier with any provider namespace.
+    fn qualify_absolute(&self, specifier: &str) -> String {
+        specifier.to_string()
     }
 }
 

@@ -11,6 +11,8 @@ use full_moon::{
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct JsImportDiscovery {
+    /// Every discovered context root, even when no literal import was found.
+    pub context_roots: BTreeSet<Option<String>>,
     /// Literal imports paired with the receiving context's `ModuleRoot`, if any.
     pub imports: BTreeSet<(String, Option<String>)>,
     pub has_dynamic_imports: bool,
@@ -22,6 +24,7 @@ pub struct JsImportDiscovery {
 struct ImportVisitor {
     contexts: Vec<BTreeMap<String, Option<String>>>,
     imports: Vec<ImportCall>,
+    roots: BTreeSet<Option<String>>,
 }
 
 struct ImportCall {
@@ -57,6 +60,7 @@ impl ImportVisitor {
                 None
             };
             if let Some(binding) = binding {
+                self.roots.insert(binding.clone());
                 if let Some(scope) = self.contexts.last_mut() {
                     scope.insert(name, binding);
                 }
@@ -121,6 +125,7 @@ pub fn discover_js_imports(source: &str) -> Result<JsImportDiscovery, Vec<full_m
     visitor.visit_ast(&ast);
 
     let mut discovery = JsImportDiscovery::default();
+    discovery.context_roots.extend(visitor.roots);
     for import in visitor.imports {
         let Some(module_root) = import.module_root else {
             if let Some(specifier) = import.specifier {

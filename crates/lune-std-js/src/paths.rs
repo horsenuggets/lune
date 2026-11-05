@@ -11,15 +11,21 @@ pub fn module_root_key(root: Option<&str>) -> String {
     let Some(root) = root else {
         return String::new();
     };
-    let mut root = root.replace('\\', "/");
-    while let Some(stripped) = root.strip_prefix("./") {
-        root = stripped.to_string();
+    let root = root.replace('\\', "/");
+    let mut parts = Vec::new();
+    for component in root.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            component => parts.push(component),
+        }
     }
-    let root = root.trim_matches('/');
-    if root.is_empty() {
+    if parts.is_empty() {
         String::new()
     } else {
-        format!("/@{root}")
+        format!("/@{}", parts.join("/"))
     }
 }
 
@@ -62,4 +68,17 @@ pub fn module_base_for_path(
         None => "/__External/__Luau.ts".to_string(),
     };
     ModuleId::parse(base.replace('\\', "/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_module_root_keys() {
+        assert_eq!(module_root_key(None), "");
+        assert_eq!(module_root_key(Some("./Source")), "/@Source");
+        assert_eq!(module_root_key(Some("./Source/../Other")), "/@Other");
+        assert_eq!(module_root_key(Some("Source\\Nested")), "/@Source/Nested");
+    }
 }
