@@ -27,7 +27,7 @@ use crate::{
     loader::SharedModuleCache,
     module::ModuleId,
     options::{JsContextOptions, JsEvaluateOptions},
-    paths::{module_base_for_path, module_root_key},
+    paths::{module_base_for_path, module_root_key, normalize_virtual},
     source::{
         AbsoluteNsProvider, BundleSourceProvider, HostSourceProvider, JsModuleBase,
         ScriptPathProvider, SourceProvider,
@@ -309,11 +309,21 @@ impl JsContext {
             .app_data_ref::<Option<Arc<BundleSourceProvider>>>()
             .and_then(|provider| provider.clone());
         if let Some(provider) = bundled {
-            let base_root = lua
+            let entry_root = lua
                 .app_data_ref::<JsModuleBase>()
                 .and_then(|base| base.0.clone())
                 .unwrap_or_else(|| PathBuf::from("/"));
-            let base = module_base_for_path(Path::new(&script_path), &base_root, false)
+            let context_root = self.inner.options.module_root.as_ref().map_or_else(
+                || entry_root.clone(),
+                |root| {
+                    if root.is_absolute() {
+                        normalize_virtual(root)
+                    } else {
+                        normalize_virtual(&entry_root.join(root))
+                    }
+                },
+            );
+            let base = module_base_for_path(Path::new(&script_path), &context_root, false)
                 .map_err(|error| JsError::new(error.to_string()))?;
             let key = module_root_key(
                 self.inner

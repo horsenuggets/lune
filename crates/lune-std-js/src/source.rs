@@ -7,6 +7,8 @@ use std::{
 
 use mlua::prelude::*;
 
+use crate::paths::is_within_namespace;
+
 use crate::{
     module::{ModuleError, ModuleId, TransformedModule},
     source_map::PortableSourceMap,
@@ -57,6 +59,12 @@ impl NamespacedProvider {
     }
 
     fn bare(&self, id: &ModuleId) -> Result<ModuleId, ModuleError> {
+        if !is_within_namespace(id.as_str(), &self.namespace) {
+            return Err(ModuleError::NotPreloaded(format!(
+                "\"{id}\" is outside namespace \"{}\"",
+                self.namespace
+            )));
+        }
         let bare = id
             .as_str()
             .strip_prefix(&self.namespace)
@@ -101,12 +109,27 @@ impl AbsoluteNsProvider {
     }
 }
 
+impl AbsoluteNsProvider {
+    fn check(&self, id: &ModuleId) -> Result<(), ModuleError> {
+        if is_within_namespace(id.as_str(), &self.namespace) {
+            Ok(())
+        } else {
+            Err(ModuleError::NotPreloaded(format!(
+                "\"{id}\" is outside namespace \"{}\"",
+                self.namespace
+            )))
+        }
+    }
+}
+
 impl SourceProvider for AbsoluteNsProvider {
     fn load(&self, id: &ModuleId) -> Result<ModuleSource, ModuleError> {
+        self.check(id)?;
         self.inner.load(id)
     }
 
     fn exists(&self, id: &ModuleId) -> Result<bool, ModuleError> {
+        self.check(id)?;
         self.inner.exists(id)
     }
 
@@ -392,5 +415,38 @@ impl SourceProvider for HostSourceProvider {
                 candidate.display()
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absolute_namespace_rejects_sibling_roots() {
+        let inner = Arc::new(
+            MemorySourceProvider::with_modules([
+                (
+                    ModuleId::parse("/@A/Value.ts").unwrap(),
+                    "export {};".to_string(),
+                ),
+                (
+                    ModuleId::parse("/@AB/Value.ts").unwrap(),
+                    "export {};".to_string(),
+                ),
+            ])
+            .unwrap(),
+        );
+        let provider = AbsoluteNsProvider::new("/@A", inner);
+        assert!(
+            provider
+                .exists(&ModuleId::parse("/@A/Value.ts").unwrap())
+                .unwrap()
+        );
+        assert!(
+            provider
+                .exists(&ModuleId::parse("/@AB/Value.ts").unwrap())
+                .is_err()
+        );
     }
 }

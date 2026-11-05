@@ -4,7 +4,7 @@
 
 	Options for a JavaScript context.
 
-	* `ModuleRoot` - Optional root directory for host JavaScript imports. Relative paths resolve from the calling Luau file's directory. Standalone binaries always use their embedded modules.
+	* `ModuleRoot` - Optional root directory for JavaScript imports. Relative paths resolve from the entry Luau script's directory, not the calling file. Standalone binaries always use their embedded modules.
 	* `MemoryLimitBytes` - Maximum QuickJS heap size in bytes. Zero removes the limit.
 	* `StackLimitBytes` - Maximum QuickJS stack size in bytes.
 	* `ExecutionLimitMs` - Maximum JavaScript execution time per operation in milliseconds.

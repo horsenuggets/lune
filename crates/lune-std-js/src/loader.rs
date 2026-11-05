@@ -7,6 +7,7 @@ use rquickjs::{
 
 use crate::{
     module::{ModuleError, ModuleId, TransformedModule},
+    paths::is_within_namespace,
     resolver::{resolve_entry, resolve_module},
     source::{ModuleSource, SourceProvider},
     source_map::PortableSourceMap,
@@ -47,7 +48,7 @@ impl SharedModuleCache {
 
     fn absolute(&self, name: &str) -> String {
         let namespace = self.namespace();
-        if namespace.is_empty() || name.starts_with(&namespace) {
+        if is_within_namespace(name, &namespace) {
             name.to_string()
         } else {
             format!("{namespace}{name}")
