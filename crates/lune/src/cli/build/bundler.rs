@@ -14,7 +14,7 @@ use lune_std_js::{
     store::ModuleGraph,
 };
 
-use super::js_imports::discover_js_imports;
+use super::js_imports::{JsImportDiscovery, discover_js_imports};
 
 /// Structure representing a .luaurc configuration file
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -215,19 +215,18 @@ impl Bundler {
         let source_str = String::from_utf8_lossy(&source);
         let file_dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
-        let discovery = discover_js_imports(&source_str).map_err(|errors| {
-            anyhow!(
-                errors
-                    .into_iter()
-                    .map(|error| error.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            )
-            .context(format!(
-                "failed to parse Luau file: {}",
-                file_path.display()
-            ))
-        })?;
+        // A file Lune cannot parse has no discoverable imports, and standalone
+        // binaries only compile their embedded sources at startup, so a parse error
+        // must not fail the build here.
+        let discovery = discover_js_imports(&source_str).unwrap_or_else(|errors| {
+            if let Some(error) = errors.first() {
+                eprintln!(
+                    "Warning: could not parse \"{}\" to find JavaScript imports. {error}",
+                    file_path.display()
+                );
+            }
+            JsImportDiscovery::default()
+        });
         self.js_imports.extend(
             discovery
                 .imports
