@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use mlua::prelude::*;
 use rquickjs::{
     Array, ArrayBuffer, Atom, Ctx, Function, Object, Persistent, TypedArray, Value,
-    atom::PredefinedAtom, object::Filter,
+    atom::PredefinedAtom,
+    object::{Filter, Property},
 };
 
 use crate::{
@@ -380,7 +381,8 @@ impl<'js> LuaToJs<'js> {
                 let key = key
                     .to_str()
                     .map_err(|error| JsError::new(error.to_string()))?;
-                catch(ctx, object.set(key.as_ref(), value))?;
+                let property = Property::from(value).enumerable().writable().configurable();
+                catch(ctx, object.prop(key.as_ref(), property))?;
             }
             Ok(object.into_value())
         } else {

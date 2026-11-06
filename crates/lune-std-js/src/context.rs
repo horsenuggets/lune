@@ -25,7 +25,7 @@ use crate::{
     convert::{js_to_lua_many, lua_returns_to_js, lua_to_js},
     error::{JsError, catch, format_caught_error_with_maps, remap_error, throw},
     loader::SharedModuleCache,
-    module::ModuleId,
+    module::{ModuleId, TransformedModule},
     options::{JsContextOptions, JsEvaluateOptions},
     paths::{module_base_for_path, module_root_key, normalize_virtual},
     source::{
@@ -33,6 +33,7 @@ use crate::{
         ScriptPathProvider, SourceProvider,
     },
     store::ModuleGraph,
+    transform::{DYNAMIC_IMPORT_HELPER, DYNAMIC_IMPORT_MODULE},
 };
 
 struct QuickJsState {
@@ -80,8 +81,10 @@ impl ActiveOperation {
 }
 
 struct Inner {
-    // Callback promises must be dropped before the QuickJS runtime they belong to.
+    // Callback promises and persistent values must be dropped before the QuickJS
+    // runtime they belong to.
     callbacks: RefCell<Vec<Rc<RefCell<AsyncCallback>>>>,
+    specifier_to_string: RefCell<Option<Persistent<Function<'static>>>>,
     state: QuickJsState,
     options: JsContextOptions,
     module_cache: SharedModuleCache,
@@ -206,6 +209,11 @@ impl JsContext {
         runtime
             .set_loader(module_cache.clone(), module_cache.clone())
             .await;
+        module_cache.insert(TransformedModule::generated(
+            ModuleId::parse(DYNAMIC_IMPORT_MODULE)
+                .map_err(|error| JsError::new(error.to_string()))?,
+            format!("export const {DYNAMIC_IMPORT_HELPER} = globalThis.{DYNAMIC_IMPORT_HELPER};"),
+        ));
         let inner = Rc::new(Inner {
             state: QuickJsState { context, runtime },
             options,
@@ -215,6 +223,7 @@ impl JsContext {
             active: RefCell::new(None),
             next_generation: Cell::new(0),
             callbacks: RefCell::new(Vec::new()),
+            specifier_to_string: RefCell::new(None),
             next_waiter: Cell::new(0),
             waiters: RefCell::new(Vec::new()),
         });
@@ -230,7 +239,13 @@ impl JsContext {
             .context
             .with(|ctx| {
                 let function = create_dynamic_callback(&ctx, &lua, &this.inner)?;
-                catch(&ctx, ctx.globals().set("__luneDynamicImport", function))
+                catch(&ctx, ctx.globals().set(DYNAMIC_IMPORT_HELPER, function))?;
+                let to_string = catch(&ctx, ctx.eval::<Function, _>("(value) => `${value}`"))?;
+                this.inner
+                    .specifier_to_string
+                    .borrow_mut()
+                    .replace(Persistent::save(&ctx, to_string));
+                Ok(())
             })
             .await?;
         Ok(this)
@@ -767,11 +782,12 @@ fn create_dynamic_callback<'js>(
                 let value = arguments.0.get(1).ok_or_else(|| {
                     throw(&callback_ctx, "Dynamic import requires a module specifier")
                 })?;
-                let string = value.as_string().ok_or_else(|| {
-                    throw(&callback_ctx, "Dynamic import specifiers must be strings")
-                })?;
-                let specifier = catch(&callback_ctx, string.to_string())
-                    .map_err(|error| throw(&callback_ctx, error))?;
+                // `import()` coerces its specifier with ToString and reports a
+                // failure as a rejection, so mirror that exactly.
+                let specifier = match coerce_specifier(&callback_ctx, &inner, value.clone()) {
+                    Ok(specifier) => specifier,
+                    Err(()) => return rejected_promise(&callback_ctx),
+                };
                 let mut request = JsContext {
                     inner: inner.clone(),
                 }
@@ -804,6 +820,40 @@ fn create_dynamic_callback<'js>(
             },
         ),
     )
+}
+
+/// Coerces a dynamic import specifier with `ToString`, like `import()` does.
+///
+/// Returns `Err(())` after leaving the thrown value pending as a JavaScript
+/// exception, ready to become the rejection reason.
+fn coerce_specifier<'js>(
+    ctx: &Ctx<'js>,
+    inner: &Rc<Inner>,
+    value: Value<'js>,
+) -> Result<String, ()> {
+    let Some(to_string) = inner
+        .specifier_to_string
+        .borrow()
+        .as_ref()
+        .map(|function| function.clone())
+    else {
+        return Err(());
+    };
+    let Ok(to_string) = to_string.restore(ctx) else {
+        return Err(());
+    };
+    let Ok(coerced) = to_string.call::<_, rquickjs::String>((value,)) else {
+        return Err(());
+    };
+    coerced.to_string().map_err(|_| ())
+}
+
+/// Returns a promise rejected with the pending JavaScript exception.
+fn rejected_promise<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>, Error> {
+    let error = ctx.catch();
+    let (promise, _, reject) = ctx.promise()?;
+    reject.call::<_, ()>((error,))?;
+    Ok(Value::from(promise))
 }
 
 fn normalize_thenable<'js>(

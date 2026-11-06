@@ -29,6 +29,7 @@ oxc_parser = "=0.125.0"
 oxc_semantic = "=0.125.0"
 oxc_sourcemap = "6.0.1"
 oxc_span = "=0.125.0"
+oxc_str = "=0.125.0"
 oxc_transformer = "=0.125.0"
 rquickjs = { version = "0.14", features = ["futures", "loader"] }
 

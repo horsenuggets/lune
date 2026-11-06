@@ -4,8 +4,9 @@ use oxc_allocator::{Allocator, TakeIn};
 use oxc_ast::{
     AstBuilder,
     ast::{
-        Argument, ExportAllDeclaration, ExportNamedDeclaration, Expression, ImportDeclaration,
-        ImportExpression,
+        Argument, BindingIdentifier, ExportAllDeclaration, ExportNamedDeclaration, Expression,
+        ImportDeclaration, ImportDeclarationSpecifier, ImportExpression, ImportOrExportKind,
+        Program, Statement,
     },
 };
 use oxc_ast_visit::{
@@ -28,6 +29,17 @@ use crate::{
     source_map::PortableSourceMap,
 };
 
+/**
+    The virtual module that exposes the runtime's computed dynamic import bridge.
+
+    Rewritten modules import it, so the helper resolves through a module binding that a
+    user declaration cannot capture.
+*/
+pub const DYNAMIC_IMPORT_MODULE: &str = "/__lune_internal__/dynamic-import.js";
+
+/** The export name and preferred local binding of the dynamic import bridge. */
+pub const DYNAMIC_IMPORT_HELPER: &str = "__luneDynamicImport";
+
 /** Transforms one original JavaScript or TypeScript module into portable ESM. */
 pub fn transform_module(id: ModuleId, source: &str) -> Result<TransformedModule, ModuleError> {
     let allocator = Allocator::default();
@@ -43,11 +55,17 @@ pub fn transform_module(id: ModuleId, source: &str) -> Result<TransformedModule,
     if let Some(error) = dependencies.error {
         return Err(error);
     }
-    DynamicImportRewriter {
+    let helper = dynamic_import_helper_name(&parsed.program);
+    let mut rewriter = DynamicImportRewriter {
         allocator: &allocator,
+        helper: &helper,
         module_id: id.as_str(),
+        rewritten: false,
+    };
+    rewriter.visit_program(&mut parsed.program);
+    if rewriter.rewritten {
+        insert_dynamic_import(&allocator, &mut parsed.program, &helper);
     }
-    .visit_program(&mut parsed.program);
 
     let semantic = SemanticBuilder::new()
         .with_check_syntax_error(true)
@@ -137,9 +155,65 @@ pub fn inspect_generated_module(
     })
 }
 
+/// Picks a helper binding name that no declaration in the module can shadow.
+fn dynamic_import_helper_name(program: &Program) -> String {
+    let mut collector = BindingNameCollector::default();
+    collector.visit_program(program);
+    let mut name = DYNAMIC_IMPORT_HELPER.to_string();
+    while collector.names.contains(&name) {
+        name.push('$');
+    }
+    name
+}
+
+#[derive(Default)]
+struct BindingNameCollector {
+    names: BTreeSet<String>,
+}
+
+impl<'a> Visit<'a> for BindingNameCollector {
+    fn visit_binding_identifier(&mut self, identifier: &BindingIdentifier<'a>) {
+        self.names.insert(identifier.name.to_string());
+    }
+}
+
+/// Imports the dynamic import bridge under the module's private binding.
+fn insert_dynamic_import<'a>(allocator: &'a Allocator, program: &mut Program<'a>, helper: &str) {
+    let builder = AstBuilder::new(allocator);
+    let span = program.span;
+    let specifier = builder.import_specifier(
+        span,
+        builder.module_export_name_identifier_name(span, DYNAMIC_IMPORT_HELPER),
+        builder.binding_identifier(span, builder.ident(helper)),
+        ImportOrExportKind::Value,
+    );
+    let declaration = builder.import_declaration(
+        span,
+        Some(
+            builder.vec_from_array([ImportDeclarationSpecifier::ImportSpecifier(
+                builder.alloc_import_specifier(
+                    span,
+                    specifier.imported,
+                    specifier.local,
+                    specifier.import_kind,
+                ),
+            )]),
+        ),
+        builder.string_literal(span, DYNAMIC_IMPORT_MODULE, None),
+        None,
+        None::<oxc_allocator::Box<_>>,
+        ImportOrExportKind::Value,
+    );
+    program
+        .body
+        .insert(0, Statement::ImportDeclaration(builder.alloc(declaration)));
+}
+
 struct DynamicImportRewriter<'a> {
     allocator: &'a Allocator,
+    helper: &'a str,
     module_id: &'a str,
+    rewritten: bool,
 }
 
 impl<'a> VisitMut<'a> for DynamicImportRewriter<'a> {
@@ -150,13 +224,16 @@ impl<'a> VisitMut<'a> for DynamicImportRewriter<'a> {
             {
                 let import = import.take_in(self.allocator);
                 let builder = AstBuilder::new(self.allocator);
-                let callee = builder.expression_identifier(import.span, "__luneDynamicImport");
-                let module_id =
-                    builder.expression_string_literal(import.span, self.module_id, None);
+                let span = import.span;
+                self.rewritten = true;
+                let callee = builder.expression_identifier(span, builder.ident(self.helper));
+                let module_id = builder.expression_string_literal(span, self.module_id, None);
+                // The bridge coerces the specifier itself, so a failure rejects the
+                // returned promise the way `import()` does.
                 let arguments = builder
                     .vec_from_array([Argument::from(module_id), Argument::from(import.source)]);
                 Expression::CallExpression(builder.alloc_call_expression(
-                    import.span,
+                    span,
                     callee,
                     None::<oxc_allocator::Box<_>>,
                     arguments,
@@ -201,7 +278,10 @@ impl<'a> Visit<'a> for DependencyVisitor {
                 "Import phases are not supported".to_string(),
             ));
         }
-        self.insert(DependencyKind::Static, &declaration.source.value);
+        // The dynamic import bridge is supplied by the runtime, not the source graph.
+        if declaration.source.value != DYNAMIC_IMPORT_MODULE {
+            self.insert(DependencyKind::Static, &declaration.source.value);
+        }
         walk_import_declaration(self, declaration);
     }
 
@@ -303,10 +383,40 @@ mod tests {
         .unwrap();
 
         assert!(module.has_computed_dynamic_import());
-        assert!(module.code().contains("__luneDynamicImport"));
+        // The bridge arrives through a runtime-owned module binding.
+        assert!(module.code().contains(
+            "import { __luneDynamicImport } from \"/__lune_internal__/dynamic-import.js\""
+        ));
+        assert!(
+            module
+                .code()
+                .contains("__luneDynamicImport(\"/Source/Dynamic.ts\"")
+        );
+        // The bridge itself owns the ToString coercion.
         assert_eq!(module.dependencies().len(), 1);
         assert_eq!(module.dependencies()[0].kind, DependencyKind::Dynamic);
         assert_eq!(module.dependencies()[0].specifier, "./Static.js");
+    }
+
+    #[test]
+    fn computed_dynamic_import_ignores_user_bindings() {
+        let module = transform_module(
+            ModuleId::parse("/Source/Shadow.ts").unwrap(),
+            r#"
+                const __luneDynamicImport = () => {
+                    throw new Error("shadowed");
+                };
+                export const Helper = __luneDynamicImport;
+                export function Load(Name: string) {
+                    return import(`./${Name}.js`);
+                }
+            "#,
+        )
+        .unwrap();
+
+        // A user declaration forces a different, unshadowable binding name.
+        assert!(module.code().contains("__luneDynamicImport$"));
+        assert!(module.code().contains("Helper = __luneDynamicImport;"));
     }
 
     #[test]

@@ -217,6 +217,12 @@ impl Bundler {
                 .map(|(specifier, module_root)| (canonical.clone(), specifier, module_root)),
         );
         self.js_roots.extend(discovery.context_roots);
+        if let Some(receiver) = discovery.unresolved_receivers.iter().next() {
+            anyhow::bail!(
+                "JavaScript context \"{receiver}\" in \"{}\" is created from options the build cannot inspect; pass a literal table with a string ModuleRoot, or add --js-include",
+                file_path.display()
+            );
+        }
         for specifier in discovery.unknown_specifiers {
             eprintln!(
                 "Warning: JavaScript import \"{specifier}\" in \"{}\" has an untraced receiver; use --js-include if it belongs to a JavaScript context",
@@ -314,6 +320,7 @@ impl Bundler {
             let paths = expand_js_include(pattern)?;
             for path in paths {
                 let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                let requested = absolute_path(&path);
                 let mut matched = false;
                 for module_root in &roots {
                     let root = self.js_root_for_luau(&canonical, module_root.as_deref())?;
@@ -329,7 +336,7 @@ impl Bundler {
                     })?);
                     let key = lune_std_js::paths::module_root_key(module_root.as_deref());
                     let provider = NamespacedProvider::new(key.clone(), host.clone());
-                    let id = host.module_id_for_path(&canonical).map_err(|error| {
+                    let id = host.module_id_for_path(&requested).map_err(|error| {
                         anyhow!(error).context(format!(
                             "failed to identify included JavaScript module: {}",
                             path.display()
@@ -531,6 +538,15 @@ impl Bundler {
 
         self.configs.insert(dir.to_path_buf(), config.clone());
         config
+    }
+}
+
+/// Makes an include path absolute so it can be compared against an absolute root.
+fn absolute_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |dir| dir.join(path))
     }
 }
 

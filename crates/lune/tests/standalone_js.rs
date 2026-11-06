@@ -1,3 +1,4 @@
+#![cfg(all(feature = "cli", feature = "std-js"))]
 #![allow(clippy::cargo_common_metadata)]
 
 use std::{
@@ -394,5 +395,66 @@ fn standalone_relocates_absolute_module_roots() {
     let empty = tempfile::tempdir().unwrap();
     let standalone = run(Command::new(&binary).current_dir(empty.path()));
     assert_success(&standalone, "absolute-root standalone execution");
+    assert_eq!(standalone.stdout, normal.stdout);
+}
+
+#[test]
+fn standalone_anchors_module_root_to_an_init_entry() {
+    let (_temporary, root) = fixture_root_from("standalone-js-init", "Init");
+    let main = root.join("app").join("init.luau");
+    let binary = root.join(if cfg!(windows) { "Init.exe" } else { "Init" });
+
+    let normal = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("run")
+        .arg(&main)
+        .current_dir(&root));
+    assert_success(&normal, "normal init execution");
+    assert_eq!(String::from_utf8_lossy(&normal.stdout), "42\n");
+
+    let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .current_dir(&root));
+    assert_success(&build, "init standalone build");
+
+    fs::rename(root.join("app"), root.join("appHidden")).unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    let standalone = run(Command::new(&binary).current_dir(empty.path()));
+    assert_success(&standalone, "init standalone execution");
+    assert_eq!(standalone.stdout, normal.stdout);
+}
+
+#[cfg(unix)]
+#[test]
+fn standalone_embeds_included_modules_under_their_alias() {
+    let (_temporary, root) = fixture_root_from("standalone-js-symlink", "Alias");
+    let main = root.join("main.luau");
+    std::os::unix::fs::symlink("Real.ts", root.join("Source").join("Alias.ts")).unwrap();
+    let binary = root.join("Alias");
+
+    let normal = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("run")
+        .arg(&main)
+        .current_dir(&root));
+    assert_success(&normal, "normal alias execution");
+    assert_eq!(String::from_utf8_lossy(&normal.stdout), "42\n");
+
+    let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .arg("--js-include")
+        .arg("Source/Alias.ts")
+        .current_dir(&root));
+    assert_success(&build, "alias standalone build");
+
+    hide_sources(&root);
+    fs::remove_file(root.join("SourceHidden").join("Alias.ts")).unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    let standalone = run(Command::new(&binary).current_dir(empty.path()));
+    assert_success(&standalone, "alias standalone execution");
     assert_eq!(standalone.stdout, normal.stdout);
 }

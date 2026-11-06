@@ -154,6 +154,18 @@ pub struct TransformedModule {
 }
 
 impl TransformedModule {
+    /// Wraps generated ESM that has no source map and no dependencies.
+    #[must_use]
+    pub fn generated(id: ModuleId, code: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            dependencies: Vec::new(),
+            has_computed_dynamic_import: false,
+            id,
+            source_map: None,
+        }
+    }
+
     #[must_use]
     pub fn code(&self) -> &str {
         &self.code

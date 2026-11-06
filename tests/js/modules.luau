@@ -43,6 +43,31 @@ const Dynamic = Context:Import("./fixtures/Figterm/Dynamic.ts")
 const Extra = Dynamic.Load("Extra")
 assert(Extra.Value == 42)
 
+-- A module binding with the helper's name must not capture computed imports.
+const Hygiene = Context:Import("./fixtures/Figterm/Hygiene.ts")
+const HelperOk, HelperMessage = pcall(Hygiene.Helper)
+assert(not HelperOk)
+assert(string.find(tostring(HelperMessage), "shadowed helper", 1, true) ~= nil)
+const Hygienic = Hygiene.Load("Extra")
+assert(Hygienic.Value == 42)
+
+-- Import specifiers are coerced with ToString, like `import()` itself.
+const Coerce = Context:Import("./fixtures/Figterm/Coerce.ts")
+const Boxed = Coerce.LoadBoxed()
+assert(Boxed.Value == 42)
+
+-- An uncoercible specifier rejects the promise instead of throwing synchronously.
+const Reject = Context:Import("./fixtures/Figterm/Reject.ts")
+const RejectOk, RejectMessage = pcall(Reject.LoadSymbol)
+assert(not RejectOk)
+assert(string.find(tostring(RejectMessage), "convert symbol to string", 1, true) ~= nil)
+
+-- Shadowing `globalThis` in a module must not break computed imports.
+const ShadowGlobal = Context:Import("./fixtures/Figterm/ShadowGlobal.ts")
+assert(ShadowGlobal.globalThis.Marker == 1)
+const Shadowed = ShadowGlobal.Load("Extra")
+assert(Shadowed.Value == 42)
+
 const Errors = Context:Import("./fixtures/Figterm/Error.ts")
 const Ok, Message = pcall(Errors.ThrowExpectedError)
 assert(not Ok)

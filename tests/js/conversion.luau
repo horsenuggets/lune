@@ -32,6 +32,23 @@ assert(buffer.readu8(Bytes, 0) == 1)
 assert(buffer.readu8(Bytes, 1) == 2)
 assert(buffer.readu8(Bytes, 2) == 255)
 
+-- Arbitrary string keys stay own data properties instead of touching prototypes.
+Context:Expose("prototypeKey", function()
+	return { ["__proto__"] = { Injected = true }, Value = 1 }
+end)
+const PrototypeOwn = Context:Evaluate([[
+	(() => {
+		const Value = prototypeKey()
+		return Object.getPrototypeOf(Value) === Object.prototype
+			&& Object.prototype.hasOwnProperty.call(Value, "__proto__")
+	})()
+]])
+assert(PrototypeOwn == true)
+const Proto = Context:Evaluate("prototypeKey()")
+assert(Proto.Value == 1)
+assert(Proto["__proto__"].Injected == true)
+assert(Proto.Injected == nil)
+
 const Unsupported = { "1n", "Symbol('value')", "new Date()" }
 for _, Source in Unsupported do
 	assert(not pcall(function()
