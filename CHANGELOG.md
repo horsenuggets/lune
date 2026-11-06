@@ -8,6 +8,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.11.1-horse.16.2` - November 6th, 2026
+
+### Added
+
+- Added `@lune/js`, a QuickJS-backed JavaScript runtime with isolated contexts, value conversion, synchronous and yielding callbacks, Promise settlement, execution limits, operation timeouts, and cancellation
+- Added Oxc-based TypeScript and JavaScript module loading with cycles, top-level `await`, source maps, and literal and computed dynamic imports
+- Added standalone embedding of JavaScript modules, including `--js-include`, per-context `ModuleRoot` namespaces, and source-free binary execution
+
+### Changed
+
+- Changed `ModuleRoot` to resolve relative to the entry Luau script's directory, and changed `Context:Import` to resolve against the calling Luau frame
+
+### Fixed
+
+- Fixed yielding callbacks stalling with operation timeouts, module cache collisions across roots, dynamic import wakeups, and TypeScript stack locations
+
 ## `0.11.1-horse.16.1` - October 24th, 2026
 
 ### Added
