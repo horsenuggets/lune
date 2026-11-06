@@ -189,6 +189,17 @@ pub struct JsContext {
 }
 
 impl JsContext {
+    /// Enforces the active operation's execution limit and timeout.
+    ///
+    /// Conversion loops run outside QuickJS bytecode, so they must also account
+    /// for the time spent in the current poll.
+    pub(crate) fn check_limits(&self) -> Result<(), JsError> {
+        if should_interrupt(&Rc::downgrade(&self.inner)) {
+            self.inner.check_active()?;
+        }
+        self.inner.check_active()
+    }
+
     pub async fn new(
         lua: Lua,
         runtime: AsyncRuntime,
@@ -203,8 +214,11 @@ impl JsContext {
             .app_data_ref::<Option<Arc<BundleSourceProvider>>>()
             .and_then(|provider| provider.clone())
         {
-            let key = module_root_key(options.module_root.as_deref().and_then(Path::to_str));
-            module_cache.set_fallback(Arc::new(AbsoluteNsProvider::new(key, provider)));
+            let module_root = options.module_root.as_deref().and_then(Path::to_str);
+            let key = module_root_key(module_root);
+            module_cache.set_fallback(Arc::new(
+                AbsoluteNsProvider::new(key, provider).with_root_prefix(module_root),
+            ));
         }
         runtime
             .set_loader(module_cache.clone(), module_cache.clone())
@@ -369,8 +383,9 @@ impl JsContext {
             } else {
                 specifier.to_string()
             };
-            let provider: Arc<dyn SourceProvider + Send + Sync> =
-                Arc::new(AbsoluteNsProvider::new(key, provider));
+            let provider: Arc<dyn SourceProvider + Send + Sync> = Arc::new(
+                AbsoluteNsProvider::new(key, provider).with_root_prefix(Some(literal_root)),
+            );
             return Ok(ModuleImportRequest {
                 provider,
                 base,
@@ -793,6 +808,9 @@ fn create_dynamic_callback<'js>(
                 }
                 .prepare_import(&lua, &specifier)
                 .map_err(|error| throw(&callback_ctx, error))?;
+                // The module ID is embedded at build time, before any bundle
+                // namespace exists, so qualify it for relative resolution.
+                let base = inner.module_cache.qualify(&base);
                 request.base = ModuleId::parse(&base)
                     .map_err(|error| throw(&callback_ctx, error.to_string()))?;
                 let operation_name = format!("{} from {base}", request.specifier);
