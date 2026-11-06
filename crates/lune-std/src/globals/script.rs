@@ -470,6 +470,15 @@ fn get_or_create_stack(lua: &Lua) -> LuaResult<LuaTable> {
     }
 }
 
+/// Returns the calling script's path, preferring the innermost Luau frame.
+///
+/// The registry stack can name a different script while a yielding require is in
+/// flight, so callers that need the actual current file prefer frames and fall back
+/// to the registry stack only when no frame is available.
+pub fn get_calling_script_path(lua: &Lua) -> LuaResult<Option<String>> {
+    Ok(get_script_path_from_frames(lua).or(get_current_script_path(lua)?))
+}
+
 /// Get the path of the script that's accessing a dynamic reference
 fn get_script_path_from_stack(lua: &Lua) -> LuaResult<String> {
     // Check the calling frame before the registry stack. A require that yields leaves its

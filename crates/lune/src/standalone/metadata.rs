@@ -1,9 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::{env, path::PathBuf, sync::LazyLock};
 
 use anyhow::{Result, bail};
 use async_fs as fs;
 use serde::{Deserialize, Serialize};
+
+use lune::JsArtifact;
 
 pub static CURRENT_EXE: LazyLock<PathBuf> =
     LazyLock::new(|| env::current_exe().expect("failed to get current exe"));
@@ -27,6 +29,12 @@ pub struct Metadata {
     /// Alias mappings: alias (e.g., "@packages/Foo") -> canonical path
     #[serde(default)]
     pub aliases: HashMap<String, String>,
+    /// Transpiled JavaScript modules keyed by original virtual module ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub js_modules: BTreeMap<String, JsArtifact>,
+    /// Literal ModuleRoot -> relocated virtual root.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub js_roots: BTreeMap<String, String>,
 }
 
 impl Metadata {
@@ -51,6 +59,8 @@ impl Metadata {
         entry_path: impl Into<String>,
         files: HashMap<String, Vec<u8>>,
         aliases: HashMap<String, String>,
+        js_modules: BTreeMap<String, JsArtifact>,
+        js_roots: BTreeMap<String, String>,
     ) -> Result<Vec<u8>> {
         let mut patched_bin = fs::read(base_exe_path).await?;
 
@@ -59,6 +69,8 @@ impl Metadata {
             entry_path: entry_path.into(),
             files,
             aliases,
+            js_modules,
+            js_roots,
         };
         patched_bin.extend_from_slice(&meta.to_bytes()?);
 
@@ -100,5 +112,48 @@ impl Metadata {
         bytes.extend_from_slice(&(json_bytes.len() as u64).to_be_bytes());
         bytes.extend_from_slice(MAGIC);
         Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_metadata_defaults_to_no_javascript_modules() {
+        let metadata: Metadata = serde_json::from_str(
+            r#"{"source":[1,2,3],"entry_path":"/Main.luau","files":{},"aliases":{}}"#,
+        )
+        .unwrap();
+        assert!(metadata.js_modules.is_empty());
+    }
+
+    #[test]
+    fn empty_javascript_modules_are_not_serialized() {
+        let metadata: Metadata = serde_json::from_str(
+            r#"{"source":[],"entry_path":"/Main.luau","files":{},"aliases":{}}"#,
+        )
+        .unwrap();
+        let json = serde_json::to_string(&metadata).unwrap();
+        assert!(!json.contains("js_modules"));
+    }
+
+    #[test]
+    fn javascript_artifacts_round_trip_through_binary_metadata() {
+        let artifact = JsArtifact {
+            code: b"export const Answer = 42;".to_vec(),
+            source_map: Some(b"{\"version\":3}".to_vec()),
+        };
+        let metadata = Metadata {
+            source: b"return 42".to_vec(),
+            entry_path: "/Main.luau".to_string(),
+            files: HashMap::new(),
+            aliases: HashMap::new(),
+            js_modules: BTreeMap::from([("/Source/Answer.ts".to_string(), artifact.clone())]),
+            js_roots: BTreeMap::new(),
+        };
+
+        let decoded = Metadata::from_bytes(metadata.to_bytes().unwrap()).unwrap();
+        assert_eq!(decoded.js_modules.get("/Source/Answer.ts"), Some(&artifact));
     }
 }

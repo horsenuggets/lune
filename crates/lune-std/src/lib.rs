@@ -11,7 +11,8 @@ pub use self::global::LuneStandardGlobal;
 pub use self::globals::executable::create as create_executable_global;
 pub use self::globals::require::{CHUNK_CACHE_KEY, get_chunk_cache};
 pub use self::globals::script::{
-    ScriptReference, pop_script_path, push_script_path, register_script_file,
+    ScriptReference, get_calling_script_path, pop_script_path, push_script_path,
+    register_script_file,
 };
 pub use self::globals::version::set_global_version;
 pub use self::library::LuneStandardLibrary;
@@ -41,6 +42,11 @@ pub fn inject_globals(lua: Lua) -> LuaResult<()> {
     Errors when out of memory, or if *default* Lua globals are missing.
 */
 pub fn inject_std(lua: Lua) -> LuaResult<()> {
+    #[cfg(feature = "js")]
+    lua.set_app_data(lune_std_js::source::ScriptPathProvider(
+        self::globals::script::get_calling_script_path,
+    ));
+
     for library in LuneStandardLibrary::ALL {
         let alias = format!("@lune/{}", library.name());
         let module = library.module(lua.clone())?;

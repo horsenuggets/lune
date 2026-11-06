@@ -35,6 +35,13 @@ pub async fn run(patched_bin: impl AsRef<[u8]>) -> Result<ExitCode> {
         .with_bundled_aliases(meta.aliases)
         .with_executable_path(metadata::CURRENT_EXE.clone());
 
+    #[cfg(feature = "std-js")]
+    {
+        rt = rt
+            .with_bundled_js_modules(meta.js_modules)
+            .with_bundled_js_roots(meta.js_roots);
+    }
+
     // Compile and run the source with the original entry path.
     // This ensures the chunk name is set correctly for require resolution.
     let result = rt.run_source(&meta.entry_path, meta.source).await;

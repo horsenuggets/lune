@@ -16,6 +16,7 @@ workspace = true
 default = [
     "datetime",
     "fs",
+    "js",
     "luau",
     "net",
     "process",
@@ -28,6 +29,7 @@ default = [
 
 datetime = ["dep:lune-std-datetime"]
 fs = ["dep:lune-std-fs"]
+js = ["dep:lune-std-js"]
 luau = ["dep:lune-std-luau"]
 net = ["dep:lune-std-net"]
 process = ["dep:lune-std-process"]
@@ -53,6 +55,7 @@ lune-utils = { version = "0.4.0", path = "../lune-utils" }
 
 lune-std-datetime = { optional = true, version = "0.4.0", path = "../lune-std-datetime" }
 lune-std-fs = { optional = true, version = "0.4.0", path = "../lune-std-fs" }
+lune-std-js = { optional = true, version = "0.4.0", path = "../lune-std-js" }
 lune-std-luau = { optional = true, version = "0.4.0", path = "../lune-std-luau" }
 lune-std-net = { optional = true, version = "0.4.0", path = "../lune-std-net" }
 lune-std-process = { optional = true, version = "0.4.0", path = "../lune-std-process" }

@@ -1,10 +1,20 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use regex::Regex;
 use serde::Deserialize;
+
+use lune::JsArtifact;
+use lune_std_js::{
+    module::ModuleId,
+    source::{HostSourceProvider, NamespacedProvider},
+    store::ModuleGraph,
+};
+
+use super::js_imports::discover_js_imports;
 
 /// Structure representing a .luaurc configuration file
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -17,6 +27,8 @@ struct LuauConfig {
 pub struct BundleResult {
     pub files: HashMap<String, Vec<u8>>,
     pub aliases: HashMap<String, String>,
+    pub js_modules: BTreeMap<String, JsArtifact>,
+    pub js_roots: BTreeMap<String, String>,
 }
 
 /// A bundler that resolves all dependencies of a Luau file
@@ -32,6 +44,14 @@ pub struct Bundler {
     files_canonical: HashMap<PathBuf, Vec<u8>>,
     /// Alias mappings: alias -> canonical path (relativized at the end)
     aliases_canonical: HashMap<String, PathBuf>,
+    /// JavaScript imports discovered in Luau source files.
+    js_imports: Vec<(PathBuf, String, Option<String>)>,
+    /// All context roots, even those without literal imports.
+    js_roots: BTreeSet<Option<String>>,
+    /// Contexts built from options the build cannot inspect, with their file.
+    js_unresolved: Vec<(PathBuf, String)>,
+    /// Entry directory used as the default JavaScript module root.
+    js_entry_dir: PathBuf,
     /// Regex to find require calls
     require_regex: Regex,
 }
@@ -40,12 +60,21 @@ impl Bundler {
     pub fn new(entry_path: &Path) -> Result<Self> {
         // Find the project root by searching upward for .luaurc files
         let base_dir = Self::find_project_root(entry_path);
+        let js_entry_dir = entry_path
+            .canonicalize()
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| base_dir.clone());
         Ok(Self {
             base_dir,
+            js_entry_dir,
             configs: HashMap::new(),
             processed: HashSet::new(),
             files_canonical: HashMap::new(),
             aliases_canonical: HashMap::new(),
+            js_imports: Vec::new(),
+            js_roots: BTreeSet::new(),
+            js_unresolved: Vec::new(),
             // Match require("...") or require('...')
             require_regex: Regex::new(r#"require\s*\(\s*["']([^"']+)["']\s*\)"#)?,
         })
@@ -119,9 +148,25 @@ impl Bundler {
     }
 
     /// Bundle all dependencies starting from the entry file
-    pub fn bundle(&mut self, entry_path: &Path) -> Result<BundleResult> {
+    pub fn bundle(&mut self, entry_path: &Path, js_include: &[String]) -> Result<BundleResult> {
         // First pass: collect all files with canonical paths
         self.process_file(entry_path)?;
+        let (js_modules, js_roots) = self.process_js_modules(js_include)?;
+        // An opaque context is only fatal when nothing could be embedded from it.
+        if let Some((file, receiver)) = self.js_unresolved.first() {
+            if js_include.is_empty() {
+                anyhow::bail!(
+                    "JavaScript context \"{receiver}\" in \"{}\" is created from options the build cannot inspect; pass a literal table with a string ModuleRoot, or add --js-include",
+                    file.display()
+                );
+            }
+            for (file, receiver) in &self.js_unresolved {
+                eprintln!(
+                    "Warning: JavaScript context \"{receiver}\" in \"{}\" is created from options the build cannot inspect; make sure --js-include embeds its modules",
+                    file.display()
+                );
+            }
+        }
 
         // Now relativize all paths using the (possibly expanded) base_dir
         let mut files = HashMap::new();
@@ -136,7 +181,12 @@ impl Bundler {
             aliases.insert(alias.clone(), relative_path);
         }
 
-        Ok(BundleResult { files, aliases })
+        Ok(BundleResult {
+            files,
+            aliases,
+            js_modules,
+            js_roots,
+        })
     }
 
     /// Process a single file and its dependencies
@@ -165,6 +215,45 @@ impl Bundler {
         let source_str = String::from_utf8_lossy(&source);
         let file_dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
 
+        let discovery = discover_js_imports(&source_str).map_err(|errors| {
+            anyhow!(
+                errors
+                    .into_iter()
+                    .map(|error| error.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+            .context(format!(
+                "failed to parse Luau file: {}",
+                file_path.display()
+            ))
+        })?;
+        self.js_imports.extend(
+            discovery
+                .imports
+                .into_iter()
+                .map(|(specifier, module_root)| (canonical.clone(), specifier, module_root)),
+        );
+        self.js_roots.extend(discovery.context_roots);
+        self.js_unresolved.extend(
+            discovery
+                .unresolved_receivers
+                .into_iter()
+                .map(|receiver| (file_path.to_path_buf(), receiver)),
+        );
+        for specifier in discovery.unknown_specifiers {
+            eprintln!(
+                "Warning: JavaScript import \"{specifier}\" in \"{}\" has an untraced receiver; use --js-include if it belongs to a JavaScript context",
+                file_path.display()
+            );
+        }
+        if discovery.has_dynamic_imports {
+            eprintln!(
+                "Warning: dynamic JavaScript imports in \"{}\" may require --js-include",
+                file_path.display()
+            );
+        }
+
         let require_paths: Vec<String> = self
             .require_regex
             .captures_iter(&source_str)
@@ -185,6 +274,159 @@ impl Bundler {
         }
 
         Ok(())
+    }
+
+    fn process_js_modules(
+        &mut self,
+        js_include: &[String],
+    ) -> Result<(BTreeMap<String, JsArtifact>, BTreeMap<String, String>)> {
+        if self.js_imports.is_empty() && js_include.is_empty() {
+            return Ok((BTreeMap::new(), BTreeMap::new()));
+        }
+
+        let mut artifacts = BTreeMap::new();
+
+        // Expand the bundle so roots above the entry directory keep a relocated
+        // virtual path that matches runtime `ModuleRoot` semantics.
+        let mut roots = BTreeSet::from([None]);
+        roots.extend(self.js_roots.iter().cloned());
+        roots.extend(
+            self.js_imports
+                .iter()
+                .map(|(_, _, module_root)| module_root.clone()),
+        );
+        let root_paths = roots
+            .iter()
+            .map(|module_root| self.js_root_for_luau(Path::new(""), module_root.as_deref()))
+            .collect::<Result<Vec<_>>>()?;
+        for root in &root_paths {
+            self.expand_base_dir(root);
+        }
+
+        for (caller, specifier, module_root) in &self.js_imports {
+            let root = self.js_root_for_luau(caller, module_root.as_deref())?;
+            let host = Arc::new(HostSourceProvider::new(&root).map_err(|error| {
+                anyhow!(error).context(format!(
+                    "failed to open JavaScript source root: {}",
+                    root.display()
+                ))
+            })?);
+            let key = lune_std_js::paths::module_root_key(module_root.as_deref());
+            let provider = NamespacedProvider::new(key.clone(), host.clone());
+            let mut base = lune_std_js::paths::module_base_for_path(caller, host.root(), true)
+                .map_err(|error| anyhow!(error.to_string()))?;
+            base = ModuleId::parse(format!("{key}{base}"))
+                .map_err(|error| anyhow!(error.to_string()))?;
+            let specifier = if specifier.starts_with('/') {
+                format!("{key}{specifier}")
+            } else {
+                specifier.clone()
+            };
+            let graph = ModuleGraph::load_specifier_with_dynamic(&provider, &base, &specifier)
+                .map_err(|error| {
+                    anyhow!(error).context(format!(
+                        "failed to bundle JavaScript import \"{specifier}\" from \"{}\"",
+                        caller.display()
+                    ))
+                })?;
+            Self::extend_js_artifacts(&mut artifacts, "", graph);
+        }
+
+        // Includes belong to whichever context root contains them. When no root does,
+        // the project root namespace is used.
+        for pattern in js_include {
+            let paths = expand_js_include(pattern)?;
+            for path in paths {
+                let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                let requested = absolute_path(&path);
+                let mut matched = false;
+                for module_root in &roots {
+                    let root = self.js_root_for_luau(&canonical, module_root.as_deref())?;
+                    let canonical_root = root.canonicalize().unwrap_or(root.clone());
+                    if !canonical.starts_with(&canonical_root) {
+                        continue;
+                    }
+                    let host = Arc::new(HostSourceProvider::new(&root).map_err(|error| {
+                        anyhow!(error).context(format!(
+                            "failed to open JavaScript source root: {}",
+                            root.display()
+                        ))
+                    })?);
+                    let key = lune_std_js::paths::module_root_key(module_root.as_deref());
+                    let provider = NamespacedProvider::new(key.clone(), host.clone());
+                    let id = host.module_id_for_path(&requested).map_err(|error| {
+                        anyhow!(error).context(format!(
+                            "failed to identify included JavaScript module: {}",
+                            path.display()
+                        ))
+                    })?;
+                    let id = ModuleId::parse(format!("{key}{id}"))
+                        .map_err(|error| anyhow!(error.to_string()))?;
+                    let graph = ModuleGraph::load_with_dynamic(&provider, id).map_err(|error| {
+                        anyhow!(error).context(format!(
+                            "failed to bundle included JavaScript module: {}",
+                            path.display()
+                        ))
+                    })?;
+                    Self::extend_js_artifacts(&mut artifacts, "", graph);
+                    matched = true;
+                }
+                if !matched {
+                    anyhow::bail!(
+                        "included JavaScript module is outside every module root: {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        let mut relocated_roots = BTreeMap::new();
+        for module_root in &roots {
+            let root = self.js_root_for_luau(Path::new(""), module_root.as_deref())?;
+            let canonical = root.canonicalize().unwrap_or(root);
+            relocated_roots.insert(
+                module_root.clone().unwrap_or_default(),
+                normalize_bundle_path(&canonical, &self.base_dir),
+            );
+        }
+        Ok((artifacts, relocated_roots))
+    }
+
+    /// Resolves a JavaScript module root against the project root.
+    fn js_root_for_luau(&self, _caller: &Path, module_root: Option<&str>) -> Result<PathBuf> {
+        Ok(module_root.map_or_else(
+            || self.js_entry_dir.clone(),
+            |module_root| {
+                let root = PathBuf::from(module_root);
+                if root.is_absolute() {
+                    root
+                } else {
+                    self.js_entry_dir.join(root)
+                }
+            },
+        ))
+    }
+
+    fn extend_js_artifacts(
+        artifacts: &mut BTreeMap<String, JsArtifact>,
+        key: &str,
+        graph: ModuleGraph,
+    ) {
+        for (id, module) in graph.into_modules() {
+            if module.has_computed_dynamic_import() {
+                eprintln!(
+                    "Warning: computed dynamic imports in \"{id}\" require matching --js-include paths"
+                );
+            }
+            let (_, code, source_map) = module.into_bundle_parts();
+            artifacts.insert(
+                format!("{key}{id}"),
+                JsArtifact {
+                    code: code.into_bytes(),
+                    source_map: source_map.map(|map| map.to_json_string().into_bytes()),
+                },
+            );
+        }
     }
 
     /// Normalize a path for use as a bundle key.
@@ -315,6 +557,39 @@ impl Bundler {
         self.configs.insert(dir.to_path_buf(), config.clone());
         config
     }
+}
+
+/// Makes an include path absolute so it can be compared against an absolute root.
+fn absolute_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |dir| dir.join(path))
+    }
+}
+
+fn expand_js_include(pattern: &str) -> Result<Vec<PathBuf>> {
+    if !pattern.contains(['*', '?', '[']) {
+        let path = PathBuf::from(pattern);
+        if !path.is_file() {
+            bail!("included JavaScript module does not exist: {pattern}");
+        }
+        return Ok(vec![path]);
+    }
+
+    let mut paths = Vec::new();
+    for entry in
+        glob::glob(pattern).with_context(|| format!("invalid --js-include pattern: {pattern}"))?
+    {
+        let path = entry.with_context(|| format!("failed to expand pattern: {pattern}"))?;
+        if path.is_file() {
+            paths.push(path);
+        }
+    }
+    if paths.is_empty() {
+        bail!("--js-include pattern matched no files: {pattern}");
+    }
+    Ok(paths)
 }
 
 /// Normalize a canonical path into a portable bundle key.

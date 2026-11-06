@@ -14,6 +14,7 @@ mod base_exe;
 mod bundler;
 mod codesign;
 mod files;
+mod js_imports;
 mod result;
 mod target;
 
@@ -21,6 +22,11 @@ use self::base_exe::get_or_download_base_executable;
 use self::bundler::{Bundler, normalize_bundle_path};
 use self::files::{remove_source_file_ext, write_executable_file_to};
 use self::target::{BuildTarget, BuildTargetOS};
+
+fn count_text(count: usize, singular: &str, plural: &str) -> String {
+    let noun = if count == 1 { singular } else { plural };
+    format!("{} {}", style(count).cyan(), noun)
+}
 
 /// Strip shebang line from source code if present
 fn strip_shebang(mut contents: Vec<u8>) -> Vec<u8> {
@@ -60,6 +66,10 @@ pub struct BuildCommand {
     /// input file path with an executable extension
     #[clap(short, long)]
     pub output: Option<PathBuf>,
+
+    /// Additional JavaScript module paths or globs to embed for computed dynamic imports.
+    #[clap(long = "js-include", value_name = "path-or-glob")]
+    pub js_include: Vec<String>,
 
     /// The target to compile for in the format `os-arch` -
     /// defaults to the os and arch of the current system
@@ -140,12 +150,17 @@ impl BuildCommand {
         println!("Bundling dependencies for {}", style(&display_path).green());
         let mut bundler = Bundler::new(&entry_file).context("failed to initialize bundler")?;
         let bundle_result = bundler
-            .bundle(&entry_file)
+            .bundle(&entry_file, &self.js_include)
             .context("failed to bundle dependencies")?;
         println!(
-            "Bundled {} files, {} aliases",
-            style(bundle_result.files.len()).cyan(),
-            style(bundle_result.aliases.len()).cyan()
+            "Bundled {}, {}, and {}",
+            count_text(bundle_result.files.len(), "file", "files"),
+            count_text(bundle_result.aliases.len(), "alias", "aliases"),
+            count_text(
+                bundle_result.js_modules.len(),
+                "JavaScript module",
+                "JavaScript modules"
+            )
         );
 
         // Derive the base executable path based on the arguments provided
@@ -167,6 +182,8 @@ impl BuildCommand {
             entry_path,
             bundle_result.files,
             bundle_result.aliases,
+            bundle_result.js_modules,
+            bundle_result.js_roots,
         )
         .await
         .context("failed to create patched binary")?;

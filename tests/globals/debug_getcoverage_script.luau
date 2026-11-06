@@ -2,7 +2,7 @@
 -- When passed a script reference instead of a function, getcoverage
 -- returns coverage for ALL functions in the file, including locals.
 
-local Styled = require("./coverage/styled")
+const Styled = require("./coverage/styled")
 
 -- Exercise some functions (but not all)
 Styled.hello("World")
@@ -14,9 +14,9 @@ Styled.goodbye("World")
 
 -- script.Parent is the directory containing this test file.
 -- script.Parent.coverage.styled points to the styled.luau module.
-local styledScript = script.Parent.coverage.styled
+const styledScript = script.Parent.coverage.styled
 
-local coverage = debug.getcoverage(styledScript)
+const coverage = debug.getcoverage(styledScript)
 
 -- The module has 5 functions:
 -- 1. top-level chunk (the module itself)
