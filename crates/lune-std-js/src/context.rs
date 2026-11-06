@@ -189,6 +189,11 @@ pub struct JsContext {
 }
 
 impl JsContext {
+    /// Enforces the active operation's execution limit and timeout.
+    pub(crate) fn check_limits(&self) -> Result<(), JsError> {
+        self.inner.check_active()
+    }
+
     pub async fn new(
         lua: Lua,
         runtime: AsyncRuntime,
@@ -203,8 +208,11 @@ impl JsContext {
             .app_data_ref::<Option<Arc<BundleSourceProvider>>>()
             .and_then(|provider| provider.clone())
         {
-            let key = module_root_key(options.module_root.as_deref().and_then(Path::to_str));
-            module_cache.set_fallback(Arc::new(AbsoluteNsProvider::new(key, provider)));
+            let module_root = options.module_root.as_deref().and_then(Path::to_str);
+            let key = module_root_key(module_root);
+            module_cache.set_fallback(Arc::new(
+                AbsoluteNsProvider::new(key, provider).with_root_prefix(module_root),
+            ));
         }
         runtime
             .set_loader(module_cache.clone(), module_cache.clone())
@@ -369,8 +377,9 @@ impl JsContext {
             } else {
                 specifier.to_string()
             };
-            let provider: Arc<dyn SourceProvider + Send + Sync> =
-                Arc::new(AbsoluteNsProvider::new(key, provider));
+            let provider: Arc<dyn SourceProvider + Send + Sync> = Arc::new(
+                AbsoluteNsProvider::new(key, provider).with_root_prefix(Some(literal_root)),
+            );
             return Ok(ModuleImportRequest {
                 provider,
                 base,

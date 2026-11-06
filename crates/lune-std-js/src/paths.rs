@@ -69,22 +69,25 @@ pub fn module_base_for_path(
     canonical_host: bool,
 ) -> Result<ModuleId, ModuleError> {
     let relative = if canonical_host {
-        let canonical = if let Ok(canonical) = path.canonicalize() {
-            canonical
-        } else {
-            let resolved = LuauModulePath::resolve(path).map_err(|error| {
-                ModuleError::InvalidPath(format!("{} ({error:?})", path.display()))
-            })?;
-            let script_file = resolved.target().as_file().ok_or_else(|| {
-                ModuleError::InvalidPath(format!(
-                    "JavaScript imports require a Luau script file, not a directory: {}",
-                    path.display()
-                ))
-            })?;
-            script_file
-                .canonicalize()
-                .map_err(|error| ModuleError::Io(error.to_string()))?
-        };
+        // A chunk name can also be a directory (an `init.luau` entry), and its
+        // canonical path must not be mistaken for the script file itself.
+        let canonical =
+            if let Some(canonical) = path.is_file().then(|| path.canonicalize().ok()).flatten() {
+                canonical
+            } else {
+                let resolved = LuauModulePath::resolve(path).map_err(|error| {
+                    ModuleError::InvalidPath(format!("{} ({error:?})", path.display()))
+                })?;
+                let script_file = resolved.target().as_file().ok_or_else(|| {
+                    ModuleError::InvalidPath(format!(
+                        "JavaScript imports require a Luau script file, not a directory: {}",
+                        path.display()
+                    ))
+                })?;
+                script_file
+                    .canonicalize()
+                    .map_err(|error| ModuleError::Io(error.to_string()))?
+            };
         canonical.strip_prefix(root).map(Path::to_path_buf).ok()
     } else {
         path.strip_prefix(root).map(Path::to_path_buf).ok()
@@ -113,6 +116,21 @@ mod tests {
         );
         assert!(module_root_key(Some("./Source")).starts_with("/@"));
         assert!(!module_root_key(Some("./Source/../Other")).contains("/@/"));
+    }
+
+    #[test]
+    fn anchors_init_entry_directories_to_the_script_file() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("root");
+        let app = root.join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join("init.luau"), "return nil\n").unwrap();
+        let root = root.canonicalize().unwrap();
+        let app = app.canonicalize().unwrap();
+
+        // The chunk name of an `init.luau` entry is its containing directory.
+        let base = module_base_for_path(&app, &root, true).unwrap();
+        assert_eq!(base, ModuleId::parse("/app/__Luau.ts").unwrap());
     }
 
     #[test]

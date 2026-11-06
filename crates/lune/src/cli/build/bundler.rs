@@ -48,6 +48,8 @@ pub struct Bundler {
     js_imports: Vec<(PathBuf, String, Option<String>)>,
     /// All context roots, even those without literal imports.
     js_roots: BTreeSet<Option<String>>,
+    /// Contexts built from options the build cannot inspect, with their file.
+    js_unresolved: Vec<(PathBuf, String)>,
     /// Entry directory used as the default JavaScript module root.
     js_entry_dir: PathBuf,
     /// Regex to find require calls
@@ -72,6 +74,7 @@ impl Bundler {
             aliases_canonical: HashMap::new(),
             js_imports: Vec::new(),
             js_roots: BTreeSet::new(),
+            js_unresolved: Vec::new(),
             // Match require("...") or require('...')
             require_regex: Regex::new(r#"require\s*\(\s*["']([^"']+)["']\s*\)"#)?,
         })
@@ -149,6 +152,21 @@ impl Bundler {
         // First pass: collect all files with canonical paths
         self.process_file(entry_path)?;
         let (js_modules, js_roots) = self.process_js_modules(js_include)?;
+        // An opaque context is only fatal when nothing could be embedded from it.
+        if let Some((file, receiver)) = self.js_unresolved.first() {
+            if js_include.is_empty() {
+                anyhow::bail!(
+                    "JavaScript context \"{receiver}\" in \"{}\" is created from options the build cannot inspect; pass a literal table with a string ModuleRoot, or add --js-include",
+                    file.display()
+                );
+            }
+            for (file, receiver) in &self.js_unresolved {
+                eprintln!(
+                    "Warning: JavaScript context \"{receiver}\" in \"{}\" is created from options the build cannot inspect; make sure --js-include embeds its modules",
+                    file.display()
+                );
+            }
+        }
 
         // Now relativize all paths using the (possibly expanded) base_dir
         let mut files = HashMap::new();
@@ -217,12 +235,12 @@ impl Bundler {
                 .map(|(specifier, module_root)| (canonical.clone(), specifier, module_root)),
         );
         self.js_roots.extend(discovery.context_roots);
-        if let Some(receiver) = discovery.unresolved_receivers.iter().next() {
-            anyhow::bail!(
-                "JavaScript context \"{receiver}\" in \"{}\" is created from options the build cannot inspect; pass a literal table with a string ModuleRoot, or add --js-include",
-                file_path.display()
-            );
-        }
+        self.js_unresolved.extend(
+            discovery
+                .unresolved_receivers
+                .into_iter()
+                .map(|receiver| (file_path.to_path_buf(), receiver)),
+        );
         for specifier in discovery.unknown_specifiers {
             eprintln!(
                 "Warning: JavaScript import \"{specifier}\" in \"{}\" has an untraced receiver; use --js-include if it belongs to a JavaScript context",
