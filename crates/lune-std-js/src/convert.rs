@@ -89,21 +89,42 @@ pub fn js_to_lua_many<'js>(
         lua,
         context,
         objects: HashMap::new(),
+        items: 0,
     };
     values
         .into_iter()
-        .map(|value| converter.convert(ctx, value))
+        .map(|value| converter.convert(ctx, value, 0))
         .collect()
 }
+
+/** The deepest JavaScript value graph that conversion will walk. */
+const MAX_CONVERSION_DEPTH: usize = 256;
+
+/** The most entries conversion will materialize in one operation. */
+const MAX_CONVERSION_ITEMS: usize = 1_000_000;
+
+/** How often conversion rechecks the operation's limits. */
+const CONVERSION_LIMIT_INTERVAL: usize = 4096;
 
 struct JsToLua<'a, 'js> {
     lua: &'a Lua,
     context: &'a JsContext,
     objects: HashMap<Object<'js>, LuaValue>,
+    items: usize,
 }
 
 impl<'js> JsToLua<'_, 'js> {
-    fn convert(&mut self, ctx: &Ctx<'js>, value: Value<'js>) -> Result<LuaValue, JsError> {
+    fn convert(
+        &mut self,
+        ctx: &Ctx<'js>,
+        value: Value<'js>,
+        depth: usize,
+    ) -> Result<LuaValue, JsError> {
+        if depth > MAX_CONVERSION_DEPTH {
+            return Err(JsError::new(format!(
+                "JavaScript value is nested more than {MAX_CONVERSION_DEPTH} levels deep"
+            )));
+        }
         if value.is_undefined() {
             return sentinels(self.lua)
                 .map(|sentinels| sentinels.undefined())
@@ -188,18 +209,43 @@ impl<'js> JsToLua<'_, 'js> {
         let _ = ctx.catch();
 
         if object.is_array() {
-            return self.convert_array(ctx, object);
+            return self.convert_array(ctx, object, depth);
         }
 
-        self.convert_object(ctx, object)
+        self.convert_object(ctx, object, depth)
     }
 
-    fn convert_array(&mut self, ctx: &Ctx<'js>, object: Object<'js>) -> Result<LuaValue, JsError> {
+    /// Counts one materialized entry and periodically enforces the operation's
+    /// execution and timeout limits, which cannot reach this loop otherwise.
+    fn charge(&mut self) -> Result<(), JsError> {
+        self.items += 1;
+        if self.items > MAX_CONVERSION_ITEMS {
+            return Err(JsError::new(format!(
+                "JavaScript value has more than {MAX_CONVERSION_ITEMS} entries"
+            )));
+        }
+        if self.items % CONVERSION_LIMIT_INTERVAL == 0 {
+            self.context.check_limits()?;
+        }
+        Ok(())
+    }
+
+    fn convert_array(
+        &mut self,
+        ctx: &Ctx<'js>,
+        object: Object<'js>,
+        depth: usize,
+    ) -> Result<LuaValue, JsError> {
         reject_symbol_keys(ctx, &object)?;
         let array = object
             .clone()
             .into_array()
             .expect("the object was checked as an array");
+        if array.len() > MAX_CONVERSION_ITEMS {
+            return Err(JsError::new(format!(
+                "JavaScript value has more than {MAX_CONVERSION_ITEMS} entries"
+            )));
+        }
         let table = self
             .lua
             .create_table()
@@ -207,8 +253,9 @@ impl<'js> JsToLua<'_, 'js> {
         self.objects.insert(object, LuaValue::Table(table.clone()));
 
         for index in 0..array.len() {
+            self.charge()?;
             let value = catch(ctx, array.get::<Value>(index))?;
-            let value = self.convert(ctx, value)?;
+            let value = self.convert(ctx, value, depth + 1)?;
             table
                 .raw_set(index + 1, value)
                 .map_err(|error| JsError::new(error.to_string()))?;
@@ -216,7 +263,12 @@ impl<'js> JsToLua<'_, 'js> {
         Ok(LuaValue::Table(table))
     }
 
-    fn convert_object(&mut self, ctx: &Ctx<'js>, object: Object<'js>) -> Result<LuaValue, JsError> {
+    fn convert_object(
+        &mut self,
+        ctx: &Ctx<'js>,
+        object: Object<'js>,
+        depth: usize,
+    ) -> Result<LuaValue, JsError> {
         let ordinary_prototype = catch(ctx, Object::new(ctx.clone()))?.get_prototype();
         let prototype = object.get_prototype();
         let is_plain = match (prototype, ordinary_prototype) {
@@ -240,7 +292,8 @@ impl<'js> JsToLua<'_, 'js> {
         for entry in object.props::<Atom, Value>() {
             let (key, value) = catch(ctx, entry)?;
             let key = catch(ctx, key.to_string())?;
-            let value = self.convert(ctx, value)?;
+            self.charge()?;
+            let value = self.convert(ctx, value, depth + 1)?;
             table
                 .set(key, value)
                 .map_err(|error| JsError::new(error.to_string()))?;

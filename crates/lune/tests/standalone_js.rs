@@ -458,3 +458,52 @@ fn standalone_embeds_included_modules_under_their_alias() {
     assert_success(&standalone, "alias standalone execution");
     assert_eq!(standalone.stdout, normal.stdout);
 }
+
+#[test]
+fn js_include_embeds_modules_for_opaque_context_options() {
+    let (_temporary, root) = fixture_root_from("standalone-js-opaque", "Opaque");
+    let main = root.join("main.luau");
+    let binary = root.join(if cfg!(windows) {
+        "Opaque.exe"
+    } else {
+        "Opaque"
+    });
+
+    let normal = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("run")
+        .arg(&main)
+        .current_dir(&root));
+    assert_success(&normal, "normal opaque execution");
+    assert_eq!(String::from_utf8_lossy(&normal.stdout), "42\n");
+
+    let without_include = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .current_dir(&root));
+    assert!(!without_include.status.success());
+    let errors = String::from_utf8_lossy(&without_include.stderr);
+    assert!(
+        errors.contains("options the build cannot inspect"),
+        "unexpected error: {errors}"
+    );
+
+    let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .arg("--js-include")
+        .arg("Source/Entry.ts")
+        .arg("--js-include")
+        .arg("Source/Extra.ts")
+        .current_dir(&root));
+    assert_success(&build, "opaque standalone build with includes");
+
+    hide_sources(&root);
+    let empty = tempfile::tempdir().unwrap();
+    let standalone = run(Command::new(&binary).current_dir(empty.path()));
+    assert_success(&standalone, "opaque standalone execution");
+    assert_eq!(standalone.stdout, normal.stdout);
+}

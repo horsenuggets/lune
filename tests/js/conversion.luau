@@ -49,6 +49,20 @@ assert(Proto.Value == 1)
 assert(Proto["__proto__"].Injected == true)
 assert(Proto.Injected == nil)
 
+-- Huge and deeply nested values stay bounded instead of exhausting host memory.
+assert(not pcall(function()
+	Context:Evaluate("new Array(100_000_000)")
+end))
+assert(not pcall(function()
+	Context:Evaluate([[
+		(() => {
+			let Value = 1
+			for (let Index = 0; Index < 1_000; Index++) Value = [Value]
+			return Value
+		})()
+	]])
+end))
+
 const Unsupported = { "1n", "Symbol('value')", "new Date()" }
 for _, Source in Unsupported do
 	assert(not pcall(function()

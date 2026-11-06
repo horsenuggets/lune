@@ -46,6 +46,11 @@ impl SharedModuleCache {
         self.namespace.borrow().clone()
     }
 
+    /// Qualifies a module ID with the active bundle namespace.
+    pub fn qualify(&self, name: &str) -> String {
+        self.absolute(name)
+    }
+
     fn absolute(&self, name: &str) -> String {
         let namespace = self.namespace();
         if is_within_namespace(name, &namespace) {
