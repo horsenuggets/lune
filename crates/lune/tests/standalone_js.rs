@@ -507,3 +507,20 @@ fn js_include_embeds_modules_for_opaque_context_options() {
     assert_success(&standalone, "opaque standalone execution");
     assert_eq!(standalone.stdout, normal.stdout);
 }
+
+#[test]
+fn standalone_build_tolerates_unparseable_luau() {
+    let temporary = tempfile::tempdir().unwrap();
+    let main = temporary.path().join("main.luau");
+    fs::write(&main, "this is not valid luau\n").unwrap();
+    let binary = temporary.path().join("Invalid");
+
+    let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .current_dir(temporary.path()));
+    assert_success(&build, "standalone build with unparseable Luau");
+    assert!(binary.is_file());
+}
