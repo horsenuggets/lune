@@ -37,7 +37,9 @@ pub async fn run(patched_bin: impl AsRef<[u8]>) -> Result<ExitCode> {
 
     #[cfg(feature = "std-js")]
     {
-        rt = rt.with_bundled_js_modules(meta.js_modules);
+        rt = rt
+            .with_bundled_js_modules(meta.js_modules)
+            .with_bundled_js_roots(meta.js_roots);
     }
 
     // Compile and run the source with the original entry path.

@@ -183,6 +183,7 @@ impl BuildCommand {
             bundle_result.files,
             bundle_result.aliases,
             bundle_result.js_modules,
+            bundle_result.js_roots,
         )
         .await
         .context("failed to create patched binary")?;

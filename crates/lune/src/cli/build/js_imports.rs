@@ -29,7 +29,6 @@ struct ImportVisitor {
 
 struct ImportCall {
     module_root: Option<Option<String>>,
-    receiver: String,
     specifier: Option<String>,
 }
 
@@ -106,7 +105,6 @@ impl Visitor for ImportVisitor {
                 continue;
             }
             self.imports.push(ImportCall {
-                receiver: receiver.clone(),
                 module_root: module_root.clone(),
                 specifier: literal_argument(method.args()),
             });

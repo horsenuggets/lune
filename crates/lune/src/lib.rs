@@ -5,5 +5,5 @@ mod rt;
 #[cfg(test)]
 mod tests;
 
-pub use crate::rt::{BundledJsModules, JsArtifact};
+pub use crate::rt::{BundledJsModules, BundledJsRoots, JsArtifact};
 pub use crate::rt::{Runtime, RuntimeError, RuntimeResult, RuntimeReturnValues};

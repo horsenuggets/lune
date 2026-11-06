@@ -356,3 +356,43 @@ fn standalone_relocates_roots_above_the_entry_directory() {
     assert_success(&standalone, "parent-root standalone execution");
     assert_eq!(standalone.stdout, normal.stdout);
 }
+
+#[test]
+fn standalone_relocates_absolute_module_roots() {
+    let (_temporary, root) = fixture_root_from("standalone-js-absolute-root", "AbsoluteRoot");
+    let main = root.join("main.luau");
+    let root_literal = root.to_string_lossy().replace('\\', "/");
+    fs::write(
+        &main,
+        format!(
+            "const js = require(\"@lune/js\")\n\nconst Context = js.newContext({{ ModuleRoot = \"{root_literal}\" }})\nconst Value = Context:Import(\"./Value.ts\")\nprint(Value.Which)\nContext:Close()\n"
+        ),
+    )
+    .unwrap();
+    let binary = root.join(if cfg!(windows) {
+        "AbsoluteRoot.exe"
+    } else {
+        "AbsoluteRoot"
+    });
+
+    let normal = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("run")
+        .arg(&main)
+        .current_dir(&root));
+    assert_success(&normal, "normal absolute-root execution");
+
+    let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
+        .arg("build")
+        .arg(&main)
+        .arg("--output")
+        .arg(&binary)
+        .current_dir(&root));
+    assert_success(&build, "absolute-root standalone build");
+
+    fs::rename(&main, root.join("main-hidden.luau")).unwrap();
+    fs::rename(root.join("Value.ts"), root.join("ValueHidden.ts")).unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    let standalone = run(Command::new(&binary).current_dir(empty.path()));
+    assert_success(&standalone, "absolute-root standalone execution");
+    assert_eq!(standalone.stdout, normal.stdout);
+}

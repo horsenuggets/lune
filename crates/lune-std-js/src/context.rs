@@ -29,7 +29,7 @@ use crate::{
     options::{JsContextOptions, JsEvaluateOptions},
     paths::{module_base_for_path, module_root_key, normalize_virtual},
     source::{
-        AbsoluteNsProvider, BundleSourceProvider, HostSourceProvider, JsModuleBase,
+        AbsoluteNsProvider, BundleSourceProvider, HostSourceProvider, JsModuleBase, JsVirtualRoots,
         ScriptPathProvider, SourceProvider,
     },
     store::ModuleGraph,
@@ -313,15 +313,30 @@ impl JsContext {
                 .app_data_ref::<JsModuleBase>()
                 .and_then(|base| base.0.clone())
                 .unwrap_or_else(|| PathBuf::from("/"));
-            let context_root = self.inner.options.module_root.as_ref().map_or_else(
-                || entry_root.clone(),
-                |root| {
-                    if root.is_absolute() {
-                        normalize_virtual(root)
-                    } else {
-                        normalize_virtual(&entry_root.join(root))
-                    }
+            let literal_root = self
+                .inner
+                .options
+                .module_root
+                .as_deref()
+                .and_then(Path::to_str)
+                .unwrap_or("");
+            let relocated = lua
+                .app_data_ref::<JsVirtualRoots>()
+                .and_then(|roots| roots.0.get(literal_root).cloned());
+            let context_root = relocated.map_or_else(
+                || {
+                    self.inner.options.module_root.as_ref().map_or_else(
+                        || entry_root.clone(),
+                        |root| {
+                            if root.is_absolute() {
+                                normalize_virtual(root)
+                            } else {
+                                normalize_virtual(&entry_root.join(root))
+                            }
+                        },
+                    )
                 },
+                PathBuf::from,
             );
             let base = module_base_for_path(Path::new(&script_path), &context_root, false)
                 .map_err(|error| JsError::new(error.to_string()))?;

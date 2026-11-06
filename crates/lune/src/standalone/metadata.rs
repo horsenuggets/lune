@@ -32,6 +32,9 @@ pub struct Metadata {
     /// Transpiled JavaScript modules keyed by original virtual module ID.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub js_modules: BTreeMap<String, JsArtifact>,
+    /// Literal ModuleRoot -> relocated virtual root.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub js_roots: BTreeMap<String, String>,
 }
 
 impl Metadata {
@@ -57,6 +60,7 @@ impl Metadata {
         files: HashMap<String, Vec<u8>>,
         aliases: HashMap<String, String>,
         js_modules: BTreeMap<String, JsArtifact>,
+        js_roots: BTreeMap<String, String>,
     ) -> Result<Vec<u8>> {
         let mut patched_bin = fs::read(base_exe_path).await?;
 
@@ -66,6 +70,7 @@ impl Metadata {
             files,
             aliases,
             js_modules,
+            js_roots,
         };
         patched_bin.extend_from_slice(&meta.to_bytes()?);
 
@@ -145,6 +150,7 @@ mod tests {
             files: HashMap::new(),
             aliases: HashMap::new(),
             js_modules: BTreeMap::from([("/Source/Answer.ts".to_string(), artifact.clone())]),
+            js_roots: BTreeMap::new(),
         };
 
         let decoded = Metadata::from_bytes(metadata.to_bytes().unwrap()).unwrap();

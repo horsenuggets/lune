@@ -12,3 +12,4 @@ pub struct JsArtifact {
 }
 
 pub type BundledJsModules = BTreeMap<String, JsArtifact>;
+pub type BundledJsRoots = BTreeMap<String, String>;

@@ -21,6 +21,10 @@ pub struct ScriptPathProvider(pub fn(&Lua) -> LuaResult<Option<String>>);
 #[derive(Clone, Debug)]
 pub struct JsModuleBase(pub Option<PathBuf>);
 
+/// Relocated virtual locations for each literal `ModuleRoot`.
+#[derive(Clone, Debug, Default)]
+pub struct JsVirtualRoots(pub std::collections::BTreeMap<String, String>);
+
 #[derive(Clone, Debug)]
 pub enum ModuleSource {
     Original(String),

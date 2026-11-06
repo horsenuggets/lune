@@ -28,6 +28,7 @@ pub struct BundleResult {
     pub files: HashMap<String, Vec<u8>>,
     pub aliases: HashMap<String, String>,
     pub js_modules: BTreeMap<String, JsArtifact>,
+    pub js_roots: BTreeMap<String, String>,
 }
 
 /// A bundler that resolves all dependencies of a Luau file
@@ -147,7 +148,7 @@ impl Bundler {
     pub fn bundle(&mut self, entry_path: &Path, js_include: &[String]) -> Result<BundleResult> {
         // First pass: collect all files with canonical paths
         self.process_file(entry_path)?;
-        let js_modules = self.process_js_modules(js_include)?;
+        let (js_modules, js_roots) = self.process_js_modules(js_include)?;
 
         // Now relativize all paths using the (possibly expanded) base_dir
         let mut files = HashMap::new();
@@ -166,6 +167,7 @@ impl Bundler {
             files,
             aliases,
             js_modules,
+            js_roots,
         })
     }
 
@@ -253,9 +255,9 @@ impl Bundler {
     fn process_js_modules(
         &mut self,
         js_include: &[String],
-    ) -> Result<BTreeMap<String, JsArtifact>> {
+    ) -> Result<(BTreeMap<String, JsArtifact>, BTreeMap<String, String>)> {
         if self.js_imports.is_empty() && js_include.is_empty() {
-            return Ok(BTreeMap::new());
+            return Ok((BTreeMap::new(), BTreeMap::new()));
         }
 
         let mut artifacts = BTreeMap::new();
@@ -353,7 +355,16 @@ impl Bundler {
             }
         }
 
-        Ok(artifacts)
+        let mut relocated_roots = BTreeMap::new();
+        for module_root in &roots {
+            let root = self.js_root_for_luau(Path::new(""), module_root.as_deref())?;
+            let canonical = root.canonicalize().unwrap_or(root);
+            relocated_roots.insert(
+                module_root.clone().unwrap_or_default(),
+                normalize_bundle_path(&canonical, &self.base_dir),
+            );
+        }
+        Ok((artifacts, relocated_roots))
     }
 
     /// Resolves a JavaScript module root against the project root.

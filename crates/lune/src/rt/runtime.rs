@@ -20,7 +20,7 @@ use lune_utils::{
 use mlua::prelude::*;
 use mlua_luau_scheduler::{Functions, Scheduler};
 
-use super::{BundledJsModules, RuntimeError, RuntimeResult};
+use super::{BundledJsModules, BundledJsRoots, RuntimeError, RuntimeResult};
 
 /**
     Values returned by running a Lune runtime until completion.
@@ -85,6 +85,8 @@ pub struct Runtime {
     bundled_aliases: BundledAliases,
     #[cfg(feature = "std-js")]
     bundled_js_modules: Option<BundledJsModules>,
+    #[cfg(feature = "std-js")]
+    bundled_js_roots: BundledJsRoots,
     executable_path: ExecutablePath,
 }
 
@@ -276,6 +278,8 @@ impl Runtime {
             bundled_aliases: HashMap::new(),
             #[cfg(feature = "std-js")]
             bundled_js_modules: None,
+            #[cfg(feature = "std-js")]
+            bundled_js_roots: BundledJsRoots::default(),
             executable_path: None,
         })
     }
@@ -354,6 +358,16 @@ impl Runtime {
     #[must_use]
     pub fn with_bundled_js_modules(mut self, modules: BundledJsModules) -> Self {
         self.bundled_js_modules = Some(modules);
+        self
+    }
+
+    /**
+        Sets relocated virtual roots for standalone JavaScript modules.
+    */
+    #[cfg(feature = "std-js")]
+    #[must_use]
+    pub fn with_bundled_js_roots(mut self, roots: BundledJsRoots) -> Self {
+        self.bundled_js_roots = roots;
         self
     }
 
@@ -588,6 +602,9 @@ impl Runtime {
                 None => None,
             };
             self.lua.set_app_data(provider);
+            self.lua.set_app_data(lune_std_js::source::JsVirtualRoots(
+                self.bundled_js_roots.clone(),
+            ));
         }
 
         // Inject the executable global now that app_data is set
