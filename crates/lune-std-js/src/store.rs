@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     module::{DependencyKind, ModuleError, ModuleId, TransformedModule},
@@ -34,10 +34,16 @@ impl ModuleGraph {
         follow_dynamic: bool,
     ) -> Result<Self, ModuleError> {
         let mut modules = BTreeMap::new();
+        // Modules reached only through dynamic edges may be incomplete, so their
+        // mandatory validation is redone when a static path reaches them.
+        let mut required = BTreeSet::new();
         let mut pending = vec![(entry.clone(), false)];
 
         while let Some((id, optional)) = pending.pop() {
-            if modules.contains_key(&id) {
+            if optional && modules.contains_key(&id) {
+                continue;
+            }
+            if !optional && required.contains(&id) {
                 continue;
             }
 
@@ -71,6 +77,9 @@ impl ModuleGraph {
                     Err(_) if dependency_optional => {}
                     Err(error) => return Err(error),
                 }
+            }
+            if !optional {
+                required.insert(id.clone());
             }
             modules.insert(id, transformed);
             pending.extend(dependencies);

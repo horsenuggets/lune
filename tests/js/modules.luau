@@ -56,6 +56,18 @@ const Coerce = Context:Import("./fixtures/Figterm/Coerce.ts")
 const Boxed = Coerce.LoadBoxed()
 assert(Boxed.Value == 42)
 
+-- An uncoercible specifier rejects the promise instead of throwing synchronously.
+const Reject = Context:Import("./fixtures/Figterm/Reject.ts")
+const RejectOk, RejectMessage = pcall(Reject.LoadSymbol)
+assert(not RejectOk)
+assert(string.find(tostring(RejectMessage), "convert symbol to string", 1, true) ~= nil)
+
+-- Shadowing `globalThis` in a module must not break computed imports.
+const ShadowGlobal = Context:Import("./fixtures/Figterm/ShadowGlobal.ts")
+assert(ShadowGlobal.globalThis.Marker == 1)
+const Shadowed = ShadowGlobal.Load("Extra")
+assert(Shadowed.Value == 42)
+
 const Errors = Context:Import("./fixtures/Figterm/Error.ts")
 const Ok, Message = pcall(Errors.ThrowExpectedError)
 assert(not Ok)

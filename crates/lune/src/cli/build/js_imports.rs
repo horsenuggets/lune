@@ -46,6 +46,9 @@ struct ImportVisitor {
     /// Function parameters are visited before their body block, so they are
     /// recorded once that block opens its scope.
     pending_parameters: Vec<String>,
+    /// Assignments inside a function body are not known to run, so they stay
+    /// scoped to that body instead of mutating the enclosing environment.
+    function_depth: usize,
     roots: BTreeSet<Option<String>>,
 }
 
@@ -80,73 +83,43 @@ impl ImportVisitor {
         }
     }
 
-    fn record_binding<'a>(
-        &mut self,
-        names: impl Iterator<Item = TokenReference>,
-        expressions: impl Iterator<Item = &'a Expression>,
-    ) {
-        for (name, expression) in names.zip(expressions) {
-            let name = name.token().to_string();
-            let binding = self.binding_for(expression);
-            if let Binding::Context(module_root) = &binding {
-                self.roots.insert(module_root.clone());
-            }
-            // Record every binding, including plain values, so an inner declaration
-            // masks an outer context with the same name.
+    /// Resolves declared names against the current environment.
+    ///
+    /// Declarations without an initializer still shadow outer names, and every
+    /// right-hand side is resolved before any target is updated.
+    fn declared_bindings<'a>(
+        &self,
+        targets: impl Iterator<Item = (TokenReference, Option<&'a Expression>)>,
+    ) -> Vec<(String, Binding)> {
+        targets
+            .map(|(name, expression)| {
+                let binding =
+                    expression.map_or(Binding::Other, |expression| self.binding_for(expression));
+                (name.token().to_string(), binding)
+            })
+            .collect()
+    }
+
+    /// Installs freshly declared names in the innermost scope.
+    fn declare(&mut self, bindings: Vec<(String, Binding)>) {
+        for (name, binding) in bindings {
+            self.track_root(&binding);
             if let Some(scope) = self.scopes.last_mut() {
                 scope.insert(name, binding);
             }
         }
     }
-}
 
-impl Visitor for ImportVisitor {
-    fn visit_function_body(&mut self, body: &full_moon::ast::FunctionBody) {
-        self.pending_parameters = body
-            .parameters()
-            .iter()
-            .filter_map(|parameter| match parameter {
-                full_moon::ast::Parameter::Name(name) => Some(name.token().to_string()),
-                _ => None,
-            })
-            .collect();
-    }
-
-    fn visit_block(&mut self, _block: &full_moon::ast::Block) {
-        self.enter_scope();
-    }
-
-    fn visit_block_end(&mut self, _block: &full_moon::ast::Block) {
-        self.scopes.pop();
-    }
-
-    fn visit_const_assignment(&mut self, assignment: &ConstAssignment) {
-        self.record_binding(
-            assignment.names().iter().cloned(),
-            assignment.expressions().iter(),
-        );
-    }
-
-    fn visit_local_assignment(&mut self, assignment: &LocalAssignment) {
-        self.record_binding(
-            assignment.names().iter().cloned(),
-            assignment.expressions().iter(),
-        );
-    }
-
-    fn visit_assignment(&mut self, assignment: &Assignment) {
-        for (variable, expression) in assignment
-            .variables()
-            .iter()
-            .zip(assignment.expressions().iter())
-        {
-            let Var::Name(target) = variable else {
+    /// Applies a reassignment after its right-hand side has been visited.
+    fn assign(&mut self, bindings: Vec<(String, Binding)>) {
+        for (name, binding) in bindings {
+            self.track_root(&binding);
+            if self.function_depth > 0 {
+                // The function may never run, so keep the write inside it.
+                if let Some(scope) = self.scopes.last_mut() {
+                    scope.insert(name, binding);
+                }
                 continue;
-            };
-            let name = target.token().to_string();
-            let binding = self.binding_for(expression);
-            if let Binding::Context(module_root) = &binding {
-                self.roots.insert(module_root.clone());
             }
             // Reassignment updates the nearest declaration, or creates a global
             // binding when the name was not declared in this file.
@@ -161,6 +134,67 @@ impl Visitor for ImportVisitor {
                 scope.insert(name, binding);
             }
         }
+    }
+
+    fn track_root(&mut self, binding: &Binding) {
+        if let Binding::Context(module_root) = binding {
+            self.roots.insert(module_root.clone());
+        }
+    }
+}
+
+impl Visitor for ImportVisitor {
+    fn visit_function_body(&mut self, body: &full_moon::ast::FunctionBody) {
+        self.pending_parameters = body
+            .parameters()
+            .iter()
+            .filter_map(|parameter| match parameter {
+                full_moon::ast::Parameter::Name(name) => Some(name.token().to_string()),
+                _ => None,
+            })
+            .collect();
+        self.function_depth += 1;
+    }
+
+    fn visit_function_body_end(&mut self, _body: &full_moon::ast::FunctionBody) {
+        self.function_depth -= 1;
+    }
+
+    fn visit_block(&mut self, _block: &full_moon::ast::Block) {
+        self.enter_scope();
+    }
+
+    fn visit_block_end(&mut self, _block: &full_moon::ast::Block) {
+        self.scopes.pop();
+    }
+
+    fn visit_const_assignment_end(&mut self, assignment: &ConstAssignment) {
+        let bindings = self.declared_bindings(pair_targets(
+            assignment.names().iter().cloned().enumerate(),
+            assignment.expressions().iter(),
+        ));
+        self.declare(bindings);
+    }
+
+    fn visit_local_assignment_end(&mut self, assignment: &LocalAssignment) {
+        let bindings = self.declared_bindings(pair_targets(
+            assignment.names().iter().cloned().enumerate(),
+            assignment.expressions().iter(),
+        ));
+        self.declare(bindings);
+    }
+
+    fn visit_assignment_end(&mut self, assignment: &Assignment) {
+        let bindings = self.declared_bindings(pair_targets(
+            assignment.variables().iter().enumerate().filter_map(
+                |(index, variable)| match variable {
+                    Var::Name(target) => Some((index, target.clone())),
+                    _ => None,
+                },
+            ),
+            assignment.expressions().iter(),
+        ));
+        self.assign(bindings);
     }
 
     fn visit_function_call(&mut self, call: &FunctionCall) {
@@ -183,6 +217,15 @@ impl Visitor for ImportVisitor {
             });
         }
     }
+}
+
+/// Pairs declared names with their own right-hand side, if any.
+fn pair_targets<'a>(
+    names: impl Iterator<Item = (usize, TokenReference)>,
+    expressions: impl Iterator<Item = &'a Expression>,
+) -> impl Iterator<Item = (TokenReference, Option<&'a Expression>)> {
+    let expressions = expressions.collect::<Vec<_>>();
+    names.map(move |(index, name)| (name, expressions.get(index).copied()))
 }
 
 /// Finds literal JavaScript imports on variables created with `newContext`.
@@ -250,15 +293,22 @@ fn new_context_root(expression: &Expression) -> Option<ContextRoot> {
     None
 }
 
+/// Returns whether the expression is the literal `nil`.
+fn is_nil(expression: &Expression) -> bool {
+    matches!(expression, Expression::Symbol(token) if token.token().to_string() == "nil")
+}
+
 fn module_root_from_args(arguments: &FunctionArgs) -> ContextRoot {
     match arguments {
         FunctionArgs::Parentheses { arguments, .. } => {
             let mut arguments = arguments.iter();
             match (arguments.next(), arguments.next()) {
                 (None, _) => ContextRoot::Known(None),
+                (Some(expression), None) if is_nil(expression) => ContextRoot::Known(None),
                 (Some(Expression::TableConstructor(table)), None) => module_root_from_table(table),
                 (Some(Expression::Parentheses { expression, .. }), None) => {
                     match expression.as_ref() {
+                        expression if is_nil(expression) => ContextRoot::Known(None),
                         Expression::TableConstructor(table) => module_root_from_table(table),
                         _ => ContextRoot::Unresolved,
                     }
@@ -281,8 +331,12 @@ fn module_root_from_table(table: &TableConstructor) -> ContextRoot {
         if key.token().to_string() != "ModuleRoot" {
             continue;
         }
+        // An explicit `nil` uses the default root, just like omitting the field.
         let Expression::String(token) = value.as_ref() else {
-            return ContextRoot::Unresolved;
+            return match value.as_ref() {
+                expression if is_nil(expression) => ContextRoot::Known(None),
+                _ => ContextRoot::Unresolved,
+            };
         };
         let Some(root) = string_literal(token) else {
             return ContextRoot::Unresolved;
@@ -405,6 +459,87 @@ mod tests {
             discovery.unknown_specifiers.into_iter().collect::<Vec<_>>(),
             vec!["asset.json".to_string()]
         );
+    }
+
+    #[test]
+    fn declarations_without_initializers_shadow_outer_contexts() {
+        let source = r#"
+            local Context = js.newContext({ ModuleRoot = "./A" })
+            do
+                local Context
+                Context = js.newContext({ ModuleRoot = "./B" })
+                Context:Import("/Value.ts")
+            end
+            Context:Import("/Value.ts")
+        "#;
+        let discovery = discover_js_imports(source).unwrap();
+        assert_eq!(
+            discovery.imports.into_iter().collect::<Vec<_>>(),
+            vec![
+                ("/Value.ts".to_string(), Some("./A".to_string())),
+                ("/Value.ts".to_string(), Some("./B".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn imports_on_the_right_hand_side_see_the_previous_binding() {
+        let source = r#"
+            local Context = js.newContext({ ModuleRoot = "./A" })
+            Context = Context:Import("./Value.ts")
+        "#;
+        let discovery = discover_js_imports(source).unwrap();
+        assert_eq!(
+            discovery.imports.into_iter().collect::<Vec<_>>(),
+            vec![("./Value.ts".to_string(), Some("./A".to_string()))]
+        );
+    }
+
+    #[test]
+    fn swaps_resolve_against_the_previous_environment() {
+        let source = r#"
+            local First = js.newContext({ ModuleRoot = "./A" })
+            local Second = js.newContext({ ModuleRoot = "./B" })
+            First, Second = Second, First
+            Second:Import("/Value.ts")
+        "#;
+        let discovery = discover_js_imports(source).unwrap();
+        assert_eq!(
+            discovery.imports.into_iter().collect::<Vec<_>>(),
+            vec![("/Value.ts".to_string(), Some("./A".to_string()))]
+        );
+    }
+
+    #[test]
+    fn uncalled_function_bodies_do_not_mutate_outer_bindings() {
+        let source = r#"
+            local Context = js.newContext({ ModuleRoot = "./A" })
+            local function CloseLater()
+                Context = nil
+            end
+            Context:Import("/Value.ts")
+        "#;
+        let discovery = discover_js_imports(source).unwrap();
+        assert_eq!(
+            discovery.imports.into_iter().collect::<Vec<_>>(),
+            vec![("/Value.ts".to_string(), Some("./A".to_string()))]
+        );
+    }
+
+    #[test]
+    fn treats_literal_nil_options_as_the_default_root() {
+        let source = r#"
+            local First = js.newContext(nil)
+            local Second = js.newContext({ ModuleRoot = nil })
+            First:Import("/Value.ts")
+            Second:Import("/Value.ts")
+        "#;
+        let discovery = discover_js_imports(source).unwrap();
+        assert_eq!(
+            discovery.imports.into_iter().collect::<Vec<_>>(),
+            vec![("/Value.ts".to_string(), None)]
+        );
+        assert!(discovery.unresolved_receivers.is_empty());
     }
 
     #[test]

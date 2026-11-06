@@ -162,6 +162,27 @@ fn skips_dynamic_subtrees_with_missing_static_dependencies() {
 }
 
 #[test]
+fn revalidates_dynamically_discovered_modules_that_are_also_static() {
+    let provider = memory(&[
+        (
+            "/Main.ts",
+            r#"
+                import { Broken } from "./Broken.js";
+                export async function Load() { return import("./Broken.js"); }
+                export const Value = Broken;
+            "#,
+        ),
+        (
+            "/Broken.ts",
+            "import { Missing } from './Missing.js'; export const Broken = Missing;",
+        ),
+    ]);
+    // The dynamic edge is discovered first, but the static edge still requires
+    // the missing dependency.
+    assert!(ModuleGraph::load_with_dynamic(&provider, id("/Main.ts")).is_err());
+}
+
+#[test]
 fn resolves_absolute_imports_with_extension_substitution() {
     let provider = memory(&[("/Value.ts", "export const Value = 42;")]);
     assert_eq!(

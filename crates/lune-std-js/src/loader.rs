@@ -121,6 +121,10 @@ impl Resolver for SharedModuleCache {
                 "Import attributes are not supported",
             ));
         }
+        // Runtime-owned modules never come from a source provider.
+        if name == crate::transform::DYNAMIC_IMPORT_MODULE {
+            return Ok(name.to_string());
+        }
         // The authoritative provider decides candidate precedence (for example `.js`
         // before a cached `.ts` substitute). The cache is only the authoritative source
         // when no provider is installed.
