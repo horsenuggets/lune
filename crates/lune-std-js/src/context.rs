@@ -190,7 +190,13 @@ pub struct JsContext {
 
 impl JsContext {
     /// Enforces the active operation's execution limit and timeout.
+    ///
+    /// Conversion loops run outside QuickJS bytecode, so they must also account
+    /// for the time spent in the current poll.
     pub(crate) fn check_limits(&self) -> Result<(), JsError> {
+        if should_interrupt(&Rc::downgrade(&self.inner)) {
+            self.inner.check_active()?;
+        }
         self.inner.check_active()
     }
 
@@ -802,6 +808,9 @@ fn create_dynamic_callback<'js>(
                 }
                 .prepare_import(&lua, &specifier)
                 .map_err(|error| throw(&callback_ctx, error))?;
+                // The module ID is embedded at build time, before any bundle
+                // namespace exists, so qualify it for relative resolution.
+                let base = inner.module_cache.qualify(&base);
                 request.base = ModuleId::parse(&base)
                     .map_err(|error| throw(&callback_ctx, error.to_string()))?;
                 let operation_name = format!("{} from {base}", request.specifier);

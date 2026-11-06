@@ -119,7 +119,7 @@ fn join_specifier(base: &ModuleId, specifier: &str) -> Result<VirtualPath, Modul
     })
 }
 
-fn resolution_candidates(
+pub(crate) fn resolution_candidates(
     path: &VirtualPath,
     directory_only: bool,
 ) -> Result<Vec<VirtualPath>, ModuleError> {

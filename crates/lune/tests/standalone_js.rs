@@ -495,7 +495,9 @@ fn js_include_embeds_modules_for_opaque_context_options() {
         .arg("--output")
         .arg(&binary)
         .arg("--js-include")
-        .arg("Source/Value.ts")
+        .arg("Source/Entry.ts")
+        .arg("--js-include")
+        .arg("Source/Extra.ts")
         .current_dir(&root));
     assert_success(&build, "opaque standalone build with includes");
 

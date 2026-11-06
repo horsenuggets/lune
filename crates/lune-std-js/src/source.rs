@@ -7,10 +7,12 @@ use std::{
 
 use mlua::prelude::*;
 
-use crate::paths::is_within_namespace;
+use lune_utils::path::VirtualPath;
 
 use crate::{
     module::{ModuleError, ModuleId, TransformedModule},
+    paths::is_within_namespace,
+    resolver::resolution_candidates,
     source_map::PortableSourceMap,
 };
 
@@ -129,11 +131,18 @@ fn relative_root_prefix(root: &str) -> Option<String> {
     if root.starts_with('/') || Path::new(&root).is_absolute() {
         return None;
     }
-    let root = root.trim_start_matches("./").trim_matches('/');
-    if root.is_empty() || root.split('/').any(|part| part == ".." || part == ".") {
-        return None;
+    let mut parts: Vec<&str> = Vec::new();
+    for part in root.split('/') {
+        match part {
+            "" | "." => {}
+            // Traversal above the entry directory has no entry-relative form.
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
     }
-    Some(root.to_string())
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 impl AbsoluteNsProvider {
@@ -163,7 +172,24 @@ impl AbsoluteNsProvider {
         if let Ok(unqualified) = ModuleId::parse(name) {
             candidates.push(unqualified);
         }
+        // Never cross into another explicit module root's namespace.
+        candidates.retain(|candidate| !candidate.as_str().starts_with("/@"));
         candidates
+    }
+
+    /// Whether the namespace already provides another extension variant of `id`.
+    ///
+    /// The resolver walks candidates in order, so a local substitution must win
+    /// before any project-root fallback is considered.
+    fn has_namespaced_candidate(&self, id: &ModuleId) -> Result<bool, ModuleError> {
+        let path = VirtualPath::parse(id.as_str())
+            .map_err(|error| ModuleError::InvalidPath(error.to_string()))?;
+        for candidate in resolution_candidates(&path, id.as_str().ends_with('/'))? {
+            if self.inner.exists(&ModuleId::new(candidate)?)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -185,6 +211,9 @@ impl SourceProvider for AbsoluteNsProvider {
         self.check(id)?;
         if self.inner.exists(id)? {
             return Ok(true);
+        }
+        if self.has_namespaced_candidate(id)? {
+            return Ok(false);
         }
         for fallback in self.fallbacks(id) {
             if self.inner.exists(&fallback)? {
@@ -512,6 +541,74 @@ mod tests {
                 .exists(&ModuleId::parse("/@AB/Value.ts").unwrap())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn fallbacks_never_enter_another_namespace() {
+        let inner = Arc::new(
+            MemorySourceProvider::with_modules([(
+                ModuleId::parse("/@B/Value.ts").unwrap(),
+                "export {};".to_string(),
+            )])
+            .unwrap(),
+        );
+        let provider = AbsoluteNsProvider::new("/@A", inner);
+        assert!(
+            !provider
+                .exists(&ModuleId::parse("/@A/@B/Value.ts").unwrap())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn namespace_substitutions_win_over_project_root_fallbacks() {
+        let inner = Arc::new(
+            MemorySourceProvider::with_modules([
+                (
+                    ModuleId::parse("/Value.js").unwrap(),
+                    "export {};".to_string(),
+                ),
+                (
+                    ModuleId::parse("/@A/Value.ts").unwrap(),
+                    "export {};".to_string(),
+                ),
+            ])
+            .unwrap(),
+        );
+        let provider = AbsoluteNsProvider::new("/@A", inner);
+        assert!(
+            !provider
+                .exists(&ModuleId::parse("/@A/Value.js").unwrap())
+                .unwrap()
+        );
+        assert!(
+            provider
+                .exists(&ModuleId::parse("/@A/Value.ts").unwrap())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn normalizes_internal_root_segments() {
+        let inner = Arc::new(
+            MemorySourceProvider::with_modules([(
+                ModuleId::parse("/Source/Value.ts").unwrap(),
+                "export {};".to_string(),
+            )])
+            .unwrap(),
+        );
+        let provider =
+            AbsoluteNsProvider::new("/@A", inner).with_root_prefix(Some("Source/../Source"));
+        assert!(
+            provider
+                .exists(&ModuleId::parse("/@A/Value.ts").unwrap())
+                .unwrap()
+        );
+        assert_eq!(
+            relative_root_prefix("Source/../Source"),
+            Some("Source".to_string())
+        );
+        assert_eq!(relative_root_prefix("../Source"), None);
     }
 
     #[test]
