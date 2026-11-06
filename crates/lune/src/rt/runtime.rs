@@ -469,7 +469,7 @@ impl Runtime {
         chunk_contents: impl AsRef<[u8]>,
     ) -> RuntimeResult<RuntimeReturnValues> {
         let chunk_name = format!("={}", chunk_name.as_ref());
-        self.run_inner(chunk_name, chunk_contents).await
+        self.run_inner(chunk_name, chunk_contents, None).await
     }
 
     /**
@@ -490,7 +490,7 @@ impl Runtime {
         source: impl AsRef<[u8]>,
     ) -> RuntimeResult<RuntimeReturnValues> {
         let module_name = format!("{FILE_CHUNK_PREFIX}{}", module_path.as_ref());
-        self.run_inner(module_name, source).await
+        self.run_inner(module_name, source, None).await
     }
 
     /**
@@ -562,13 +562,21 @@ impl Runtime {
             lune_std::register_script_file(&self.lua, &module_path.to_string(), file)?;
         }
 
-        self.run_inner(module_name, module_contents).await
+        // The module path drops the "init" segment, so keep the resolved file's own
+        // directory for JavaScript module roots.
+        let js_base = module_path
+            .target()
+            .as_file()
+            .and_then(std::path::Path::parent)
+            .map(std::path::Path::to_path_buf);
+        self.run_inner(module_name, module_contents, js_base).await
     }
 
     async fn run_inner(
         &mut self,
         chunk_name: impl AsRef<str>,
         chunk_contents: impl AsRef<[u8]>,
+        js_base: Option<PathBuf>,
     ) -> RuntimeResult<RuntimeReturnValues> {
         // Add error callback to format errors nicely + store status
         let got_any_error = Arc::new(AtomicBool::new(false));
@@ -673,9 +681,11 @@ impl Runtime {
             lune_std::push_script_path(&self.lua, script_path)?;
             #[cfg(feature = "std-js")]
             {
-                let base = std::path::Path::new(script_path)
-                    .parent()
-                    .map(std::path::Path::to_path_buf);
+                let base = js_base.clone().or_else(|| {
+                    std::path::Path::new(script_path)
+                        .parent()
+                        .map(std::path::Path::to_path_buf)
+                });
                 self.lua
                     .set_app_data(lune_std_js::source::JsModuleBase(base));
             }

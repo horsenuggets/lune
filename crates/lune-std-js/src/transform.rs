@@ -5,7 +5,7 @@ use oxc_ast::{
     AstBuilder,
     ast::{
         Argument, ExportAllDeclaration, ExportNamedDeclaration, Expression, ImportDeclaration,
-        ImportExpression,
+        ImportExpression, TemplateElementValue,
     },
 };
 use oxc_ast_visit::{
@@ -21,6 +21,7 @@ use oxc_diagnostics::OxcDiagnostic;
 use oxc_parser::Parser;
 use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
+use oxc_str::Str;
 use oxc_transformer::{TransformOptions, Transformer};
 
 use crate::{
@@ -150,13 +151,33 @@ impl<'a> VisitMut<'a> for DynamicImportRewriter<'a> {
             {
                 let import = import.take_in(self.allocator);
                 let builder = AstBuilder::new(self.allocator);
-                let callee = builder.expression_identifier(import.span, "__luneDynamicImport");
-                let module_id =
-                    builder.expression_string_literal(import.span, self.module_id, None);
-                let arguments = builder
-                    .vec_from_array([Argument::from(module_id), Argument::from(import.source)]);
+                let span = import.span;
+                // Reach the helper through the global object so a user binding with the
+                // same name cannot capture the call.
+                let callee =
+                    Expression::StaticMemberExpression(builder.alloc_static_member_expression(
+                        span,
+                        builder.expression_identifier(span, "globalThis"),
+                        builder.identifier_name(span, "__luneDynamicImport"),
+                        false,
+                    ));
+                let module_id = builder.expression_string_literal(span, self.module_id, None);
+                // `import()` coerces its specifier with ToString before creating the
+                // promise, so an interpolated template mirrors that exactly.
+                let empty = TemplateElementValue {
+                    raw: Str::from(""),
+                    cooked: Some(Str::from("")),
+                };
+                let quasis = builder.vec_from_array([
+                    builder.template_element(span, empty.clone(), false, false),
+                    builder.template_element(span, empty, true, false),
+                ]);
+                let expressions = builder.vec_from_array([import.source]);
+                let specifier = builder.expression_template_literal(span, quasis, expressions);
+                let arguments =
+                    builder.vec_from_array([Argument::from(module_id), Argument::from(specifier)]);
                 Expression::CallExpression(builder.alloc_call_expression(
-                    import.span,
+                    span,
                     callee,
                     None::<oxc_allocator::Box<_>>,
                     arguments,
@@ -303,10 +324,31 @@ mod tests {
         .unwrap();
 
         assert!(module.has_computed_dynamic_import());
-        assert!(module.code().contains("__luneDynamicImport"));
+        assert!(module.code().contains("globalThis.__luneDynamicImport"));
+        // The specifier is coerced with ToString, exactly like `import()`.
+        assert!(module.code().contains("`${`./${Name}.js`}`"));
         assert_eq!(module.dependencies().len(), 1);
         assert_eq!(module.dependencies()[0].kind, DependencyKind::Dynamic);
         assert_eq!(module.dependencies()[0].specifier, "./Static.js");
+    }
+
+    #[test]
+    fn computed_dynamic_import_ignores_user_bindings() {
+        let module = transform_module(
+            ModuleId::parse("/Source/Shadow.ts").unwrap(),
+            r#"
+                const __luneDynamicImport = () => {
+                    throw new Error("shadowed");
+                };
+                export const Helper = __luneDynamicImport;
+                export function Load(Name: string) {
+                    return import(`./${Name}.js`);
+                }
+            "#,
+        )
+        .unwrap();
+
+        assert!(module.code().contains("globalThis.__luneDynamicImport"));
     }
 
     #[test]

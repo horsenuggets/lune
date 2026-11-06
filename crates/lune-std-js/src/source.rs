@@ -352,8 +352,11 @@ impl HostSourceProvider {
             ))
         })?;
         self.ensure_within_root(&canonical)?;
-        let relative = canonical
+        // Prefer the requested name over the canonical target so a root-relative
+        // symlink can be embedded under the identity its importers use.
+        let relative = path
             .strip_prefix(&self.root)
+            .or_else(|_| canonical.strip_prefix(&self.root))
             .map_err(|_| ModuleError::RootEscape(format!("\"{}\"", canonical.display())))?;
         let relative = relative.to_str().ok_or_else(|| {
             ModuleError::InvalidPath("The host module path is not valid UTF-8".into())

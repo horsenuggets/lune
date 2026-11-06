@@ -34,24 +34,42 @@ impl ModuleGraph {
         follow_dynamic: bool,
     ) -> Result<Self, ModuleError> {
         let mut modules = BTreeMap::new();
-        let mut pending = vec![entry.clone()];
+        let mut pending = vec![(entry.clone(), false)];
 
-        while let Some(id) = pending.pop() {
+        while let Some((id, optional)) = pending.pop() {
             if modules.contains_key(&id) {
                 continue;
             }
 
-            let transformed = match provider.load(&id)? {
-                ModuleSource::Original(source) => transform_module(id.clone(), &source)?,
-                ModuleSource::Generated { code, source_map } => {
-                    inspect_generated_module(id.clone(), &code, source_map)?
+            let transformed = match provider.load(&id) {
+                Ok(ModuleSource::Original(source)) => match transform_module(id.clone(), &source) {
+                    Ok(transformed) => transformed,
+                    Err(_) if optional => continue,
+                    Err(error) => return Err(error),
+                },
+                Ok(ModuleSource::Generated { code, source_map }) => {
+                    match inspect_generated_module(id.clone(), &code, source_map) {
+                        Ok(transformed) => transformed,
+                        Err(_) if optional => continue,
+                        Err(error) => return Err(error),
+                    }
                 }
+                Err(_) if optional => continue,
+                Err(error) => return Err(error),
             };
 
             let mut dependencies = Vec::new();
             for dependency in transformed.dependencies() {
-                if follow_dynamic || dependency.kind == DependencyKind::Static {
-                    dependencies.push(resolve_module(provider, &id, &dependency.specifier)?);
+                if !follow_dynamic && dependency.kind != DependencyKind::Static {
+                    continue;
+                }
+                // A literal dynamic target may be absent on purpose, so its whole
+                // subtree is embedded only when it resolves and loads cleanly.
+                let dependency_optional = optional || dependency.kind == DependencyKind::Dynamic;
+                match resolve_module(provider, &id, &dependency.specifier) {
+                    Ok(resolved) => dependencies.push((resolved, dependency_optional)),
+                    Err(_) if dependency_optional => {}
+                    Err(error) => return Err(error),
                 }
             }
             modules.insert(id, transformed);

@@ -123,6 +123,42 @@ fn skips_type_only_imports_and_missing_dynamic_targets() {
             .iter()
             .all(|dependency| dependency.specifier != "./Types.js")
     );
+
+    // Embedding follows dynamic imports, so a missing optional target is left
+    // out instead of failing the build.
+    let bundled = ModuleGraph::load_with_dynamic(&provider, id("/Main.ts")).unwrap();
+    assert_eq!(bundled.len(), 2);
+    assert!(bundled.get(&id("/Optional.ts")).is_none());
+}
+
+#[test]
+fn skips_dynamic_subtrees_with_missing_static_dependencies() {
+    let provider = memory(&[
+        (
+            "/Main.ts",
+            "export async function Load() { return import('./Broken.js'); }",
+        ),
+        (
+            "/Broken.ts",
+            "import { Missing } from './Missing.js'; export const Value = Missing;",
+        ),
+    ]);
+    // The dynamic target is embedded, but whatever it cannot resolve is left out,
+    // so importing it at runtime rejects instead of failing the build.
+    let bundled = ModuleGraph::load_with_dynamic(&provider, id("/Main.ts")).unwrap();
+    assert_eq!(bundled.len(), 2);
+    assert!(bundled.get(&id("/Broken.ts")).is_some());
+    assert!(bundled.get(&id("/Missing.ts")).is_none());
+
+    // A static dependency stays mandatory.
+    let provider = memory(&[
+        (
+            "/Main.ts",
+            "import { Missing } from './Missing.js'; export const Value = Missing;",
+        ),
+        ("/Broken.ts", "export const Value = 1;"),
+    ]);
+    assert!(ModuleGraph::load_with_dynamic(&provider, id("/Main.ts")).is_err());
 }
 
 #[test]
