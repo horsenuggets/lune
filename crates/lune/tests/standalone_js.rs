@@ -513,7 +513,11 @@ fn standalone_build_tolerates_unparseable_luau() {
     let temporary = tempfile::tempdir().unwrap();
     let main = temporary.path().join("main.luau");
     fs::write(&main, "this is not valid luau\n").unwrap();
-    let binary = temporary.path().join("Invalid");
+    let binary = temporary.path().join(if cfg!(windows) {
+        "Invalid.exe"
+    } else {
+        "Invalid"
+    });
 
     let build = run(Command::new(env!("CARGO_BIN_EXE_lune"))
         .arg("build")
