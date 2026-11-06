@@ -22,6 +22,7 @@ default = ["std", "cli"]
 
 std-datetime = ["dep:lune-std", "lune-std/datetime"]
 std-fs = ["dep:lune-std", "lune-std/fs"]
+std-js = ["dep:lune-std", "dep:lune-std-js", "lune-std/js"]
 std-luau = ["dep:lune-std", "lune-std/luau"]
 std-net = ["dep:lune-std", "lune-std/net"]
 std-process = ["dep:lune-std", "lune-std/process"]
@@ -34,6 +35,7 @@ std-task = ["dep:lune-std", "lune-std/task"]
 std = [
     "std-datetime",
     "std-fs",
+    "std-js",
     "std-luau",
     "std-net",
     "std-process",
@@ -44,7 +46,7 @@ std = [
     "std-task",
 ]
 
-cli = ["dep:clap", "dep:rustyline", "dep:zip", "dep:lune-std-net"]
+cli = ["dep:clap", "dep:full_moon", "dep:glob", "dep:rustyline", "dep:zip", "dep:lune-std-js", "dep:lune-std-net"]
 
 [lints]
 workspace = true
@@ -71,12 +73,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 lune-std = { optional = true, version = "0.4.1", path = "../lune-std" }
+lune-std-js = { optional = true, version = "0.4.0", path = "../lune-std-js" }
 lune-std-net = { optional = true, version = "0.4.0", path = "../lune-std-net" }
 lune-utils = { version = "0.4.0", path = "../lune-utils" }
 
 ### CLI
 
 clap = { optional = true, version = "4.1", features = ["derive"] }
+full_moon = { optional = true, version = "3.0", features = ["luau"] }
+glob = { optional = true, version = "0.3" }
 rustyline = { optional = true, version = "18.0" }
 zip = { optional = true, version = "9.0", default-features = false, features = [
 	"bzip2",
@@ -87,3 +92,4 @@ zip = { optional = true, version = "9.0", default-features = false, features = [
 
 [dev-dependencies]
 serial_test = "3.2"
+tempfile = "3"

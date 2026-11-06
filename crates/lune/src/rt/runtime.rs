@@ -11,6 +11,8 @@ use std::{
 };
 
 use async_fs as fs;
+#[cfg(feature = "std-js")]
+use lune_std_js::source::BundleSourceProvider;
 use lune_utils::{
     path::{LuauModulePath, constants::FILE_CHUNK_PREFIX},
     process::{ProcessArgs, ProcessEnv, ProcessJitEnablement},
@@ -18,7 +20,7 @@ use lune_utils::{
 use mlua::prelude::*;
 use mlua_luau_scheduler::{Functions, Scheduler};
 
-use super::{RuntimeError, RuntimeResult};
+use super::{BundledJsModules, BundledJsRoots, RuntimeError, RuntimeResult};
 
 /**
     Values returned by running a Lune runtime until completion.
@@ -81,6 +83,10 @@ pub struct Runtime {
     jit: ProcessJitEnablement,
     bundled_files: BundledFiles,
     bundled_aliases: BundledAliases,
+    #[cfg(feature = "std-js")]
+    bundled_js_modules: Option<BundledJsModules>,
+    #[cfg(feature = "std-js")]
+    bundled_js_roots: BundledJsRoots,
     executable_path: ExecutablePath,
 }
 
@@ -219,6 +225,7 @@ impl Runtime {
         #[cfg(any(
             feature = "std-datetime",
             feature = "std-fs",
+            feature = "std-js",
             feature = "std-luau",
             feature = "std-net",
             feature = "std-process",
@@ -241,6 +248,7 @@ impl Runtime {
         #[cfg(any(
             feature = "std-datetime",
             feature = "std-fs",
+            feature = "std-js",
             feature = "std-luau",
             feature = "std-net",
             feature = "std-process",
@@ -268,6 +276,10 @@ impl Runtime {
             jit,
             bundled_files: HashMap::new(),
             bundled_aliases: HashMap::new(),
+            #[cfg(feature = "std-js")]
+            bundled_js_modules: None,
+            #[cfg(feature = "std-js")]
+            bundled_js_roots: BundledJsRoots::default(),
             executable_path: None,
         })
     }
@@ -334,6 +346,28 @@ impl Runtime {
     #[must_use]
     pub fn with_bundled_aliases(mut self, aliases: BundledAliases) -> Self {
         self.bundled_aliases = aliases;
+        self
+    }
+
+    /**
+        Sets transformed JavaScript modules for standalone executables.
+
+        When set, JavaScript imports use only these modules and never the host filesystem.
+    */
+    #[cfg(feature = "std-js")]
+    #[must_use]
+    pub fn with_bundled_js_modules(mut self, modules: BundledJsModules) -> Self {
+        self.bundled_js_modules = Some(modules);
+        self
+    }
+
+    /**
+        Sets relocated virtual roots for standalone JavaScript modules.
+    */
+    #[cfg(feature = "std-js")]
+    #[must_use]
+    pub fn with_bundled_js_roots(mut self, roots: BundledJsRoots) -> Self {
+        self.bundled_js_roots = roots;
         self
     }
 
@@ -514,6 +548,7 @@ impl Runtime {
         #[cfg(any(
             feature = "std-datetime",
             feature = "std-fs",
+            feature = "std-js",
             feature = "std-luau",
             feature = "std-net",
             feature = "std-process",
@@ -551,10 +586,32 @@ impl Runtime {
         self.lua.set_app_data(self.bundled_aliases.clone());
         self.lua.set_app_data(self.executable_path.clone());
 
+        #[cfg(feature = "std-js")]
+        {
+            let provider = match &self.bundled_js_modules {
+                Some(modules) => Some(Arc::new(
+                    BundleSourceProvider::from_generated(modules.iter().map(|(id, artifact)| {
+                        (
+                            id.clone(),
+                            artifact.code.clone(),
+                            artifact.source_map.clone(),
+                        )
+                    }))
+                    .map_err(LuaError::external)?,
+                )),
+                None => None,
+            };
+            self.lua.set_app_data(provider);
+            self.lua.set_app_data(lune_std_js::source::JsVirtualRoots(
+                self.bundled_js_roots.clone(),
+            ));
+        }
+
         // Inject the executable global now that app_data is set
         #[cfg(any(
             feature = "std-datetime",
             feature = "std-fs",
+            feature = "std-js",
             feature = "std-luau",
             feature = "std-net",
             feature = "std-process",
@@ -574,6 +631,7 @@ impl Runtime {
         #[cfg(any(
             feature = "std-datetime",
             feature = "std-fs",
+            feature = "std-js",
             feature = "std-luau",
             feature = "std-net",
             feature = "std-process",
@@ -594,6 +652,7 @@ impl Runtime {
         #[cfg(any(
             feature = "std-datetime",
             feature = "std-fs",
+            feature = "std-js",
             feature = "std-luau",
             feature = "std-net",
             feature = "std-process",
@@ -612,6 +671,14 @@ impl Runtime {
                 script_path
             };
             lune_std::push_script_path(&self.lua, script_path)?;
+            #[cfg(feature = "std-js")]
+            {
+                let base = std::path::Path::new(script_path)
+                    .parent()
+                    .map(std::path::Path::to_path_buf);
+                self.lua
+                    .set_app_data(lune_std_js::source::JsModuleBase(base));
+            }
         }
 
         // Load our "main" thread

@@ -204,6 +204,15 @@ create_tests! {
     fs_watch: "fs/watch",
 }
 
+#[cfg(feature = "std-js")]
+create_tests! {
+    js_callbacks: "js/callbacks",
+    js_context: "js/context",
+    js_conversion: "js/conversion",
+    js_errors: "js/errors",
+    js_modules: "js/modules",
+}
+
 #[cfg(feature = "std-luau")]
 create_tests! {
     luau_compile: "luau/compile",

@@ -41,11 +41,11 @@ fn read_project_json_path(dir: &Path) -> Option<PathBuf> {
     let project: ProjectJson = serde_json::from_str(&content).ok()?;
 
     // Check if the root tree has a $path mapping
-    if let Some(tree) = project.tree {
-        if let Some(path) = tree.path {
-            // Resolve the path relative to the project file's directory
-            return Some(dir.join(path));
-        }
+    if let Some(tree) = project.tree
+        && let Some(path) = tree.path
+    {
+        // Resolve the path relative to the project file's directory
+        return Some(dir.join(path));
     }
 
     None
@@ -93,18 +93,16 @@ impl LuauFilePath {
         if module.is_dir() {
             // Check for default.project.json with $path mapping
             // This supports Roblox-style project files used by Wally packages
-            if check_project_json {
-                if let Some(mapped_path) = read_project_json_path(module) {
-                    // If the mapped path is already an existing file, return it directly
-                    // This handles cases like $path: "init.luau" where the path points
-                    // to a file rather than a directory
-                    if mapped_path.is_file() {
-                        return Ok(Self::File(mapped_path));
-                    }
-                    // Otherwise recursively resolve the mapped path as a module,
-                    // but don't check project.json again to avoid infinite loops
-                    return Self::resolve_inner(&mapped_path, false);
+            if check_project_json && let Some(mapped_path) = read_project_json_path(module) {
+                // If the mapped path is already an existing file, return it directly
+                // This handles cases like $path: "init.luau" where the path points
+                // to a file rather than a directory
+                if mapped_path.is_file() {
+                    return Ok(Self::File(mapped_path));
                 }
+                // Otherwise recursively resolve the mapped path as a module,
+                // but don't check project.json again to avoid infinite loops
+                return Self::resolve_inner(&mapped_path, false);
             }
 
             let init = Path::new(FILE_NAME_INIT);
