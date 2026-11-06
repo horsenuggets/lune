@@ -101,6 +101,9 @@ impl SourceProvider for NamespacedProvider {
 pub struct AbsoluteNsProvider {
     inner: Arc<dyn SourceProvider + Send + Sync>,
     namespace: String,
+    /// `ModuleRoot` relative to the entry directory, used to locate modules a
+    /// build embedded under the project root instead.
+    root_prefix: Option<String>,
 }
 
 impl AbsoluteNsProvider {
@@ -109,8 +112,28 @@ impl AbsoluteNsProvider {
         Self {
             inner,
             namespace: namespace.into(),
+            root_prefix: None,
         }
     }
+
+    #[must_use]
+    pub fn with_root_prefix(mut self, root: Option<&str>) -> Self {
+        self.root_prefix = root.and_then(relative_root_prefix);
+        self
+    }
+}
+
+/// Normalizes a relative module root into a leading path segment such as `Source`.
+fn relative_root_prefix(root: &str) -> Option<String> {
+    let root = root.replace('\\', "/");
+    if root.starts_with('/') || Path::new(&root).is_absolute() {
+        return None;
+    }
+    let root = root.trim_start_matches("./").trim_matches('/');
+    if root.is_empty() || root.split('/').any(|part| part == ".." || part == ".") {
+        return None;
+    }
+    Some(root.to_string())
 }
 
 impl AbsoluteNsProvider {
@@ -124,17 +147,51 @@ impl AbsoluteNsProvider {
             )))
         }
     }
+
+    /// Modules a build embedded under the project root, used when it could not
+    /// see the context and therefore placed an include outside this namespace.
+    fn fallbacks(&self, id: &ModuleId) -> Vec<ModuleId> {
+        let Some(name) = id.as_str().strip_prefix(&self.namespace) else {
+            return Vec::new();
+        };
+        let mut candidates = Vec::new();
+        if let Some(prefix) = &self.root_prefix {
+            if let Ok(qualified) = ModuleId::parse(&format!("/{prefix}{name}")) {
+                candidates.push(qualified);
+            }
+        }
+        if let Ok(unqualified) = ModuleId::parse(name) {
+            candidates.push(unqualified);
+        }
+        candidates
+    }
 }
 
 impl SourceProvider for AbsoluteNsProvider {
     fn load(&self, id: &ModuleId) -> Result<ModuleSource, ModuleError> {
         self.check(id)?;
+        if let Ok(source) = self.inner.load(id) {
+            return Ok(source);
+        }
+        for fallback in self.fallbacks(id) {
+            if let Ok(source) = self.inner.load(&fallback) {
+                return Ok(source);
+            }
+        }
         self.inner.load(id)
     }
 
     fn exists(&self, id: &ModuleId) -> Result<bool, ModuleError> {
         self.check(id)?;
-        self.inner.exists(id)
+        if self.inner.exists(id)? {
+            return Ok(true);
+        }
+        for fallback in self.fallbacks(id) {
+            if self.inner.exists(&fallback)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn is_bundle(&self) -> bool {
@@ -455,5 +512,20 @@ mod tests {
                 .exists(&ModuleId::parse("/@AB/Value.ts").unwrap())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn absolute_namespace_falls_back_to_unqualified_modules() {
+        let inner = Arc::new(
+            MemorySourceProvider::with_modules([(
+                ModuleId::parse("/Value.ts").unwrap(),
+                "export {};".to_string(),
+            )])
+            .unwrap(),
+        );
+        let provider = AbsoluteNsProvider::new("/@A", inner);
+        let id = ModuleId::parse("/@A/Value.ts").unwrap();
+        assert!(provider.exists(&id).unwrap());
+        assert!(provider.load(&id).is_ok());
     }
 }
