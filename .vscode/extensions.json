@@ -1,8 +1,10 @@
 {
     "recommendations": [
-        "rust-lang.rust-analyzer",
+        "DavidAnson.vscode-markdownlint",
         "esbenp.prettier-vscode",
+        "hashicorp.terraform",
+        "jkillian.custom-local-formatters",
         "JohnnyMorganz.stylua",
-        "DavidAnson.vscode-markdownlint"
+        "rust-lang.rust-analyzer"
     ]
 }
