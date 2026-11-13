@@ -4,6 +4,6 @@
 [submodule "tests/roblox/rbx-test-files"]
 	path = tests/roblox/rbx-test-files
 	url = https://github.com/rojo-rbx/rbx-test-files
-[submodule "submodules/tf4fmt"]
-	path = submodules/tf4fmt
-	url = git@github.com:horsenuggets/tf4fmt.git
+[submodule "submodules/hcl4fmt"]
+	path = submodules/hcl4fmt
+	url = git@github.com:horsenuggets/hcl4fmt.git
