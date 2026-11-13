@@ -29,7 +29,7 @@ module "repo" {
         "CI - macOS aarch64",
         "CI - macOS x86_64",
         "CI - Windows aarch64",
-        "CI - Windows x86_64",
+        "CI - Windows x86_64"
     ]
 
     release_checks = [
@@ -41,7 +41,7 @@ module "repo" {
         "Build test - Windows x86_64",
         "Validate PR title",
         "Validate version",
-        "Verify diff matches main",
+        "Verify diff matches main"
     ]
 }
 
