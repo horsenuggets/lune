@@ -4,7 +4,7 @@ terraform {
 
     required_providers {
         github = {
-            source  = "integrations/github"
+            source = "integrations/github"
             version = "~> 6.0"
         }
     }
@@ -15,7 +15,7 @@ provider "github" {
 }
 
 module "repo" {
-    source     = "../submodules/luau-cicd/Terraform/Modules/LuauRepo"
+    source = "../submodules/luau-cicd/Terraform/Modules/LuauRepo"
     repository = "lune"
 
     # Upstream sync PRs land with a merge commit to keep upstream history on main.
@@ -48,5 +48,5 @@ module "repo" {
 # The Copilot review ruleset used to be defined here and now comes from LuauRepo.
 moved {
     from = github_repository_ruleset.copilot_code_review
-    to   = module.repo.github_repository_ruleset.copilot_code_review
+    to = module.repo.github_repository_ruleset.copilot_code_review
 }
