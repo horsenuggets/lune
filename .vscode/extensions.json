@@ -2,6 +2,7 @@
     "recommendations": [
         "DavidAnson.vscode-markdownlint",
         "esbenp.prettier-vscode",
+        "hashicorp.hcl",
         "hashicorp.terraform",
         "jkillian.custom-local-formatters",
         "JohnnyMorganz.stylua",
