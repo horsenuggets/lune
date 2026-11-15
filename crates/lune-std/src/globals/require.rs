@@ -602,16 +602,13 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                                 ))
                             })?;
 
-                            resolved
-                                .target()
-                                .as_file()
-                                .ok_or_else(|| {
-                                    LuaError::runtime(format!(
-                                        "cannot require directory '{}'",
-                                        alias_path.display()
-                                    ))
-                                })?
-                                .to_path_buf()
+                            dunce::canonicalize(resolved.target().as_file().ok_or_else(|| {
+                                LuaError::runtime(format!(
+                                    "cannot require directory '{}'",
+                                    alias_path.display()
+                                ))
+                            })?)
+                            .into_lua_err()?
                         }
                     } else {
                         return Err(LuaError::runtime(format!("cannot find alias '{}'", alias)));
@@ -700,10 +697,11 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                     }
 
                     // Notify any waiting requires
-                    if tx.receiver_count() > 0 {
+                    // The state retains one receiver; each other receiver is a waiting require.
+                    for _ in 0..tx.receiver_count().saturating_sub(1) {
                         tx.send(result.clone()).await.ok();
-                        tx.close();
                     }
+                    tx.close();
 
                     state.remove_pending(&resolved_path);
 
@@ -718,7 +716,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                         bundled_path
                     } else if absolute_path.is_absolute() && absolute_path.is_file() {
                         // Full source paths, including init files, identify an exact module.
-                        absolute_path.clone()
+                        dunce::canonicalize(&absolute_path).into_lua_err()?
                     } else {
                         // Resolve to actual filesystem path (handling .luau/.lua extensions)
                         let resolved = LuauModulePath::resolve(&absolute_path).map_err(|e| {
@@ -729,16 +727,13 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                             ))
                         })?;
 
-                        resolved
-                            .target()
-                            .as_file()
-                            .ok_or_else(|| {
-                                LuaError::runtime(format!(
-                                    "cannot require directory '{}'",
-                                    absolute_path.display()
-                                ))
-                            })?
-                            .to_path_buf()
+                        dunce::canonicalize(resolved.target().as_file().ok_or_else(|| {
+                            LuaError::runtime(format!(
+                                "cannot require directory '{}'",
+                                absolute_path.display()
+                            ))
+                        })?)
+                        .into_lua_err()?
                     };
 
                     let cache_key = resolved_path.to_string_lossy().to_string();
@@ -825,10 +820,11 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                     }
 
                     // Notify any waiting requires
-                    if tx.receiver_count() > 0 {
+                    // The state retains one receiver; each other receiver is a waiting require.
+                    for _ in 0..tx.receiver_count().saturating_sub(1) {
                         tx.send(result.clone()).await.ok();
-                        tx.close();
                     }
+                    tx.close();
 
                     state.remove_pending(&resolved_path);
 

@@ -73,7 +73,6 @@ create_tests! {
     require_multi_ext: "require/tests/multi_ext",
     require_nested: "require/tests/nested",
     require_parents: "require/tests/parents",
-    require_script_ref: "require/script_ref",
     require_siblings: "require/tests/siblings",
     require_state: "require/tests/state",
 
@@ -83,10 +82,19 @@ create_tests! {
     global_error: "globals/error",
     global_pcall: "globals/pcall",
     global_project: "globals/project",
-    global_script: "globals/script",
     global_type: "globals/type",
     global_typeof: "globals/typeof",
     global_warn: "globals/warn",
+}
+
+#[cfg(feature = "std-fs")]
+create_tests! {
+    require_script_ref: "require/script_ref",
+}
+
+#[cfg(all(feature = "std-fs", feature = "std-roblox"))]
+create_tests! {
+    global_script: "globals/script",
 }
 
 // Coverage tests run serially to prevent LUNE_COVERAGE env var contamination.
@@ -126,14 +134,15 @@ fn global_debug_getcoverage_script() -> Result<ExitCode> {
 /// Writes a script at the given path that checks which repository `project` resolves to
 fn write_project_check(path: &Path, expected_name: &str) -> Result<()> {
     fs::create_dir_all(path.parent().unwrap())?;
-    fs::write(
-        path,
-        format!(
-            "assert(project.Name == \"{expected_name}\", `got {{project.Name}}`)\n\
-             const fs = require(\"@lune/fs\")\n\
+    let mut source =
+        format!("assert(project.Name == \"{expected_name}\", `got {{project.Name}}`)\n");
+    if cfg!(feature = "std-fs") {
+        source.push_str(&format!(
+            "const fs = require(\"@lune/fs\")\n\
              assert(fs.readFile(script:GetFullName()) == fs.readFile({path:?}))\n"
-        ),
-    )?;
+        ));
+    }
+    fs::write(path, source)?;
     Ok(())
 }
 
@@ -181,6 +190,51 @@ fn global_project_follows_resolved_entrypoint_files() -> Result<()> {
         assert!(success, "project was wrong for {}", entrypoint.display());
     }
     Ok(())
+}
+
+#[cfg(all(unix, feature = "std-task"))]
+#[test]
+fn require_symlinked_sources_share_cache_and_pending_loads() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let real = root.path().join("Real");
+    fs::create_dir(&real)?;
+    fs::write(
+        real.join("Module.luau"),
+        "require(\"@lune/task\").wait()\nreturn {}\n",
+    )?;
+    std::os::unix::fs::symlink(&real, root.path().join("Linked"))?;
+    fs::write(
+        root.path().join(".luaurc"),
+        r#"{"aliases":{"linked":"./Linked"}}"#,
+    )?;
+    let main = root.path().join("Main.luau");
+    fs::write(
+        &main,
+        r#"
+const task = require("@lune/task")
+const reference = script.Parent.Linked.Module
+const results = {}
+for index, target in { reference, reference:GetFullName(), "@linked/Module" } do
+    task.spawn(function()
+        results[index] = require(target)
+    end)
+end
+task.wait(0.1)
+assert(type(results[1]) == "table")
+assert(type(results[2]) == "table")
+assert(type(results[3]) == "table")
+assert(rawequal(results[1], results[2]))
+assert(rawequal(results[1], results[3]))
+assert(rawequal(results[1], require(reference)))
+assert(rawequal(results[1], require(reference:GetFullName())))
+assert(rawequal(results[1], require("@linked/Module")))
+"#,
+    )?;
+    async_io::block_on(async {
+        let mut rt = Runtime::new()?;
+        assert!(rt.run_file(main).await?.success());
+        Ok(())
+    })
 }
 
 #[cfg(feature = "std-datetime")]

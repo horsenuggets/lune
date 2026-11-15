@@ -244,6 +244,19 @@ impl ProjectNode {
 
         Some(node)
     }
+
+    fn at_physical_path(&self, root: &Path, current: &Path, target: &Path) -> Option<&Self> {
+        if current == target {
+            return Some(self);
+        }
+        self.children.iter().find_map(|(name, child)| {
+            let child_path = child
+                .path
+                .as_ref()
+                .map_or_else(|| current.join(name), |path| root.join(path));
+            child.at_physical_path(root, &child_path, target)
+        })
+    }
 }
 
 /// Parse a default.project.json file and return the tree
@@ -265,40 +278,7 @@ fn resolve_through_project(base_path: &Path, child_name: &str) -> Option<PathBuf
     // Parse project.json
     let tree = parse_project_json(&project_root)?;
 
-    // Calculate relative path from project root to base_path
-    let relative_to_root = base_path.strip_prefix(&project_root).ok()?;
-
-    // Navigate the tree to find current position
-    let mut current_node = &tree;
-
-    // Navigate through the relative path to find current node
-    for component in relative_to_root.components() {
-        let name = component.as_os_str().to_string_lossy();
-
-        // First, check if there's a direct child with this name
-        if let Some(child) = current_node.children.get(name.as_ref()) {
-            current_node = child;
-            continue;
-        }
-
-        // Check if any child has a $path that matches
-        let mut found = false;
-        for (_, child) in &current_node.children {
-            if let Some(ref path) = child.path {
-                let resolved_path = project_root.join(path);
-                if resolved_path == base_path.join(component.as_os_str()) {
-                    current_node = child;
-                    found = true;
-                    break;
-                }
-            }
-        }
-
-        if !found {
-            // Can't navigate further in the tree
-            return None;
-        }
-    }
+    let current_node = tree.at_physical_path(&project_root, &project_root, base_path)?;
 
     // Now look for the child_name in the current node
     if let Some(child_node) = current_node.children.get(child_name) {
@@ -523,6 +503,29 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dunce::canonicalize(dir).unwrap()
+    }
+
+    #[test]
+    fn project_nodes_track_nested_physical_mappings() {
+        let tree = ProjectNode::from_json(&serde_json::json!({
+            "Alias": {
+                "$path": "Source/Nested",
+                "Leaf": { "$path": "Elsewhere/Actual.lua" }
+            }
+        }))
+        .unwrap();
+        let root = Path::new("project");
+        let node = tree
+            .at_physical_path(root, root, &root.join("Source/Nested"))
+            .unwrap();
+        assert_eq!(
+            node.children["Leaf"].path.as_deref(),
+            Some("Elsewhere/Actual.lua")
+        );
+        assert!(
+            tree.at_physical_path(root, root, &root.join("Missing"))
+                .is_none()
+        );
     }
 
     #[test]

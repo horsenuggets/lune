@@ -30,7 +30,10 @@ assert(string.find(scriptName, "script", 1, true) ~= nil, "script.Name should co
 const fs = require("@lune/fs")
 const scriptFullPath = script:GetFullName()
 assert(type(scriptFullPath) == "string", "script:GetFullName() should return a string")
-assert(scriptFullPath == scriptPath .. ".luau", "GetFullName should include the extension")
+assert(
+	scriptFullPath:gsub("\\", "/") == scriptPath:gsub("\\", "/") .. ".luau",
+	"GetFullName should include the extension"
+)
 assert(fs.readFile(scriptFullPath):find("script global", 1, true) ~= nil)
 assert(tostring(script) == scriptPath, "GetFullName must not change tostring")
 assert(fs.isDir(script.Parent:GetFullName()), "ordinary folders should remain directories")
