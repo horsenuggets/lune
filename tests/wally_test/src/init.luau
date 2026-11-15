@@ -33,7 +33,7 @@ const SignalModule = Packages.Signal
 print("Signal module reference:", SignalModule)
 
 -- Get the require path and require it
-const requirePath = SignalModule:RequirePath()
+const requirePath = SignalModule:GetFullName()
 print("Signal require path:", requirePath)
 
 const Signal = require(requirePath)
@@ -75,7 +75,7 @@ const PromiseModule = Packages.Promise
 print("Promise module reference:", PromiseModule)
 
 const promiseSuccess, promiseResult = pcall(function()
-	const requirePath = PromiseModule:RequirePath()
+	const requirePath = PromiseModule:GetFullName()
 	print("Promise require path:", requirePath)
 	return require(requirePath)
 end)
