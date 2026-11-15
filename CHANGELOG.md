@@ -8,6 +8,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- Exposed every `@lune/roblox` export as a global, including datatypes, `Enum`,
+  `Instance`, and helper functions. Global values share their module identities and
+  follow the existing `luau.load` environment injection settings.
+
 ## `0.11.1-horse.16.3` - November 6th, 2026
 
 ### Fixed

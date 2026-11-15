@@ -1948,7 +1948,6 @@ dependencies = [
  "async-fs",
  "console",
  "dunce",
- "lune-roblox",
  "lune-std-datetime",
  "lune-std-fs",
  "lune-std-js",
