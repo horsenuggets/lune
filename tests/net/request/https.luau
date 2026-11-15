@@ -9,7 +9,7 @@ local pass = util.pass
 local servers = {
 	"https://www.googleapis.com/discovery/v1/apis",
 	"https://api.cloudflare.com/client/v4/ips",
-	"https://azure.microsoft.com/en-us/updates/feed/",
+	"https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration",
 	"https://acme-v02.api.letsencrypt.org/directory",
 	"https://ip-ranges.amazonaws.com/ip-ranges.json",
 	"https://en.wikipedia.org/w/api.php",
