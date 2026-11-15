@@ -1,4 +1,5 @@
 use std::env::set_current_dir;
+use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -82,10 +83,19 @@ create_tests! {
     global_error: "globals/error",
     global_pcall: "globals/pcall",
     global_project: "globals/project",
-    global_script: "globals/script",
     global_type: "globals/type",
     global_typeof: "globals/typeof",
     global_warn: "globals/warn",
+}
+
+#[cfg(feature = "std-fs")]
+create_tests! {
+    require_script_ref: "require/script_ref",
+}
+
+#[cfg(all(feature = "std-fs", feature = "std-roblox"))]
+create_tests! {
+    global_script: "globals/script",
 }
 
 // Coverage tests run serially to prevent LUNE_COVERAGE env var contamination.
@@ -125,10 +135,16 @@ fn global_debug_getcoverage_script() -> Result<ExitCode> {
 /// Writes a script at the given path that checks which repository `project` resolves to
 fn write_project_check(path: &Path, expected_name: &str) -> Result<()> {
     fs::create_dir_all(path.parent().unwrap())?;
-    fs::write(
-        path,
-        format!("assert(project.Name == \"{expected_name}\", `got {{project.Name}}`)\n"),
-    )?;
+    let mut source =
+        format!("assert(project.Name == \"{expected_name}\", `got {{project.Name}}`)\n");
+    if cfg!(feature = "std-fs") {
+        writeln!(
+            source,
+            "const fs = require(\"@lune/fs\")\n\
+             assert(fs.readFile(script:GetFullName()) == fs.readFile({path:?}))"
+        )?;
+    }
+    fs::write(path, source)?;
     Ok(())
 }
 
@@ -240,6 +256,51 @@ fn roblox_module_identity_survives_repeated_runtime_runs() -> Result<()> {
                 "Roblox identity changed on run {iteration}"
             );
         }
+        Ok(())
+    })
+}
+
+#[cfg(all(unix, feature = "std-task"))]
+#[test]
+fn require_symlinked_sources_share_cache_and_pending_loads() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let real = root.path().join("Real");
+    fs::create_dir(&real)?;
+    fs::write(
+        real.join("Module.luau"),
+        "require(\"@lune/task\").wait()\nreturn {}\n",
+    )?;
+    std::os::unix::fs::symlink(&real, root.path().join("Linked"))?;
+    fs::write(
+        root.path().join(".luaurc"),
+        r#"{"aliases":{"linked":"./Linked"}}"#,
+    )?;
+    let main = root.path().join("Main.luau");
+    fs::write(
+        &main,
+        r#"
+const task = require("@lune/task")
+const reference = script.Parent.Linked.Module
+const results = {}
+for index, target in { reference, reference:GetFullName(), "@linked/Module" } do
+    task.spawn(function()
+        results[index] = require(target)
+    end)
+end
+task.wait(0.1)
+assert(type(results[1]) == "table")
+assert(type(results[2]) == "table")
+assert(type(results[3]) == "table")
+assert(rawequal(results[1], results[2]))
+assert(rawequal(results[1], results[3]))
+assert(rawequal(results[1], require(reference)))
+assert(rawequal(results[1], require(reference:GetFullName())))
+assert(rawequal(results[1], require("@linked/Module")))
+"#,
+    )?;
+    async_io::block_on(async {
+        let mut rt = Runtime::new()?;
+        assert!(rt.run_file(main).await?.success());
         Ok(())
     })
 }
@@ -376,6 +437,40 @@ fn runtime_core_type_and_typeof_semantics() -> Result<()> {
             )
             .await?;
         assert!(result.success());
+        Ok(())
+    })
+}
+
+#[cfg(all(unix, feature = "std-task"))]
+#[test]
+fn require_file_symlinks_preserve_execution_context() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let modules = root.path().join("Modules");
+    let shared = root.path().join("Shared");
+    fs::create_dir(&modules)?;
+    fs::create_dir(&shared)?;
+    fs::write(modules.join("Sibling.luau"), "return 'linked'\n")?;
+    fs::write(shared.join("Sibling.luau"), "return 'real'\n")?;
+    fs::write(
+        shared.join("Actual.luau"),
+        "return { name = script.Name, parent = script.Parent.Name, sibling = require('./Sibling') }\n",
+    )?;
+    std::os::unix::fs::symlink(shared.join("Actual.luau"), modules.join("Linked.luau"))?;
+    let main = root.path().join("Main.luau");
+    fs::write(
+        &main,
+        r#"
+const reference = script.Parent.Modules.Linked
+const result = require(reference)
+assert(result.name == "Linked.luau")
+assert(result.parent == "Modules")
+assert(result.sibling == "linked")
+assert(rawequal(result, require(reference:GetFullName())))
+"#,
+    )?;
+    async_io::block_on(async {
+        let mut rt = Runtime::new()?;
+        assert!(rt.run_file(main).await?.success());
         Ok(())
     })
 }
