@@ -238,50 +238,9 @@ impl WsStream {
     }
 }
 
-/// Generates a random base64-encoded key for WebSocket handshake
+/// Generates a random base64-encoded key for the WebSocket handshake.
 fn generate_websocket_key() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // Generate 16 random bytes using time-based seed
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-
-    let mut bytes = [0u8; 16];
-    for (i, byte) in bytes.iter_mut().enumerate() {
-        *byte = ((seed >> (i * 8)) & 0xFF) as u8;
-    }
-
-    // Base64 encode
-    const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity(24);
-
-    for chunk in bytes.chunks(3) {
-        let n = match chunk.len() {
-            3 => ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8) | (chunk[2] as u32),
-            2 => ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8),
-            1 => (chunk[0] as u32) << 16,
-            _ => continue,
-        };
-
-        result.push(BASE64_CHARS[((n >> 18) & 0x3F) as usize] as char);
-        result.push(BASE64_CHARS[((n >> 12) & 0x3F) as usize] as char);
-
-        if chunk.len() > 1 {
-            result.push(BASE64_CHARS[((n >> 6) & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-
-        if chunk.len() > 2 {
-            result.push(BASE64_CHARS[(n & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-    }
-
-    result
+    async_tungstenite::tungstenite::handshake::client::generate_key()
 }
 
 impl Sink<Message> for WsStream {
@@ -309,5 +268,26 @@ impl Stream for WsStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generate_websocket_key;
+
+    #[test]
+    fn websocket_keys_use_random_bytes_across_the_entire_nonce() {
+        let keys: Vec<_> = (0..32).map(|_| generate_websocket_key()).collect();
+        for key in &keys {
+            assert_eq!(key.len(), 24);
+            assert!(key.ends_with("=="));
+            assert!(
+                key[..22]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/'))
+            );
+        }
+        let suffixes: std::collections::HashSet<_> = keys.iter().map(|key| &key[12..]).collect();
+        assert!(suffixes.len() > 1);
     }
 }
