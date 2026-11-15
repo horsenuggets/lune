@@ -76,14 +76,6 @@ impl LuauFilePath {
     }
 
     fn resolve_inner(module: &Path, check_project_json: bool) -> Result<Self, LuaNavigateError> {
-        // Modules named "init" are ambiguous and not allowed
-        if module
-            .file_name()
-            .is_some_and(|n| n == OsStr::new(FILE_NAME_INIT))
-        {
-            return Err(LuaNavigateError::Ambiguous);
-        }
-
         let mut found = None;
 
         // Try files first
@@ -245,6 +237,13 @@ impl LuauModulePath {
     */
     pub fn resolve(module: impl Into<PathBuf>) -> Result<Self, LuaNavigateError> {
         let source = module.into();
+        // Requiring an abstract module named init remains ambiguous.
+        if source
+            .file_name()
+            .is_some_and(|name| name == OsStr::new(FILE_NAME_INIT))
+        {
+            return Err(LuaNavigateError::Ambiguous);
+        }
         let target = LuauFilePath::resolve(&source)?;
         Ok(Self { source, target })
     }

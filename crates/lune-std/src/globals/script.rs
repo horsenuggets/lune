@@ -278,7 +278,13 @@ fn resolve_through_project(base_path: &Path, child_name: &str) -> Option<PathBuf
     // Parse project.json
     let tree = parse_project_json(&project_root)?;
 
-    let current_node = tree.at_physical_path(&project_root, &project_root, base_path)?;
+    let current_node = tree
+        .at_physical_path(&project_root, &project_root, base_path)
+        .or_else(|| {
+            tree.path.as_ref().and_then(|path| {
+                tree.at_physical_path(&project_root, &project_root.join(path), base_path)
+            })
+        })?;
 
     // Now look for the child_name in the current node
     if let Some(child_node) = current_node.children.get(child_name) {
@@ -578,10 +584,29 @@ mod tests {
     }
 
     #[test]
+    fn project_children_resolve_from_root_mapped_receivers() {
+        let root = scratch_dir("root-mapped-receiver");
+        fs::create_dir(root.join("Source")).unwrap();
+        fs::write(
+            root.join("default.project.json"),
+            r#"{"tree":{"$path":"Source","Leaf":{"$path":"Elsewhere/Actual.lua"}}}"#,
+        )
+        .unwrap();
+        for base in [&root, &root.join("Source")] {
+            assert_eq!(
+                resolve_through_project(base, "Leaf"),
+                Some(root.join("Elsewhere/Actual.lua"))
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn full_path_resolves_files_directories_redirects_and_errors() {
         let root = scratch_dir("full-path");
         let lua = Lua::new();
         fs::create_dir_all(root.join("Folder")).unwrap();
+        fs::create_dir_all(root.join("init")).unwrap();
         fs::create_dir_all(root.join("Module")).unwrap();
         fs::create_dir_all(root.join("LegacyModule")).unwrap();
         fs::create_dir_all(root.join("Collision")).unwrap();
@@ -612,6 +637,7 @@ mod tests {
             ("LegacyModule", "LegacyModule/init.lua"),
             ("Package", "Package/main.lua"),
             ("Folder", "Folder"),
+            ("init", "init"),
         ] {
             let reference = ScriptReference::new(root.join(reference));
             assert_eq!(reference.full_path(&lua).unwrap(), root.join(expected));
@@ -629,6 +655,8 @@ mod tests {
                 .unwrap_err();
             assert!(error.to_string().contains("Ambiguous"));
         }
+
+        assert!(lune_utils::path::LuauModulePath::resolve(root.join("init")).is_err());
 
         // An explicitly registered entrypoint wins over extensionless ambiguity.
         let entrypoint = root.join("Plain");
