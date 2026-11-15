@@ -1902,6 +1902,7 @@ dependencies = [
  "clap",
  "console",
  "directories",
+ "dunce",
  "full_moon",
  "futures-lite",
  "glob",

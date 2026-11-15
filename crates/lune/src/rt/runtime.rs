@@ -717,6 +717,15 @@ fn resolve_coverage_target(lua: &Lua, value: LuaValue) -> LuaResult<LuaFunction>
                     found = Some(f);
                     break;
                 }
+                if let Ok(identity) =
+                    dunce::canonicalize(candidate.trim_start_matches(FILE_CHUNK_PREFIX))
+                {
+                    let key = format!("{FILE_CHUNK_PREFIX}{}", identity.display());
+                    if let Ok(f) = chunk_cache.get::<LuaFunction>(key) {
+                        found = Some(f);
+                        break;
+                    }
+                }
             }
 
             match found {

@@ -457,22 +457,69 @@ fn require_file_symlinks_preserve_execution_context() -> Result<()> {
     )?;
     std::os::unix::fs::symlink(shared.join("Actual.luau"), modules.join("Linked.luau"))?;
     let main = root.path().join("Main.luau");
-    fs::write(
-        &main,
-        r#"
+    for first_require in ["reference", "reference:GetFullName()"] {
+        fs::write(
+            &main,
+            r#"
 const reference = script.Parent.Modules.Linked
-const result = require(reference)
+const result = require(FIRST_REQUIRE)
 assert(result.name == "Linked.luau")
 assert(result.parent == "Modules")
 assert(result.sibling == "linked")
+assert(rawequal(result, require(reference)))
 assert(rawequal(result, require(reference:GetFullName())))
-"#,
-    )?;
-    async_io::block_on(async {
-        let mut rt = Runtime::new()?;
-        assert!(rt.run_file(main).await?.success());
-        Ok(())
-    })
+"#
+            .replace("FIRST_REQUIRE", first_require),
+        )?;
+        async_io::block_on(async {
+            let mut rt = Runtime::new()?;
+            assert!(rt.run_file(&main).await?.success());
+            anyhow::Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_modules_share_file_coverage_in_both_load_orders() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let real = root.path().join("Real");
+    fs::create_dir(&real)?;
+    fs::write(real.join("Module.luau"), "return { value = 42 }\n")?;
+    std::os::unix::fs::symlink(&real, root.path().join("Linked"))?;
+    let main = root.path().join("Main.luau");
+    for first_require in ["linked", "real"] {
+        fs::write(
+            &main,
+            r"
+const linked = script.Parent.Linked.Module
+const real = script.Parent.Real.Module
+const result = require(FIRST_REQUIRE)
+assert(rawequal(result, require(linked)))
+assert(rawequal(result, require(real)))
+const linkedCoverage = debug.getcoverage(linked)
+const realCoverage = debug.getcoverage(real)
+assert(#linkedCoverage > 0)
+assert(#linkedCoverage == #realCoverage)
+local hasHits = false
+for index, entry in linkedCoverage do
+    for line, hits in entry.Hits do
+        assert(hits == realCoverage[index].Hits[line])
+        hasHits = hasHits or hits > 0
+    end
+end
+assert(hasHits)
+"
+            .replace("FIRST_REQUIRE", first_require),
+        )?;
+        async_io::block_on(async {
+            let mut rt = Runtime::new()?.with_jit(false);
+            assert!(rt.run_file(&main).await?.success());
+            anyhow::Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "std-datetime")]
