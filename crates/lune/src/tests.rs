@@ -237,6 +237,40 @@ assert(rawequal(results[1], require("@linked/Module")))
     })
 }
 
+#[cfg(all(unix, feature = "std-task"))]
+#[test]
+fn require_file_symlinks_preserve_execution_context() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let modules = root.path().join("Modules");
+    let shared = root.path().join("Shared");
+    fs::create_dir(&modules)?;
+    fs::create_dir(&shared)?;
+    fs::write(modules.join("Sibling.luau"), "return 'linked'\n")?;
+    fs::write(shared.join("Sibling.luau"), "return 'real'\n")?;
+    fs::write(
+        shared.join("Actual.luau"),
+        "return { name = script.Name, parent = script.Parent.Name, sibling = require('./Sibling') }\n",
+    )?;
+    std::os::unix::fs::symlink(shared.join("Actual.luau"), modules.join("Linked.luau"))?;
+    let main = root.path().join("Main.luau");
+    fs::write(
+        &main,
+        r#"
+const reference = script.Parent.Modules.Linked
+const result = require(reference)
+assert(result.name == "Linked.luau")
+assert(result.parent == "Modules")
+assert(result.sibling == "linked")
+assert(rawequal(result, require(reference:GetFullName())))
+"#,
+    )?;
+    async_io::block_on(async {
+        let mut rt = Runtime::new()?;
+        assert!(rt.run_file(main).await?.success());
+        Ok(())
+    })
+}
+
 #[cfg(feature = "std-datetime")]
 create_tests! {
     datetime_format_local_time: "datetime/formatLocalTime",

@@ -224,14 +224,21 @@ impl RequireState {
         self.rx.borrow().get(path).cloned()
     }
 
-    fn create_pending(&self, path: &Path) -> RequireResultSender {
-        let (tx, rx) = async_channel::bounded(1);
-        self.tx.borrow_mut().insert(path.to_path_buf(), tx.clone());
+    fn create_pending(&self, path: &Path) {
+        let (tx, rx) = async_channel::unbounded();
+        self.tx.borrow_mut().insert(path.to_path_buf(), tx);
         self.rx.borrow_mut().insert(path.to_path_buf(), rx);
-        tx
     }
 
-    fn remove_pending(&self, path: &Path) {
+    fn complete_pending(&self, path: &Path, result: &RequireResult) {
+        if let Some(tx) = self.tx.borrow().get(path) {
+            // The state retains one receiver; publish once for every waiting require.
+            // Publication must not yield, even if some receivers have been cancelled.
+            for _ in 0..tx.receiver_count().saturating_sub(1) {
+                tx.try_send(result.clone()).ok();
+            }
+            tx.close();
+        }
         self.tx.borrow_mut().remove(path);
         self.rx.borrow_mut().remove(path);
     }
@@ -602,19 +609,27 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                                 ))
                             })?;
 
-                            dunce::canonicalize(resolved.target().as_file().ok_or_else(|| {
-                                LuaError::runtime(format!(
-                                    "cannot require directory '{}'",
-                                    alias_path.display()
-                                ))
-                            })?)
-                            .into_lua_err()?
+                            resolved
+                                .target()
+                                .as_file()
+                                .ok_or_else(|| {
+                                    LuaError::runtime(format!(
+                                        "cannot require directory '{}'",
+                                        alias_path.display()
+                                    ))
+                                })?
+                                .to_path_buf()
                         }
                     } else {
                         return Err(LuaError::runtime(format!("cannot find alias '{}'", alias)));
                     };
 
-                    let cache_key = resolved_path.to_string_lossy().to_string();
+                    let identity = if resolve_bundled_module(&lua, &resolved_path).is_some() {
+                        resolved_path.clone()
+                    } else {
+                        dunce::canonicalize(&resolved_path).into_lua_err()?
+                    };
+                    let cache_key = identity.to_string_lossy().to_string();
 
                     // Check cache first
                     let cache = get_module_cache(&lua)?;
@@ -625,7 +640,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                     }
 
                     // Check if already being loaded (concurrent require)
-                    if let Some(rx) = state.get_pending(&resolved_path) {
+                    if let Some(rx) = state.get_pending(&identity) {
                         return rx
                             .recv()
                             .await
@@ -633,7 +648,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                             .context("require interrupted")?;
                     }
 
-                    let tx = state.create_pending(&resolved_path);
+                    state.create_pending(&identity);
 
                     // Load and execute the module
                     let chunk_name = format!("{FILE_CHUNK_PREFIX}{}", resolved_path.display());
@@ -696,14 +711,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                         }
                     }
 
-                    // Notify any waiting requires
-                    // The state retains one receiver; each other receiver is a waiting require.
-                    for _ in 0..tx.receiver_count().saturating_sub(1) {
-                        tx.send(result.clone()).await.ok();
-                    }
-                    tx.close();
-
-                    state.remove_pending(&resolved_path);
+                    state.complete_pending(&identity, &result);
 
                     result
                 }
@@ -716,7 +724,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                         bundled_path
                     } else if absolute_path.is_absolute() && absolute_path.is_file() {
                         // Full source paths, including init files, identify an exact module.
-                        dunce::canonicalize(&absolute_path).into_lua_err()?
+                        absolute_path.clone()
                     } else {
                         // Resolve to actual filesystem path (handling .luau/.lua extensions)
                         let resolved = LuauModulePath::resolve(&absolute_path).map_err(|e| {
@@ -727,16 +735,24 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                             ))
                         })?;
 
-                        dunce::canonicalize(resolved.target().as_file().ok_or_else(|| {
-                            LuaError::runtime(format!(
-                                "cannot require directory '{}'",
-                                absolute_path.display()
-                            ))
-                        })?)
-                        .into_lua_err()?
+                        resolved
+                            .target()
+                            .as_file()
+                            .ok_or_else(|| {
+                                LuaError::runtime(format!(
+                                    "cannot require directory '{}'",
+                                    absolute_path.display()
+                                ))
+                            })?
+                            .to_path_buf()
                     };
 
-                    let cache_key = resolved_path.to_string_lossy().to_string();
+                    let identity = if resolve_bundled_module(&lua, &resolved_path).is_some() {
+                        resolved_path.clone()
+                    } else {
+                        dunce::canonicalize(&resolved_path).into_lua_err()?
+                    };
+                    let cache_key = identity.to_string_lossy().to_string();
 
                     // Check cache first
                     let cache = get_module_cache(&lua)?;
@@ -747,7 +763,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                     }
 
                     // Check if already being loaded (concurrent require)
-                    if let Some(rx) = state.get_pending(&resolved_path) {
+                    if let Some(rx) = state.get_pending(&identity) {
                         return rx
                             .recv()
                             .await
@@ -755,7 +771,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                             .context("require interrupted")?;
                     }
 
-                    let tx = state.create_pending(&resolved_path);
+                    state.create_pending(&identity);
 
                     // Load and execute the module
                     // Use absolute path for chunk name so nested requires can resolve correctly
@@ -819,14 +835,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                         }
                     }
 
-                    // Notify any waiting requires
-                    // The state retains one receiver; each other receiver is a waiting require.
-                    for _ in 0..tx.receiver_count().saturating_sub(1) {
-                        tx.send(result.clone()).await.ok();
-                    }
-                    tx.close();
-
-                    state.remove_pending(&resolved_path);
+                    state.complete_pending(&identity, &result);
 
                     result
                 }
@@ -881,6 +890,23 @@ end
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn completion_publishes_to_all_waiters_despite_cancellation() {
+        let state = RequireState::new();
+        let path = Path::new("Module.luau");
+        state.create_pending(path);
+        let first = state.get_pending(path).unwrap();
+        let cancelled = state.get_pending(path).unwrap();
+        let remaining = state.get_pending(path).unwrap();
+        drop(cancelled);
+        let result = Ok(LuaMultiValue::new());
+        state.complete_pending(path, &result);
+        assert!(first.try_recv().unwrap().is_ok());
+        assert!(remaining.try_recv().unwrap().is_ok());
+        assert!(state.get_pending(path).is_none());
+        assert!(!state.tx.borrow().contains_key(path));
+    }
 
     #[test]
     fn normalize_separators_converts_backslashes() {
