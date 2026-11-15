@@ -224,7 +224,7 @@ impl<'js> JsToLua<'_, 'js> {
                 "JavaScript value has more than {MAX_CONVERSION_ITEMS} entries"
             )));
         }
-        if self.items % CONVERSION_LIMIT_INTERVAL == 0 {
+        if self.items.is_multiple_of(CONVERSION_LIMIT_INTERVAL) {
             self.context.check_limits()?;
         }
         Ok(())

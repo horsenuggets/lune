@@ -10,8 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## `0.11.1-horse.16.4` - November 15th, 2026
+
 ### Changed
 
+- Exposed every `@lune/roblox` export as a global, including datatypes, `Enum`,
+  `Instance`, and helper functions. Global values share their module identities and
+  follow the existing `luau.load` environment injection settings.
 - **Breaking**. Changed `ScriptReference:GetFullName()` to return an absolute, existing
   source-file path with its extension. Module directories resolve to their entry point,
   ordinary folders remain directories, and missing or ambiguous targets raise errors.
@@ -26,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed requiring absolute source-file paths with extensions, including directory entry
   points and native Windows absolute paths.
+- Protected inherited Roblox global values from conflicting sandbox injection.
+- Generated WebSocket handshake nonces with the library's random source instead of
+  system time.
+- Restored full strict workspace Clippy validation without adding lint suppressions,
+  and repaired HTTPS certificate coverage using the supported Microsoft endpoint.
+- Aligned release tags and cross-target binary downloads on unprefixed versions while
+  recognizing historical prefixed versions during duplicate-release validation.
 
 ## `0.11.1-horse.16.3` - November 6th, 2026
 

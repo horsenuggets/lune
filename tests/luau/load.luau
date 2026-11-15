@@ -7,7 +7,7 @@ local RETURN_LUAU_CODE_BLOCK = "return " .. tostring(RETURN_VALUE)
 
 local CUSTOM_SOURCE_BLOCK_NAME = "test"
 
-assert(type(luau.load) == "function", "expected `luau.compile` to be a function")
+assert(type(luau.load) == "function", "expected `luau.load` to be a function")
 
 assert(
 	type(luau.load(EMPTY_LUAU_CODE_BLOCK)) == "function",
@@ -55,7 +55,7 @@ local fooFn2 = luau.load(CUSTOM_SOURCE_WITH_FOO_FN, {
 			return fooValue2
 		end,
 	},
-	enableGlobals = false,
+	injectGlobals = false,
 })
 
 local fooFn2Ret = fooFn2()
@@ -74,7 +74,7 @@ local overriddenPrintFn1 = luau.load(CUSTOM_SOURCE_WITH_PRINT_FN, {
 			return overriddenPrintValue1
 		end,
 	},
-	enableGlobals = true,
+	injectGlobals = true,
 })
 
 local overriddenPrintFnRet1 = overriddenPrintFn1()
@@ -90,7 +90,7 @@ local overriddenPrintFn2 = luau.load(CUSTOM_SOURCE_WITH_PRINT_FN, {
 			return overriddenPrintValue2
 		end,
 	},
-	enableGlobals = false,
+	injectGlobals = false,
 })
 
 local overriddenPrintFnRet2 = overriddenPrintFn2()
@@ -137,3 +137,51 @@ assert(
 	lowerFn3Success and lowerFn3Result == "lowercase",
 	"expected `luau.load` with injectGlobals = true and empty custom environment to return proper values"
 )
+
+-- Roblox is optional when running this suite with only the std-luau feature enabled.
+const hasRoblox, roblox = pcall(require, "@lune/roblox")
+if hasRoblox then
+	const environments = {
+		luau.load("return getfenv()")(),
+		luau.load("return getfenv()", { environment = {} })(),
+		luau.load("return getfenv()", { environment = {}, injectGlobals = true })(),
+	}
+	const isolatedEnvironment = getfenv(luau.load("return function() end", {
+		environment = {},
+		injectGlobals = false,
+	})())
+
+	const overrides = {}
+	for name in roblox do
+		overrides[name] = newproxy(false)
+	end
+	const overriddenEnvironment = luau.load("return getfenv()", {
+		environment = overrides,
+		injectGlobals = true,
+	})()
+	const isolatedOverrides = getfenv(luau.load("return function() end", {
+		environment = overrides,
+		injectGlobals = false,
+	})())
+
+	for name, value in roblox do
+		for _, environment in environments do
+			assert(
+				rawequal(environment[name], value),
+				`Expected loaded global "{name}" to match its module export.`
+			)
+		end
+		assert(
+			isolatedEnvironment[name] == nil,
+			`Expected isolated environment to exclude "{name}".`
+		)
+		assert(
+			rawequal(overriddenEnvironment[name], overrides[name]),
+			`Expected explicit global "{name}" to override its module export.`
+		)
+		assert(
+			rawequal(isolatedOverrides[name], overrides[name]),
+			`Expected isolated environment to preserve explicit global "{name}".`
+		)
+	end
+end

@@ -9,6 +9,10 @@ type ExecutablePath = Option<PathBuf>;
 ///
 /// Returns the path to the current executable for standalone binaries,
 /// or `nil` when running as a regular Lune script.
+///
+/// # Errors
+///
+/// Returns an error if the executable path cannot be allocated as a Luau string.
 pub fn create(lua: Lua) -> LuaResult<LuaValue> {
     // Try to get the executable path from app_data
     let executable_path = lua

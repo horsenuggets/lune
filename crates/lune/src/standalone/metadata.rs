@@ -32,7 +32,7 @@ pub struct Metadata {
     /// Transpiled JavaScript modules keyed by original virtual module ID.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub js_modules: BTreeMap<String, JsArtifact>,
-    /// Literal ModuleRoot -> relocated virtual root.
+    /// Literal `ModuleRoot` -> relocated virtual root.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub js_roots: BTreeMap<String, String>,
 }
@@ -103,7 +103,7 @@ impl Metadata {
     /**
         Writes the metadata chunk to a byte vector, to later be read using `from_bytes`.
 
-        Format: [json_data][json_size: u64][MAGIC: 8 bytes]
+        Format: [`json_data`][json_size: u64][MAGIC: 8 bytes]
     */
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let json_bytes = serde_json::to_vec(self)?;

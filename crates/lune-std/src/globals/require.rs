@@ -93,8 +93,8 @@ fn resolve_bundled_relative(caller: &Path, relative: &Path) -> PathBuf {
     let rel_str = normalize_separators(&relative.display().to_string());
 
     // Join caller_dir with the relative path
-    let joined = if rel_str.starts_with("./") {
-        format!("{}/{}", caller_dir, &rel_str[2..])
+    let joined = if let Some(stripped) = rel_str.strip_prefix("./") {
+        format!("{caller_dir}/{stripped}")
     } else if rel_str.starts_with("../") {
         // Walk up directories for each ../
         let mut dir = caller_dir.clone();
@@ -108,10 +108,10 @@ fn resolve_bundled_relative(caller: &Path, relative: &Path) -> PathBuf {
         if rest.is_empty() {
             dir
         } else {
-            format!("{}/{}", dir, rest)
+            format!("{dir}/{rest}")
         }
     } else {
-        format!("{}/{}", caller_dir, rel_str)
+        format!("{caller_dir}/{rel_str}")
     };
 
     // Clean any remaining ./ components
@@ -123,7 +123,7 @@ fn resolve_bundled_relative(caller: &Path, relative: &Path) -> PathBuf {
     PathBuf::from(cleaned)
 }
 
-/// Try to get bundled source for a path from app_data
+/// Try to get bundled source for a path from `app_data`
 fn get_bundled_source(lua: &Lua, path: &Path) -> Option<Vec<u8>> {
     let bundled = lua.app_data_ref::<BundledFiles>()?;
 
@@ -158,25 +158,25 @@ fn resolve_bundled_module(lua: &Lua, module_path: &Path) -> Option<PathBuf> {
     }
 
     // Try with .luau extension
-    let with_luau = format!("{}.luau", base);
+    let with_luau = format!("{base}.luau");
     if bundled.contains_key(&with_luau) {
         return Some(PathBuf::from(&with_luau));
     }
 
     // Try with .lua extension
-    let with_lua = format!("{}.lua", base);
+    let with_lua = format!("{base}.lua");
     if bundled.contains_key(&with_lua) {
         return Some(PathBuf::from(&with_lua));
     }
 
     // Try as directory with init.luau
-    let init_luau = format!("{}/init.luau", base);
+    let init_luau = format!("{base}/init.luau");
     if bundled.contains_key(&init_luau) {
         return Some(PathBuf::from(&init_luau));
     }
 
     // Try as directory with init.lua
-    let init_lua = format!("{}/init.lua", base);
+    let init_lua = format!("{base}/init.lua");
     if bundled.contains_key(&init_lua) {
         return Some(PathBuf::from(&init_lua));
     }
@@ -246,27 +246,29 @@ impl RequireState {
 
 /// Get or create the module cache table
 fn get_module_cache(lua: &Lua) -> LuaResult<LuaTable> {
-    match lua.named_registry_value::<LuaTable>(MODULE_CACHE_KEY) {
-        Ok(cache) => Ok(cache),
-        Err(_) => {
-            let cache = lua.create_table()?;
-            lua.set_named_registry_value(MODULE_CACHE_KEY, cache.clone())?;
-            Ok(cache)
-        }
+    if let Ok(cache) = lua.named_registry_value::<LuaTable>(MODULE_CACHE_KEY) {
+        Ok(cache)
+    } else {
+        let cache = lua.create_table()?;
+        lua.set_named_registry_value(MODULE_CACHE_KEY, cache.clone())?;
+        Ok(cache)
     }
 }
 
 /// Get or create the chunk function cache table.
 /// Maps chunk names (e.g., "@/path/to/file.luau") to their compiled
 /// chunk functions, enabling file-level coverage via debug.getcoverage.
+///
+/// # Errors
+///
+/// Returns an error if creating the cache table or storing it in the Lua registry fails.
 pub fn get_chunk_cache(lua: &Lua) -> LuaResult<LuaTable> {
-    match lua.named_registry_value::<LuaTable>(CHUNK_CACHE_KEY) {
-        Ok(cache) => Ok(cache),
-        Err(_) => {
-            let cache = lua.create_table()?;
-            lua.set_named_registry_value(CHUNK_CACHE_KEY, cache.clone())?;
-            Ok(cache)
-        }
+    if let Ok(cache) = lua.named_registry_value::<LuaTable>(CHUNK_CACHE_KEY) {
+        Ok(cache)
+    } else {
+        let cache = lua.create_table()?;
+        lua.set_named_registry_value(CHUNK_CACHE_KEY, cache.clone())?;
+        Ok(cache)
     }
 }
 
@@ -312,7 +314,7 @@ fn get_caller_path(lua: &Lua) -> Option<PathBuf> {
         match result {
             None => break,                         // No more stack frames
             Some(Some(path)) => return Some(path), // Found a valid source
-            Some(None) => continue,                // Skip this frame
+            Some(None) => {}                       // Skip this frame
         }
     }
     None
@@ -381,10 +383,7 @@ fn read_luaurc(dir: &Path) -> Option<LuauConfig> {
     }
 
     match std::fs::read_to_string(&config_path) {
-        Ok(content) => match serde_json::from_str::<LuauConfig>(&content) {
-            Ok(config) => Some(config),
-            Err(_) => None,
-        },
+        Ok(content) => serde_json::from_str::<LuauConfig>(&content).ok(),
         Err(_) => None,
     }
 }
@@ -413,7 +412,7 @@ fn resolve_alias(alias: &str, caller_dir: &Path) -> Option<PathBuf> {
             // In bundled context, use string-based resolution
             let dir_str = normalize_separators(&caller_dir.display().to_string());
             let resolved = match rest {
-                Some(rest_path) => format!("{}/{}", dir_str, rest_path),
+                Some(rest_path) => format!("{dir_str}/{rest_path}"),
                 None => dir_str,
             };
             return Some(PathBuf::from(resolved));
@@ -428,18 +427,18 @@ fn resolve_alias(alias: &str, caller_dir: &Path) -> Option<PathBuf> {
     // Search for .luaurc files starting from caller directory going up
     let mut search_dir = caller_dir.to_path_buf();
     loop {
-        if let Some(config) = read_luaurc(&search_dir) {
-            if let Some(alias_value) = config.aliases.get(alias_name) {
-                // The alias value is a path relative to the .luaurc file's directory
-                let mut resolved = search_dir.join(alias_value);
+        if let Some(config) = read_luaurc(&search_dir)
+            && let Some(alias_value) = config.aliases.get(alias_name)
+        {
+            // The alias value is a path relative to the .luaurc file's directory
+            let mut resolved = search_dir.join(alias_value);
 
-                // If there's additional path after the alias, append it
-                if let Some(rest_path) = rest {
-                    resolved = resolved.join(rest_path);
-                }
-
-                return Some(clean_path_and_make_absolute(&resolved));
+            // If there's additional path after the alias, append it
+            if let Some(rest_path) = rest {
+                resolved = resolved.join(rest_path);
             }
+
+            return Some(clean_path_and_make_absolute(&resolved));
         }
 
         // Go up to parent directory
@@ -466,9 +465,10 @@ fn resolve_require_arg(
                 // clean_path_and_make_absolute, which would prepend the CWD drive letter
                 // to virtual paths on Windows.
                 let abs = PathBuf::from(&path_str);
-                let rel = caller_path
-                    .map(|cp| make_relative_path(cp, &abs))
-                    .unwrap_or_else(|| PathBuf::from(format!(".{}", path_str)));
+                let rel = caller_path.map_or_else(
+                    || PathBuf::from(format!(".{path_str}")),
+                    |cp| make_relative_path(cp, &abs),
+                );
                 Ok(ResolveResult::FilePath(rel, abs))
             } else if path_str.starts_with("./") || path_str.starts_with("../") {
                 // Relative path
@@ -488,7 +488,7 @@ fn resolve_require_arg(
                         } else {
                             caller.parent().unwrap_or(caller)
                         };
-                        clean_path_and_make_absolute(&caller_dir.join(&rel))
+                        clean_path_and_make_absolute(caller_dir.join(&rel))
                     }
                 } else {
                     clean_path_and_make_absolute(&rel)
@@ -499,17 +499,17 @@ fn resolve_require_arg(
                 Ok(ResolveResult::Alias(path_str))
             } else {
                 Err(LuaError::runtime(format!(
-                    "require path must start with './', '../', '/', or '@': got '{}'",
-                    path_str
+                    "require path must start with './', '../', '/', or '@': got '{path_str}'"
                 )))
             }
         }
         LuaValue::UserData(ud) => {
             if let Ok(script_ref) = ud.borrow::<ScriptReference>() {
                 let abs = PathBuf::from(script_ref.path_string(lua)?);
-                let rel = caller_path
-                    .map(|cp| make_relative_path(cp, &abs))
-                    .unwrap_or_else(|| PathBuf::from(format!("./{}", abs.display())));
+                let rel = caller_path.map_or_else(
+                    || PathBuf::from(format!("./{}", abs.display())),
+                    |cp| make_relative_path(cp, &abs),
+                );
                 Ok(ResolveResult::FilePath(rel, abs))
             } else {
                 Err(LuaError::runtime(
@@ -523,9 +523,147 @@ fn resolve_require_arg(
     }
 }
 
+/// Resolve a file module from bundled files or the filesystem.
+fn resolve_module_path(lua: &Lua, path: &Path) -> LuaResult<PathBuf> {
+    if let Some(bundled_path) = resolve_bundled_module(lua, path) {
+        return Ok(bundled_path);
+    }
+
+    let resolved = LuauModulePath::resolve(path).map_err(|e| {
+        LuaError::runtime(format!("cannot find module '{}': {:?}", path.display(), e))
+    })?;
+
+    resolved
+        .target()
+        .as_file()
+        .ok_or_else(|| LuaError::runtime(format!("cannot require directory '{}'", path.display())))
+        .map(Path::to_path_buf)
+}
+
+/// Resolve custom aliases, checking bundled aliases before .luaurc files.
+fn resolve_alias_path(lua: &Lua, alias: &str, caller_path: Option<&PathBuf>) -> LuaResult<PathBuf> {
+    // For init.luau modules, the caller path is the directory itself because the
+    // chunk name strips "/init.luau". Regular files use their parent directory.
+    let caller_dir = caller_path.map_or_else(
+        || std::env::current_dir().unwrap_or_default(),
+        |p| {
+            if p.is_dir() {
+                p.clone()
+            } else {
+                p.parent().map_or_else(
+                    || std::env::current_dir().unwrap_or_default(),
+                    Path::to_path_buf,
+                )
+            }
+        },
+    );
+
+    // Bundled aliases return paths that do not need filesystem resolution.
+    if let Some(bundled_path) = get_bundled_alias(lua, alias) {
+        Ok(bundled_path)
+    } else if let Some(alias_path) = resolve_alias(alias, &caller_dir) {
+        resolve_module_path(lua, &alias_path)
+    } else {
+        Err(LuaError::runtime(format!("cannot find alias '{alias}'")))
+    }
+}
+
+/// Load a resolved module, sharing its cached result and pending execution.
+async fn load_module(lua: &Lua, state: &RequireState, resolved_path: &Path) -> RequireResult {
+    let identity = if resolve_bundled_module(lua, resolved_path).is_some() {
+        resolved_path.to_path_buf()
+    } else {
+        dunce::canonicalize(resolved_path).into_lua_err()?
+    };
+    let cache_key = identity.to_string_lossy().to_string();
+
+    // Check cache first.
+    let cache = get_module_cache(lua)?;
+    if let Ok(cached) = cache.get::<LuaValue>(cache_key.as_str())
+        && !cached.is_nil()
+    {
+        return Ok(LuaMultiValue::from_vec(vec![cached]));
+    }
+
+    // Check if already being loaded (concurrent require).
+    if let Some(rx) = state.get_pending(&identity) {
+        return rx
+            .recv()
+            .await
+            .into_lua_err()
+            .context("require interrupted")?;
+    }
+
+    state.create_pending(&identity);
+
+    // Use the absolute path so nested requires can resolve correctly.
+    let chunk_name = format!("{FILE_CHUNK_PREFIX}{}", resolved_path.display());
+
+    // Try bundled source first, then filesystem.
+    let chunk_bytes = if let Some(bundled) = get_bundled_source(lua, resolved_path) {
+        bundled
+    } else {
+        read_file(resolved_path).await.map_err(|e| {
+            LuaError::runtime(format!("cannot read '{}': {}", resolved_path.display(), e))
+        })?
+    };
+
+    // Create a custom environment with static script and project references.
+    let module_env = lua.create_table()?;
+    module_env.set("script", ScriptReference::new(resolved_path))?;
+    module_env.set("project", ScriptReference::project_of(resolved_path))?;
+
+    // Set metatable to inherit from globals.
+    let env_mt = lua.create_table()?;
+    env_mt.set("__index", lua.globals())?;
+    env_mt.set("__newindex", lua.globals())?;
+    module_env.set_metatable(Some(env_mt))?;
+
+    let chunk = lua
+        .load(chunk_bytes)
+        .set_name(&chunk_name)
+        .set_environment(module_env);
+
+    // Cache the compiled function for file-level coverage before executing it.
+    let func = chunk.into_function()?;
+    let chunk_cache = get_chunk_cache(lua)?;
+    chunk_cache.set(chunk_name.as_str(), func.clone())?;
+
+    // Push the script path before executing the module (for dynamic fallback).
+    push_script_path(lua, &resolved_path.display().to_string())?;
+
+    let thread_id = lua.push_thread_back(func, ())?;
+    lua.track_thread(thread_id);
+    lua.wait_for_thread(thread_id).await;
+
+    let result = lua
+        .get_thread_result(thread_id)
+        .expect("thread tracked and waited");
+
+    // Pop the script path after module execution.
+    pop_script_path(lua)?;
+
+    // Cache the result (first value only, like standard require).
+    if let Ok(ref res) = result
+        && let Some(first_value) = res.iter().next()
+    {
+        cache.set(cache_key.as_str(), first_value.clone())?;
+    }
+
+    state.complete_pending(&identity, &result);
+
+    result
+}
+
 /// Registry key for storing the caller path temporarily
 const CALLER_PATH_KEY: &str = "__lune_require_caller_path";
 
+/// Create the require wrapper with synchronous caller capture and asynchronous loading.
+///
+/// # Errors
+///
+/// Returns an error if creating the built-in require function or wrapper callbacks,
+/// storing them in the registry or globals, or loading and evaluating the wrapper fails.
 pub fn create(lua: Lua) -> LuaResult<LuaValue> {
     // Create the built-in require function for alias paths
     let builtin_require = lua.create_require_function(RequireResolver::new())?;
@@ -558,286 +696,35 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                         let module_name = alias.strip_prefix("@lune/").unwrap();
                         let registered_modules: LuaTable =
                             lua.named_registry_value("_REGISTEREDMODULES")?;
-                        let module_key = format!("@lune/{}", module_name);
+                        let module_key = format!("@lune/{module_name}");
                         match registered_modules.get::<LuaValue>(module_key.as_str()) {
                             Ok(value) if !value.is_nil() => {
                                 return Ok(LuaMultiValue::from_vec(vec![value]));
                             }
                             _ => {
                                 return Err(LuaError::runtime(format!(
-                                    "cannot find built-in module '{}'",
-                                    alias
+                                    "cannot find built-in module '{alias}'"
                                 )));
                             }
                         }
                     }
 
-                    // Handle custom aliases - check bundled aliases first, then .luaurc files.
-                    // For init.luau modules, the caller_path is the directory itself
-                    // (since the chunk name strips "/init.luau"), so we use it directly.
-                    // For regular files, we use the parent directory.
-                    let caller_dir = caller_path
-                        .as_ref()
-                        .map(|p| {
-                            if p.is_dir() {
-                                p.to_path_buf()
-                            } else {
-                                p.parent()
-                                    .map(|parent| parent.to_path_buf())
-                                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
-                            }
-                        })
-                        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                    let resolved_path = resolve_alias_path(&lua, &alias, caller_path.as_ref())?;
 
-                    // For standalone executables, try bundled aliases first
-                    // Bundled aliases return paths that don't need filesystem resolution
-                    let resolved_path: PathBuf = if let Some(bundled_path) =
-                        get_bundled_alias(&lua, &alias)
-                    {
-                        bundled_path
-                    } else if let Some(alias_path) = resolve_alias(&alias, &caller_dir) {
-                        // Try bundled files first (for standalone executables with virtual paths)
-                        if let Some(bundled_path) = resolve_bundled_module(&lua, &alias_path) {
-                            bundled_path
-                        } else {
-                            // Fall back to filesystem resolution
-                            let resolved = LuauModulePath::resolve(&alias_path).map_err(|e| {
-                                LuaError::runtime(format!(
-                                    "cannot find module '{}': {:?}",
-                                    alias_path.display(),
-                                    e
-                                ))
-                            })?;
-
-                            resolved
-                                .target()
-                                .as_file()
-                                .ok_or_else(|| {
-                                    LuaError::runtime(format!(
-                                        "cannot require directory '{}'",
-                                        alias_path.display()
-                                    ))
-                                })?
-                                .to_path_buf()
-                        }
-                    } else {
-                        return Err(LuaError::runtime(format!("cannot find alias '{}'", alias)));
-                    };
-
-                    let identity = if resolve_bundled_module(&lua, &resolved_path).is_some() {
-                        resolved_path.clone()
-                    } else {
-                        dunce::canonicalize(&resolved_path).into_lua_err()?
-                    };
-                    let cache_key = identity.to_string_lossy().to_string();
-
-                    // Check cache first
-                    let cache = get_module_cache(&lua)?;
-                    if let Ok(cached) = cache.get::<LuaValue>(cache_key.as_str()) {
-                        if !cached.is_nil() {
-                            return Ok(LuaMultiValue::from_vec(vec![cached]));
-                        }
-                    }
-
-                    // Check if already being loaded (concurrent require)
-                    if let Some(rx) = state.get_pending(&identity) {
-                        return rx
-                            .recv()
-                            .await
-                            .into_lua_err()
-                            .context("require interrupted")?;
-                    }
-
-                    state.create_pending(&identity);
-
-                    // Load and execute the module
-                    let chunk_name = format!("{FILE_CHUNK_PREFIX}{}", resolved_path.display());
-
-                    // Try bundled source first, then filesystem
-                    let chunk_bytes =
-                        if let Some(bundled) = get_bundled_source(&lua, &resolved_path) {
-                            bundled
-                        } else {
-                            read_file(&resolved_path).await.map_err(|e| {
-                                LuaError::runtime(format!(
-                                    "cannot read '{}': {}",
-                                    resolved_path.display(),
-                                    e
-                                ))
-                            })?
-                        };
-
-                    // Create a custom environment for this module with static script and
-                    // project references
-                    let module_env = lua.create_table()?;
-                    module_env.set("script", ScriptReference::new(&resolved_path))?;
-                    module_env.set("project", ScriptReference::project_of(&resolved_path))?;
-
-                    // Set metatable to inherit from globals
-                    let env_mt = lua.create_table()?;
-                    env_mt.set("__index", lua.globals())?;
-                    env_mt.set("__newindex", lua.globals())?;
-                    module_env.set_metatable(Some(env_mt))?;
-
-                    let chunk = lua
-                        .load(chunk_bytes)
-                        .set_name(&chunk_name)
-                        .set_environment(module_env);
-
-                    // Convert chunk to function so we can cache it for
-                    // file-level coverage before executing it
-                    let func = chunk.into_function()?;
-                    let chunk_cache = get_chunk_cache(&lua)?;
-                    chunk_cache.set(chunk_name.as_str(), func.clone())?;
-
-                    // Push the script path before executing the module (for dynamic fallback)
-                    push_script_path(&lua, &resolved_path.display().to_string())?;
-
-                    let thread_id = lua.push_thread_back(func, ())?;
-                    lua.track_thread(thread_id);
-                    lua.wait_for_thread(thread_id).await;
-
-                    let result = lua
-                        .get_thread_result(thread_id)
-                        .expect("thread tracked and waited");
-
-                    // Pop the script path after module execution
-                    pop_script_path(&lua)?;
-
-                    // Cache the result
-                    if let Ok(ref res) = result {
-                        if let Some(first_value) = res.iter().next() {
-                            cache.set(cache_key.as_str(), first_value.clone())?;
-                        }
-                    }
-
-                    state.complete_pending(&identity, &result);
-
-                    result
+                    load_module(&lua, &state, &resolved_path).await
                 }
                 ResolveResult::FilePath(_relative_path, absolute_path) => {
-                    // Try bundled files first (for standalone executables with virtual paths)
-                    // Then fall back to filesystem resolution
-                    let resolved_path: PathBuf = if let Some(bundled_path) =
-                        resolve_bundled_module(&lua, &absolute_path)
-                    {
-                        bundled_path
-                    } else if absolute_path.is_absolute() && absolute_path.is_file() {
-                        // Full source paths, including init files, identify an exact module.
-                        absolute_path.clone()
-                    } else {
-                        // Resolve to actual filesystem path (handling .luau/.lua extensions)
-                        let resolved = LuauModulePath::resolve(&absolute_path).map_err(|e| {
-                            LuaError::runtime(format!(
-                                "cannot find module '{}': {:?}",
-                                absolute_path.display(),
-                                e
-                            ))
-                        })?;
-
-                        resolved
-                            .target()
-                            .as_file()
-                            .ok_or_else(|| {
-                                LuaError::runtime(format!(
-                                    "cannot require directory '{}'",
-                                    absolute_path.display()
-                                ))
-                            })?
-                            .to_path_buf()
-                    };
-
-                    let identity = if resolve_bundled_module(&lua, &resolved_path).is_some() {
-                        resolved_path.clone()
-                    } else {
-                        dunce::canonicalize(&resolved_path).into_lua_err()?
-                    };
-                    let cache_key = identity.to_string_lossy().to_string();
-
-                    // Check cache first
-                    let cache = get_module_cache(&lua)?;
-                    if let Ok(cached) = cache.get::<LuaValue>(cache_key.as_str()) {
-                        if !cached.is_nil() {
-                            return Ok(LuaMultiValue::from_vec(vec![cached]));
-                        }
-                    }
-
-                    // Check if already being loaded (concurrent require)
-                    if let Some(rx) = state.get_pending(&identity) {
-                        return rx
-                            .recv()
-                            .await
-                            .into_lua_err()
-                            .context("require interrupted")?;
-                    }
-
-                    state.create_pending(&identity);
-
-                    // Load and execute the module
-                    // Use absolute path for chunk name so nested requires can resolve correctly
-                    let chunk_name = format!("{FILE_CHUNK_PREFIX}{}", resolved_path.display());
-
-                    // Try bundled source first, then filesystem
-                    let chunk_bytes =
-                        if let Some(bundled) = get_bundled_source(&lua, &resolved_path) {
-                            bundled
+                    let resolved_path =
+                        if let Some(bundled_path) = resolve_bundled_module(&lua, &absolute_path) {
+                            bundled_path
+                        } else if absolute_path.is_absolute() && absolute_path.is_file() {
+                            // Full source paths, including init files, identify an exact module.
+                            absolute_path.clone()
                         } else {
-                            read_file(&resolved_path).await.map_err(|e| {
-                                LuaError::runtime(format!(
-                                    "cannot read '{}': {}",
-                                    resolved_path.display(),
-                                    e
-                                ))
-                            })?
+                            resolve_module_path(&lua, &absolute_path)?
                         };
 
-                    // Create a custom environment for this module with static script and
-                    // project references
-                    let module_env = lua.create_table()?;
-                    module_env.set("script", ScriptReference::new(&resolved_path))?;
-                    module_env.set("project", ScriptReference::project_of(&resolved_path))?;
-
-                    // Set metatable to inherit from globals
-                    let env_mt = lua.create_table()?;
-                    env_mt.set("__index", lua.globals())?;
-                    env_mt.set("__newindex", lua.globals())?;
-                    module_env.set_metatable(Some(env_mt))?;
-
-                    let chunk = lua
-                        .load(chunk_bytes)
-                        .set_name(&chunk_name)
-                        .set_environment(module_env);
-
-                    // Convert chunk to function so we can cache it for
-                    // file-level coverage before executing it
-                    let func = chunk.into_function()?;
-                    let chunk_cache = get_chunk_cache(&lua)?;
-                    chunk_cache.set(chunk_name.as_str(), func.clone())?;
-
-                    // Push the script path before executing the module (for dynamic fallback)
-                    push_script_path(&lua, &resolved_path.display().to_string())?;
-
-                    let thread_id = lua.push_thread_back(func, ())?;
-                    lua.track_thread(thread_id);
-                    lua.wait_for_thread(thread_id).await;
-
-                    let result = lua
-                        .get_thread_result(thread_id)
-                        .expect("thread tracked and waited");
-
-                    // Pop the script path after module execution
-                    pop_script_path(&lua)?;
-
-                    // Cache the result (first value only, like standard require)
-                    if let Ok(ref res) = result {
-                        if let Some(first_value) = res.iter().next() {
-                            cache.set(cache_key.as_str(), first_value.clone())?;
-                        }
-                    }
-
-                    state.complete_pending(&identity, &result);
-
-                    result
+                    load_module(&lua, &state, &resolved_path).await
                 }
             }
         }
@@ -866,7 +753,7 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
     //    - ScriptReference userdata
     //    - Absolute paths (/)
     //    - Relative paths (./ ../)
-    let wrapper_code = r#"
+    let wrapper_code = r"
 -- Return a function that wraps require behavior
 return function(arg)
     -- Capture the caller path first (sync, doesn't yield)
@@ -874,7 +761,7 @@ return function(arg)
     -- All paths go through our async require which handles everything
     return __lune_async_require(arg)
 end
-"#;
+";
 
     // Load the wrapper code
     // The wrapper's chunk name doesn't matter since we capture the caller path separately
@@ -969,7 +856,7 @@ mod tests {
 
         // Simulate resolve_bundled_module logic with Windows backslash base
         let base = normalize_separators(r"\Source\MyModule");
-        let init_luau = format!("{}/init.luau", base);
+        let init_luau = format!("{base}/init.luau");
         assert_eq!(init_luau, "/Source/MyModule/init.luau");
         assert!(bundled.contains_key(&init_luau));
     }

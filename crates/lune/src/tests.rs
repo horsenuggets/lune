@@ -1,4 +1,5 @@
 use std::env::set_current_dir;
+use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -137,10 +138,11 @@ fn write_project_check(path: &Path, expected_name: &str) -> Result<()> {
     let mut source =
         format!("assert(project.Name == \"{expected_name}\", `got {{project.Name}}`)\n");
     if cfg!(feature = "std-fs") {
-        source.push_str(&format!(
+        writeln!(
+            source,
             "const fs = require(\"@lune/fs\")\n\
-             assert(fs.readFile(script:GetFullName()) == fs.readFile({path:?}))\n"
-        ));
+             assert(fs.readFile(script:GetFullName()) == fs.readFile({path:?}))"
+        )?;
     }
     fs::write(path, source)?;
     Ok(())
@@ -192,6 +194,72 @@ fn global_project_follows_resolved_entrypoint_files() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "std-roblox")]
+fn snapshot_roblox_globals(lua: &mlua::Lua) -> mlua::Result<mlua::Value> {
+    let module = lune_std::LuneStandardLibrary::Roblox.module(lua.clone())?;
+    let exports = lua.create_table()?;
+    for pair in module.pairs::<String, mlua::Value>() {
+        let (name, value) = pair?;
+        let global = lua.globals().get::<mlua::Value>(name.as_str())?;
+        assert_eq!(
+            global, value,
+            "Roblox global {name} must exist before execution"
+        );
+        exports.set(name, global)?;
+    }
+    let snapshot = lua.create_table()?;
+    snapshot.set("Exports", exports)?;
+    snapshot.set("Module", module)?;
+    Ok(mlua::Value::Table(snapshot))
+}
+
+#[cfg(feature = "std-roblox")]
+#[test]
+fn roblox_globals_exist_before_runtime_execution() -> Result<()> {
+    // with_lib runs its Rust callback immediately, before any Runtime run method.
+    let _runtime = Runtime::new()?.with_lib("@test/initial-globals", snapshot_roblox_globals)?;
+    Ok(())
+}
+
+#[cfg(feature = "std-roblox")]
+#[test]
+fn roblox_module_identity_survives_repeated_runtime_runs() -> Result<()> {
+    async_io::block_on(async {
+        // Capture before standard-library registration without relying on custom alias
+        // resolution to retrieve the snapshot during subsequent runs.
+        let mut runtime = Runtime::new()?.with_lib("@test/initial-globals", |lua| {
+            let snapshot = snapshot_roblox_globals(lua)?;
+            lua.globals()
+                .get::<mlua::Table>("_G")?
+                .set("InitialRobloxGlobals", snapshot.clone())?;
+            Ok(snapshot)
+        })?;
+        for iteration in 0..3 {
+            let result = runtime
+                .run_custom(
+                    format!("roblox-module-identity-{iteration}"),
+                    r#"
+                    const before = _G.InitialRobloxGlobals
+                    const roblox = require("@lune/roblox")
+                    assert(rawequal(roblox, before.Module))
+                    assert(rawequal(require("@lune/roblox"), roblox))
+                    const environment = getfenv()
+                    for name, value in roblox do
+                        assert(rawequal(value, before.Exports[name]))
+                        assert(rawequal(environment[name], value))
+                    end
+                    "#,
+                )
+                .await?;
+            assert!(
+                result.success(),
+                "Roblox identity changed on run {iteration}"
+            );
+        }
+        Ok(())
+    })
+}
+
 #[cfg(all(unix, feature = "std-task"))]
 #[test]
 fn require_symlinked_sources_share_cache_and_pending_loads() -> Result<()> {
@@ -233,6 +301,142 @@ assert(rawequal(results[1], require("@linked/Module")))
     async_io::block_on(async {
         let mut rt = Runtime::new()?;
         assert!(rt.run_file(main).await?.success());
+        Ok(())
+    })
+}
+
+#[cfg(feature = "std-roblox")]
+#[test]
+fn roblox_modules_are_isolated_between_runtime_vms() -> Result<()> {
+    async_io::block_on(async {
+        let mut first = Runtime::new()?;
+        let mut second = Runtime::new()?;
+        let first_result = first
+            .run_custom(
+                "roblox-first-vm",
+                r#"
+                _G.RobloxIsolationMarker = Instance.new("Folder")
+                _G.RobloxIsolationMarker.Name = "FirstVmOnly"
+                return require("@lune/roblox")
+                "#,
+            )
+            .await?;
+        let second_result = second
+            .run_custom(
+                "roblox-second-vm",
+                r#"
+                assert(_G.RobloxIsolationMarker == nil)
+                const folder = Instance.new("Folder")
+                assert(folder.Name == "Folder")
+                folder:Destroy()
+                return require("@lune/roblox")
+                "#,
+            )
+            .await?;
+        assert!(first_result.success());
+        assert!(second_result.success());
+        let first_module = first_result.values[0]
+            .as_table()
+            .expect("Roblox module table");
+        let second_module = second_result.values[0]
+            .as_table()
+            .expect("Roblox module table");
+        assert_ne!(first_module.to_pointer(), second_module.to_pointer());
+        for pair in first_module.clone().pairs::<String, mlua::Value>() {
+            let (name, value) = pair?;
+            let other = second_module.get::<mlua::Value>(name.as_str())?;
+            // Compare addresses, not Lua values belonging to different VMs.
+            assert_ne!(
+                value.to_pointer(),
+                other.to_pointer(),
+                "Shared export {name}"
+            );
+        }
+        let result = first
+            .run_custom(
+                "roblox-first-vm-retained",
+                r#"
+                assert(_G.RobloxIsolationMarker.Name == "FirstVmOnly")
+                _G.RobloxIsolationMarker:Destroy()
+                _G.RobloxIsolationMarker = nil
+                "#,
+            )
+            .await?;
+        assert!(result.success());
+        Ok(())
+    })
+}
+
+#[cfg(feature = "std-roblox")]
+#[test]
+fn roblox_runtime_type_and_typeof_semantics() -> Result<()> {
+    async_io::block_on(async {
+        let mut runtime = Runtime::new()?;
+        let result = runtime
+            .run_custom(
+                "roblox-type-semantics",
+                r#"
+                const instance = Instance.new("Folder")
+                const cases = {
+                    { Vector2.new(1, 2), "Vector2" },
+                    { Vector3.new(1, 2, 3), "Vector3" },
+                    { Color3.new(), "Color3" },
+                    { CFrame.new(), "CFrame" },
+                    { UDim.new(), "UDim" },
+                    { UDim2.new(), "UDim2" },
+                    { Enum, "Enums" },
+                    { Enum.Material, "Enum" },
+                    { Enum.Material.Neon, "EnumItem" },
+                    { instance, "Instance" },
+                }
+                const function check()
+                    for _, case in cases do
+                        assert(type(case[1]) == "userdata")
+                        assert(typeof(case[1]) == case[2])
+                    end
+                end
+                check()
+                require("@lune/roblox")
+                check()
+                instance:Destroy()
+                "#,
+            )
+            .await?;
+        assert!(result.success());
+        Ok(())
+    })
+}
+
+#[test]
+fn runtime_core_type_and_typeof_semantics() -> Result<()> {
+    async_io::block_on(async {
+        let mut runtime = Runtime::new()?;
+        let result = runtime
+            .run_custom(
+                "core-type-semantics",
+                r#"
+                const values = {
+                    { nil, "nil" },
+                    { true, "boolean" },
+                    { 42, "number" },
+                    { "hello", "string" },
+                    { {}, "table" },
+                    { function() end, "function" },
+                    { coroutine.create(function() end), "thread" },
+                    { newproxy(false), "userdata" },
+                    { buffer.create(0), "buffer" },
+                    { vector.create(1, 2, 3), "vector" },
+                }
+                for _, case in values do
+                    assert(type(case[1]) == case[2])
+                    assert(typeof(case[1]) == case[2])
+                end
+                assert(type(setmetatable({}, { __type = "PretendDatatype" })) == "table")
+                assert(typeof(setmetatable({}, { __type = "PretendDatatype" })) == "table")
+                "#,
+            )
+            .await?;
+        assert!(result.success());
         Ok(())
     })
 }
@@ -347,7 +551,6 @@ create_tests! {
     process_cwd: "process/cwd",
     process_env: "process/env",
     process_exit: "process/exit",
-    process_exec_async: "process/exec/async",
     process_exec_basic: "process/exec/basic",
     process_exec_cwd: "process/exec/cwd",
     process_exec_no_panic: "process/exec/no_panic",
@@ -357,6 +560,79 @@ create_tests! {
     process_spawn_non_blocking: "process/create/non_blocking",
     process_spawn_status: "process/create/status",
     process_spawn_stream: "process/create/stream",
+}
+
+#[cfg(feature = "std-process")]
+#[test]
+fn process_exec_async_child() -> Result<()> {
+    let Some(directory) = std::env::var_os("LUNE_PROCESS_EXEC_CHILD_DIRECTORY") else {
+        return Ok(());
+    };
+    let directory = PathBuf::from(directory);
+    fs::write(directory.join("ready"), [])?;
+    let start = std::time::Instant::now();
+    while !directory.join("release").is_file() {
+        anyhow::ensure!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "The Luau scheduler did not release the native child process."
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    Ok(())
+}
+
+#[cfg(all(feature = "std-process", feature = "std-task"))]
+#[test]
+fn process_exec_async() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let child_directory = directory.path().to_path_buf();
+    let executable = std::env::current_exe()?;
+    async_io::block_on(async {
+        let mut runtime = Runtime::new()?.with_lib("@test/process-exec-fixture", move |lua| {
+            let fixture = lua.create_table()?;
+            fixture.set("Executable", executable.to_string_lossy().into_owned())?;
+            fixture.set(
+                "Args",
+                lua.create_sequence_from([
+                    "--exact",
+                    "tests::process_exec_async_child",
+                    "--nocapture",
+                ])?,
+            )?;
+            fixture.set(
+                "Environment",
+                lua.create_table_from([(
+                    "LUNE_PROCESS_EXEC_CHILD_DIRECTORY",
+                    child_directory.to_string_lossy().into_owned(),
+                )])?,
+            )?;
+            let ready_path = child_directory.join("ready");
+            fixture.set(
+                "IsReady",
+                lua.create_function(move |_, ()| Ok(ready_path.is_file()))?,
+            )?;
+            let release_path = child_directory.join("release");
+            fixture.set(
+                "Release",
+                lua.create_function(move |_, ()| {
+                    fs::write(&release_path, []).map_err(mlua::Error::external)
+                })?,
+            )?;
+            lua.globals()
+                .get::<mlua::Table>("_G")?
+                .set("ProcessExecFixture", fixture.clone())?;
+            Ok(mlua::Value::Table(fixture))
+        })?;
+        let result = runtime
+            .run_custom(
+                "process-exec-async",
+                include_str!("../../../tests/process/exec/async.luau"),
+            )
+            .await?;
+        assert!(result.success());
+        Ok(())
+    })
 }
 
 #[cfg(feature = "std-regex")]
@@ -443,6 +719,7 @@ create_tests! {
     roblox_instance_query_pseudo_classes: "roblox/instance/query/PseudoClasses",
     roblox_instance_query_errors: "roblox/instance/query/Errors",
 
+    roblox_misc_globals: "roblox/misc/globals",
     roblox_misc_typeof: "roblox/misc/typeof",
 
     roblox_reflection_class: "roblox/reflection/class",

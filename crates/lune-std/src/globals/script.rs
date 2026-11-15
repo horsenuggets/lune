@@ -39,6 +39,7 @@ impl ScriptReference {
     }
 
     /// Create a new dynamic script reference that resolves path at access time
+    #[must_use]
     pub fn dynamic() -> Self {
         Self {
             target: ReferenceTarget::CurrentScript,
@@ -53,6 +54,7 @@ impl ScriptReference {
     }
 
     /// Create a reference to the nearest Git repository containing the current script
+    #[must_use]
     pub fn dynamic_project() -> Self {
         Self {
             target: ReferenceTarget::ProjectOf(None),
@@ -79,7 +81,11 @@ impl ScriptReference {
         }
     }
 
-    /// Get the full path as a string, resolving dynamically if needed
+    /// Get the full path as a string, resolving dynamically if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a dynamic path cannot be resolved from the VM state.
     pub fn path_string(&self, lua: &Lua) -> LuaResult<String> {
         Ok(self.resolve_path(lua)?.display().to_string())
     }
@@ -111,21 +117,22 @@ impl ScriptReference {
 
     /// Get just the file/folder name from a path
     fn name_from_path(path: &Path) -> String {
-        path.file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.display().to_string())
+        path.file_name().map_or_else(
+            || path.display().to_string(),
+            |s| s.to_string_lossy().to_string(),
+        )
     }
 
-    /// Get the parent directory as a new ScriptReference from a path
+    /// Get the parent directory as a new `ScriptReference` from a path
     fn parent_from_path(path: &Path) -> Option<ScriptReference> {
-        path.parent().map(|p| ScriptReference::new(p))
+        path.parent().map(ScriptReference::new)
     }
 
     /// Get a child by name from a path
     /// First checks default.project.json for path mappings, then falls back to direct child
     fn child_from_path(path: &Path, name: &str) -> ScriptReference {
         let base_dir = if path.is_file() {
-            path.parent().map(|p| p.to_path_buf())
+            path.parent().map(std::path::Path::to_path_buf)
         } else {
             Some(path.to_path_buf())
         };
@@ -147,14 +154,17 @@ impl ScriptReference {
 /// Remember the file an entrypoint resolved to. Entrypoint script paths are module paths,
 /// which drop the extension and `init` segments and can be remapped by a
 /// `default.project.json`, so the path alone doesn't say which folder the script is in.
+///
+/// # Errors
+///
+/// Returns an error if the VM's registered script-file table cannot be created or updated.
 pub fn register_script_file(lua: &Lua, script_path: &str, file: &Path) -> LuaResult<()> {
-    let files = match lua.named_registry_value::<LuaTable>(SCRIPT_FILES_KEY) {
-        Ok(t) => t,
-        Err(_) => {
-            let t = lua.create_table()?;
-            lua.set_named_registry_value(SCRIPT_FILES_KEY, t.clone())?;
-            t
-        }
+    let files = if let Ok(t) = lua.named_registry_value::<LuaTable>(SCRIPT_FILES_KEY) {
+        t
+    } else {
+        let t = lua.create_table()?;
+        lua.set_named_registry_value(SCRIPT_FILES_KEY, t.clone())?;
+        t
     };
     files.raw_set(script_path, file.display().to_string())
 }
@@ -230,15 +240,15 @@ impl ProjectNode {
 
         // Check for $path
         if let Some(path_val) = obj.get("$path") {
-            node.path = path_val.as_str().map(|s| s.to_string());
+            node.path = path_val.as_str().map(std::string::ToString::to_string);
         }
 
         // Process children (skip $ prefixed keys)
-        for (key, child_value) in obj.iter() {
-            if !key.starts_with('$') {
-                if let Some(child_node) = ProjectNode::from_json(child_value) {
-                    node.children.insert(key.clone(), child_node);
-                }
+        for (key, child_value) in obj {
+            if !key.starts_with('$')
+                && let Some(child_node) = ProjectNode::from_json(child_value)
+            {
+                node.children.insert(key.clone(), child_node);
             }
         }
 
@@ -287,11 +297,11 @@ fn resolve_through_project(base_path: &Path, child_name: &str) -> Option<PathBuf
         })?;
 
     // Now look for the child_name in the current node
-    if let Some(child_node) = current_node.children.get(child_name) {
-        if let Some(ref path) = child_node.path {
-            // Return the resolved path
-            return Some(project_root.join(path));
-        }
+    if let Some(child_node) = current_node.children.get(child_name)
+        && let Some(ref path) = child_node.path
+    {
+        // Return the resolved path
+        return Some(project_root.join(path));
     }
 
     None
@@ -313,7 +323,7 @@ impl UserData for ScriptReference {
                 // Determine which argument is the ScriptReference
                 let (path_str, other, script_first) = if let LuaValue::UserData(ref ud) = a {
                     if let Ok(script_ref) = ud.borrow::<ScriptReference>() {
-                        let path = script_ref.resolve_path(&lua)?;
+                        let path = script_ref.resolve_path(lua)?;
                         (path.display().to_string(), b, true)
                     } else {
                         return Err(LuaError::runtime(
@@ -322,7 +332,7 @@ impl UserData for ScriptReference {
                     }
                 } else if let LuaValue::UserData(ref ud) = b {
                     if let Ok(script_ref) = ud.borrow::<ScriptReference>() {
-                        let path = script_ref.resolve_path(&lua)?;
+                        let path = script_ref.resolve_path(lua)?;
                         (path.display().to_string(), a, false)
                     } else {
                         return Err(LuaError::runtime(
@@ -341,9 +351,9 @@ impl UserData for ScriptReference {
                 };
 
                 if script_first {
-                    Ok(format!("{}{}", path_str, other_str))
+                    Ok(format!("{path_str}{other_str}"))
                 } else {
-                    Ok(format!("{}{}", other_str, path_str))
+                    Ok(format!("{other_str}{path_str}"))
                 }
             },
         );
@@ -375,7 +385,11 @@ impl UserData for ScriptReference {
     }
 }
 
-/// Push a script path onto the stack (called when entering a module)
+/// Push a script path onto the stack (called when entering a module).
+///
+/// # Errors
+///
+/// Returns an error if the VM's script-path stack cannot be created or updated.
 pub fn push_script_path(lua: &Lua, path: &str) -> LuaResult<()> {
     let stack = get_or_create_stack(lua)?;
     let len = stack.raw_len();
@@ -383,7 +397,11 @@ pub fn push_script_path(lua: &Lua, path: &str) -> LuaResult<()> {
     Ok(())
 }
 
-/// Pop a script path from the stack (called when exiting a module)
+/// Pop a script path from the stack (called when exiting a module).
+///
+/// # Errors
+///
+/// Returns an error if the last entry cannot be removed from the VM's script-path stack.
 pub fn pop_script_path(lua: &Lua) -> LuaResult<()> {
     if let Ok(stack) = lua.named_registry_value::<LuaTable>(SCRIPT_PATH_STACK_KEY) {
         let len = stack.raw_len();
@@ -394,7 +412,11 @@ pub fn pop_script_path(lua: &Lua) -> LuaResult<()> {
     Ok(())
 }
 
-/// Get the current script path from the stack
+/// Get the current script path from the stack.
+///
+/// # Errors
+///
+/// Returns an error if the current stack entry cannot be converted to a string.
 pub fn get_current_script_path(lua: &Lua) -> LuaResult<Option<String>> {
     if let Ok(stack) = lua.named_registry_value::<LuaTable>(SCRIPT_PATH_STACK_KEY) {
         let len = stack.raw_len();
@@ -406,13 +428,12 @@ pub fn get_current_script_path(lua: &Lua) -> LuaResult<Option<String>> {
 }
 
 fn get_or_create_stack(lua: &Lua) -> LuaResult<LuaTable> {
-    match lua.named_registry_value::<LuaTable>(SCRIPT_PATH_STACK_KEY) {
-        Ok(t) => Ok(t),
-        Err(_) => {
-            let t = lua.create_table()?;
-            lua.set_named_registry_value(SCRIPT_PATH_STACK_KEY, t.clone())?;
-            Ok(t)
-        }
+    if let Ok(t) = lua.named_registry_value::<LuaTable>(SCRIPT_PATH_STACK_KEY) {
+        Ok(t)
+    } else {
+        let t = lua.create_table()?;
+        lua.set_named_registry_value(SCRIPT_PATH_STACK_KEY, t.clone())?;
+        Ok(t)
     }
 }
 
@@ -421,6 +442,10 @@ fn get_or_create_stack(lua: &Lua) -> LuaResult<LuaTable> {
 /// The registry stack can name a different script while a yielding require is in
 /// flight, so callers that need the actual current file prefer frames and fall back
 /// to the registry stack only when no frame is available.
+///
+/// # Errors
+///
+/// Returns an error if the fallback script-path stack entry cannot be read as a string.
 pub fn get_calling_script_path(lua: &Lua) -> LuaResult<Option<String>> {
     Ok(get_script_path_from_frames(lua).or(get_current_script_path(lua)?))
 }
@@ -470,7 +495,7 @@ fn get_script_path_from_frames(lua: &Lua) -> Option<String> {
         match result {
             None => break, // No more stack frames
             Some(Some(path)) => return Some(path),
-            Some(None) => continue, // Skip this frame
+            Some(None) => {}
         }
     }
 

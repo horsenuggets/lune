@@ -20,17 +20,21 @@ pub use self::library::LuneStandardLibrary;
 /**
     Injects all standard globals into the given Lua state / VM.
 
-    This **does not** include standard libraries - see `inject_std`.
+    This includes every export of the Roblox library when enabled. Other standard
+    libraries are registered separately - see `inject_std`.
 
     # Errors
 
-    Errors when out of memory, or if *default* Lua globals are missing.
+    Errors when out of memory, if *default* Lua globals are missing, or if a Roblox
+    export conflicts with an existing global.
 */
 pub fn inject_globals(lua: Lua) -> LuaResult<()> {
     for global in LuneStandardGlobal::ALL {
         lua.globals()
             .set(global.name(), global.create(lua.clone())?)?;
     }
+    #[cfg(feature = "roblox")]
+    globals::roblox_globals::inject(lua)?;
     Ok(())
 }
 

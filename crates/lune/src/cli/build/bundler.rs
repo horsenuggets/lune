@@ -92,12 +92,12 @@ impl Bundler {
         let start_dir = entry_path
             .canonicalize()
             .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
             .unwrap_or_else(|| {
-                entry_path
-                    .parent()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+                entry_path.parent().map_or_else(
+                    || std::env::current_dir().unwrap_or_default(),
+                    std::path::Path::to_path_buf,
+                )
             });
 
         let mut highest_luaurc_dir: Option<PathBuf> = None;
@@ -139,7 +139,7 @@ impl Bundler {
         }
     }
 
-    /// Expand base_dir to include a new path if needed
+    /// Expand `base_dir` to include a new path if needed
     fn expand_base_dir(&mut self, path: &Path) {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         if !canonical.starts_with(&self.base_dir) {
@@ -263,11 +263,11 @@ impl Bundler {
         // Now process each require
         for require_path in require_paths {
             if let Some(resolved) = self.resolve_require(&require_path, &file_dir) {
-                let actual_file = self.find_module_file(&resolved);
-                if let Some(module_path) = actual_file {
-                    if module_path.exists() {
-                        self.process_file(&module_path)?;
-                    }
+                let actual_file = Self::find_module_file(&resolved);
+                if let Some(module_path) = actual_file
+                    && module_path.exists()
+                {
+                    self.process_file(&module_path)?;
                 }
             }
         }
@@ -336,7 +336,7 @@ impl Bundler {
         for pattern in js_include {
             let paths = expand_js_include(pattern)?;
             for path in paths {
-                let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
                 let requested = absolute_path(&path);
                 let mut matched = false;
                 for module_root in &roots {
@@ -379,8 +379,15 @@ impl Bundler {
             }
         }
 
+        Ok((artifacts, self.relocate_js_roots(&roots)?))
+    }
+
+    fn relocate_js_roots(
+        &self,
+        roots: &BTreeSet<Option<String>>,
+    ) -> Result<BTreeMap<String, String>> {
         let mut relocated_roots = BTreeMap::new();
-        for module_root in &roots {
+        for module_root in roots {
             let root = self.js_root_for_luau(Path::new(""), module_root.as_deref())?;
             let canonical = root.canonicalize().unwrap_or(root);
             relocated_roots.insert(
@@ -388,7 +395,7 @@ impl Bundler {
                 normalize_bundle_path(&canonical, &self.base_dir),
             );
         }
-        Ok((artifacts, relocated_roots))
+        Ok(relocated_roots)
     }
 
     /// Resolves a JavaScript module root against the project root.
@@ -437,7 +444,7 @@ impl Bundler {
     }
 
     /// Find the actual module file (handles init.luau pattern)
-    fn find_module_file(&self, path: &Path) -> Option<PathBuf> {
+    fn find_module_file(path: &Path) -> Option<PathBuf> {
         // Try exact path with extensions
         for ext in &["", ".luau", ".lua"] {
             let with_ext = if ext.is_empty() {
@@ -510,24 +517,24 @@ impl Bundler {
         let mut search_dir = caller_dir.to_path_buf();
         loop {
             let config = self.get_config(&search_dir);
-            if let Some(ref cfg) = config {
-                if let Some(alias_value) = cfg.aliases.get(alias_name) {
-                    let mut resolved = search_dir.join(alias_value);
-                    if let Some(rest_path) = rest {
-                        resolved = resolved.join(rest_path);
-                    }
-
-                    // Record the alias mapping for runtime resolution
-                    // Store canonical path (will be relativized at the end)
-                    if let Some(actual_file) = self.find_module_file(&resolved) {
-                        if let Ok(canonical) = actual_file.canonicalize() {
-                            self.aliases_canonical
-                                .insert(format!("@{}", alias_path), canonical);
-                        }
-                    }
-
-                    return Some(resolved);
+            if let Some(ref cfg) = config
+                && let Some(alias_value) = cfg.aliases.get(alias_name)
+            {
+                let mut resolved = search_dir.join(alias_value);
+                if let Some(rest_path) = rest {
+                    resolved = resolved.join(rest_path);
                 }
+
+                // Record the alias mapping for runtime resolution
+                // Store canonical path (will be relativized at the end)
+                if let Some(actual_file) = Self::find_module_file(&resolved)
+                    && let Ok(canonical) = actual_file.canonicalize()
+                {
+                    self.aliases_canonical
+                        .insert(format!("@{alias_path}"), canonical);
+                }
+
+                return Some(resolved);
             }
 
             if !search_dir.pop() {
@@ -592,9 +599,9 @@ fn expand_js_include(pattern: &str) -> Result<Vec<PathBuf>> {
 }
 
 /// Normalize a canonical path into a portable bundle key.
-/// Makes the path relative to base_dir with a leading '/', using forward
+/// Makes the path relative to `base_dir` with a leading '/', using forward
 /// slashes on all platforms. Falls back to the full path if it's outside
-/// base_dir.
+/// `base_dir`.
 pub(super) fn normalize_bundle_path(canonical: &Path, base_dir: &Path) -> String {
     if let Ok(relative) = canonical.strip_prefix(base_dir) {
         format!("/{}", relative.display()).replace('\\', "/")
