@@ -16,7 +16,7 @@ pub fn inject(lua: Lua) -> LuaResult<()> {
     let globals = lua.globals();
     for pair in module(lua)?.pairs::<LuaString, LuaValue>() {
         let (key, value) = pair?;
-        let existing: LuaValue = globals.raw_get(key.clone())?;
+        let existing: LuaValue = globals.get(key.clone())?;
         if !matches!(existing, LuaValue::Nil) && existing != value {
             return Err(LuaError::runtime(format!(
                 "Roblox export '{}' conflicts with an existing global.",
@@ -105,13 +105,18 @@ mod tests {
             "Vector3",
             "Enum",
         ] {
-            let lua = Lua::new();
-            let _scheduler = mlua_luau_scheduler::Scheduler::new(lua.clone());
-            lua.globals().set(name, "Existing global")?;
-            let error = crate::inject_globals(lua.clone())
-                .expect_err("A conflicting Roblox global must be rejected.");
-            assert!(error.to_string().contains(&format!("'{name}' conflicts")));
-            assert_eq!(lua.globals().get::<String>(name)?, "Existing global");
+            for sandboxed in [false, true] {
+                let lua = Lua::new();
+                let _scheduler = mlua_luau_scheduler::Scheduler::new(lua.clone());
+                lua.globals().set(name, "Existing global")?;
+                if sandboxed {
+                    lua.sandbox(true)?;
+                }
+                let error = crate::inject_globals(lua.clone())
+                    .expect_err("A conflicting Roblox global must be rejected.");
+                assert!(error.to_string().contains(&format!("'{name}' conflicts")));
+                assert_eq!(lua.globals().get::<String>(name)?, "Existing global");
+            }
         }
         Ok(())
     }
