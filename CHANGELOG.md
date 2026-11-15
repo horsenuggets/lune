@@ -36,7 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   system time.
 - Restored full strict workspace Clippy validation without adding lint suppressions,
   and repaired HTTPS certificate coverage using the supported Microsoft endpoint.
-- Published unprefixed release tags while recognizing historical prefixed versions.
+- Aligned release tags and cross-target binary downloads on unprefixed versions while
+  recognizing historical prefixed versions during duplicate-release validation.
 
 ## `0.11.1-horse.16.3` - November 6th, 2026
 

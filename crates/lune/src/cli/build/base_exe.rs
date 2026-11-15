@@ -29,6 +29,10 @@ const RELEASE_REQUEST_HEADERS: &[(&str, &str)] = &[
     // ("Accept-Encoding", "gzip"),
 ];
 
+fn release_download_path(version: &str, target: &BuildTarget) -> String {
+    format!("{version}/lune-{version}-{target}.zip")
+}
+
 /**
     Discovers the path to the base executable to use for cross-compilation.
 
@@ -49,8 +53,9 @@ pub async fn get_or_download_base_executable(target: BuildTarget) -> BuildResult
     let version = env!("CARGO_PKG_VERSION");
     let target_triple = format!("lune-{version}-{target}");
 
+    let release_path = release_download_path(version, &target);
     let release_url = format!(
-        "{base_url}/v{version}/{target_triple}.zip",
+        "{base_url}/{release_path}",
         base_url = "https://github.com/horsenuggets/lune/releases/download",
     );
 
@@ -117,4 +122,28 @@ pub async fn get_or_download_base_executable(target: BuildTarget) -> BuildResult
     println!("Downloaded successfully and added to cache");
 
     Ok(target.cache_path())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_downloads_use_unprefixed_tags_for_every_target() {
+        for target in [
+            "linux-aarch64",
+            "linux-x86_64",
+            "macos-aarch64",
+            "macos-x86_64",
+            "windows-aarch64",
+            "windows-x86_64",
+        ] {
+            let parsed = target.parse().unwrap();
+            let path = release_download_path("1.2.3-fork.1.0", &parsed);
+            assert_eq!(
+                path,
+                format!("1.2.3-fork.1.0/lune-1.2.3-fork.1.0-{target}.zip")
+            );
+        }
+    }
 }
