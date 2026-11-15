@@ -10,7 +10,7 @@ const Shared = projectRoot.Shared
 print("Shared path:", Shared)
 
 -- Require Utils from Shared
-const Utils = require(Shared.Utils:RequirePath())
+const Utils = require(Shared.Utils:GetFullName())
 assert(Utils ~= nil, "Utils should not be nil")
 assert(Utils.name == "Utils", "Utils.name should be 'Utils'")
 

@@ -66,7 +66,12 @@ pub enum LuauFilePath {
 }
 
 impl LuauFilePath {
-    fn resolve(module: impl AsRef<Path>) -> Result<Self, LuaNavigateError> {
+    /// Resolve a module path to its existing file or directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target is missing or ambiguous.
+    pub fn resolve(module: impl AsRef<Path>) -> Result<Self, LuaNavigateError> {
         Self::resolve_inner(module.as_ref(), true)
     }
 

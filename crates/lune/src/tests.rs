@@ -73,6 +73,7 @@ create_tests! {
     require_multi_ext: "require/tests/multi_ext",
     require_nested: "require/tests/nested",
     require_parents: "require/tests/parents",
+    require_script_ref: "require/script_ref",
     require_siblings: "require/tests/siblings",
     require_state: "require/tests/state",
 
@@ -127,7 +128,11 @@ fn write_project_check(path: &Path, expected_name: &str) -> Result<()> {
     fs::create_dir_all(path.parent().unwrap())?;
     fs::write(
         path,
-        format!("assert(project.Name == \"{expected_name}\", `got {{project.Name}}`)\n"),
+        format!(
+            "assert(project.Name == \"{expected_name}\", `got {{project.Name}}`)\n\
+             const fs = require(\"@lune/fs\")\n\
+             assert(fs.readFile(script:GetFullName()) == fs.readFile({path:?}))\n"
+        ),
     )?;
     Ok(())
 }

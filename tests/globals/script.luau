@@ -26,10 +26,29 @@ assert(#scriptName > 0, "script.Name should not be empty")
 print("Script name:", scriptName)
 assert(string.find(scriptName, "script", 1, true) ~= nil, "script.Name should contain 'script'")
 
--- script:GetFullName() should return the full path (same as tostring)
+-- GetFullName returns the actual source, while tostring keeps its module path.
+const fs = require("@lune/fs")
 const scriptFullPath = script:GetFullName()
 assert(type(scriptFullPath) == "string", "script:GetFullName() should return a string")
-assert(scriptFullPath == scriptPath, "script:GetFullName() should equal tostring(script)")
+assert(scriptFullPath == scriptPath .. ".luau", "GetFullName should include the extension")
+assert(fs.readFile(scriptFullPath):find("script global", 1, true) ~= nil)
+assert(tostring(script) == scriptPath, "GetFullName must not change tostring")
+assert(fs.isDir(script.Parent:GetFullName()), "ordinary folders should remain directories")
+assert(not pcall(function()
+	script.Parent.DoesNotExist:GetFullName()
+end), "missing targets should error")
+assert(not pcall(function()
+	script:RequirePath()
+end), "RequirePath must no longer be callable")
+
+const roblox = require("@lune/roblox")
+const folder = roblox.Instance.new("Folder")
+folder.Name = "Root"
+const child = roblox.Instance.new("Folder")
+child.Name = "Child"
+child.Parent = folder
+assert(child:GetFullName() == "Root.Child", "Roblox hierarchy naming must be unchanged")
+folder:Destroy()
 
 -- String concatenation should work
 const prefixed = "Path: " .. script

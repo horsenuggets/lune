@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use lune_utils::path::LuauFilePath;
 use mlua::UserData;
 use mlua::prelude::*;
 
@@ -81,6 +82,31 @@ impl ScriptReference {
     /// Get the full path as a string, resolving dynamically if needed
     pub fn path_string(&self, lua: &Lua) -> LuaResult<String> {
         Ok(self.resolve_path(lua)?.display().to_string())
+    }
+
+    /// Resolve the actual existing source file or ordinary directory to an absolute path.
+    fn full_path(&self, lua: &Lua) -> LuaResult<PathBuf> {
+        let reference = self.resolve_path(lua)?;
+        let path = script_file(lua, &reference);
+        let resolved = if path != reference || path.is_file() {
+            path
+        } else {
+            LuauFilePath::resolve(&path)
+                .map_err(|error| {
+                    LuaError::runtime(format!(
+                        "Cannot resolve ScriptReference \"{}\". {error:?}.",
+                        path.display()
+                    ))
+                })?
+                .as_ref()
+                .to_path_buf()
+        };
+        dunce::canonicalize(&resolved)
+            .map_err(LuaError::external)
+            .context(format!(
+                "Cannot resolve ScriptReference \"{}\".",
+                resolved.display()
+            ))
     }
 
     /// Get just the file/folder name from a path
@@ -356,76 +382,10 @@ impl UserData for ScriptReference {
             }
         });
 
-        // GetFullName returns the full path (like Roblox's Instance:GetFullName())
+        // GetFullName returns the actual absolute source file or ordinary directory.
         methods.add_method("GetFullName", |lua, this, ()| {
-            let path = this.resolve_path(lua)?;
-            Ok(path.display().to_string())
+            Ok(this.full_path(lua)?.display().to_string())
         });
-
-        // RequirePath returns a relative path string for use with require()
-        // Usage: require(script.Parent.Module:RequirePath())
-        methods.add_method("RequirePath", |lua, this, ()| {
-            let path = this.resolve_path(lua)?;
-            let path_str = path.display().to_string();
-            // Get current script path to calculate relative path
-            if let Some(current_script) = get_current_script_path(lua)? {
-                let relative = make_relative_path(&current_script, &path_str);
-                Ok(relative)
-            } else {
-                // Fallback: just use ./ prefix with the path
-                Ok(format!("./{}", path_str))
-            }
-        });
-    }
-}
-
-/// Convert an absolute target path to a relative path from the current script.
-/// Returns a path starting with "./" or "../" as required by the require system.
-fn make_relative_path(current_script: &str, target_path: &str) -> String {
-    let current = Path::new(current_script);
-    let target = Path::new(target_path);
-
-    // Get the directory of the current script
-    let current_dir = current.parent().unwrap_or(current);
-
-    // Try to make target relative to current_dir
-    if let Ok(relative) = target.strip_prefix(current_dir) {
-        // Target is inside current directory
-        format!("./{}", relative.display())
-    } else {
-        // Need to go up directories - find common ancestor
-        let current_parts: Vec<_> = current_dir.components().collect();
-        let target_parts: Vec<_> = target.components().collect();
-
-        // Find how many components match
-        let common_len = current_parts
-            .iter()
-            .zip(target_parts.iter())
-            .take_while(|(a, b)| a == b)
-            .count();
-
-        // Calculate how many ".." we need
-        let ups_needed = current_parts.len() - common_len;
-
-        // Build the relative path
-        let mut result = String::new();
-        if ups_needed == 0 {
-            result.push_str("./");
-        } else {
-            for _ in 0..ups_needed {
-                result.push_str("../");
-            }
-        }
-
-        // Add the remaining target path components
-        for (i, part) in target_parts.iter().skip(common_len).enumerate() {
-            if i > 0 {
-                result.push('/');
-            }
-            result.push_str(&part.as_os_str().to_string_lossy());
-        }
-
-        result
     }
 }
 
@@ -612,6 +572,72 @@ mod tests {
         let root = find_git_root(Path::new("Cargo.toml")).expect("should find the repository");
         assert!(cwd.starts_with(&root));
         assert!(root.join(".git").exists());
+    }
+
+    #[test]
+    fn full_path_resolves_files_directories_redirects_and_errors() {
+        let root = scratch_dir("full-path");
+        let lua = Lua::new();
+        fs::create_dir_all(root.join("Folder")).unwrap();
+        fs::create_dir_all(root.join("Module")).unwrap();
+        fs::create_dir_all(root.join("LegacyModule")).unwrap();
+        fs::create_dir_all(root.join("Collision")).unwrap();
+        fs::create_dir_all(root.join("Package")).unwrap();
+        for file in [
+            "Plain.luau",
+            "Legacy.lua",
+            "Module/init.luau",
+            "LegacyModule/init.lua",
+            "Collision.luau",
+            "Collision/init.luau",
+            "Package/main.lua",
+        ] {
+            fs::write(root.join(file), "return true").unwrap();
+        }
+        fs::write(
+            root.join("Package/default.project.json"),
+            r#"{"tree":{"$path":"main.lua"}}"#,
+        )
+        .unwrap();
+
+        for (reference, expected) in [
+            ("Plain", "Plain.luau"),
+            ("Plain.luau", "Plain.luau"),
+            ("Legacy", "Legacy.lua"),
+            ("Module", "Module/init.luau"),
+            ("Module/init.luau", "Module/init.luau"),
+            ("LegacyModule", "LegacyModule/init.lua"),
+            ("Package", "Package/main.lua"),
+            ("Folder", "Folder"),
+        ] {
+            let reference = ScriptReference::new(root.join(reference));
+            assert_eq!(reference.full_path(&lua).unwrap(), root.join(expected));
+        }
+        assert!(
+            ScriptReference::new(root.join("Missing"))
+                .full_path(&lua)
+                .is_err()
+        );
+        fs::write(root.join("Plain.lua"), "").unwrap();
+        fs::write(root.join("Module/init.lua"), "").unwrap();
+        for reference in ["Plain", "Module", "Collision"] {
+            let error = ScriptReference::new(root.join(reference))
+                .full_path(&lua)
+                .unwrap_err();
+            assert!(error.to_string().contains("Ambiguous"));
+        }
+
+        // An explicitly registered entrypoint wins over extensionless ambiguity.
+        let entrypoint = root.join("Plain");
+        register_script_file(&lua, entrypoint.to_str().unwrap(), &root.join("Plain.luau")).unwrap();
+        push_script_path(&lua, entrypoint.to_str().unwrap()).unwrap();
+        assert_eq!(
+            ScriptReference::dynamic().full_path(&lua).unwrap(),
+            root.join("Plain.luau")
+        );
+        fs::remove_file(root.join("Plain.luau")).unwrap();
+        assert!(ScriptReference::dynamic().full_path(&lua).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -8,6 +8,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- **Breaking**. Changed `ScriptReference:GetFullName()` to return an absolute, existing
+  source-file path with its extension. Module directories resolve to their entry point,
+  ordinary folders remain directories, and missing or ambiguous targets raise errors.
+  String conversion, concatenation, navigation, and Roblox Instance naming are unchanged.
+
+### Removed
+
+- **Breaking**. Removed `ScriptReference:RequirePath()` immediately. Use the reference
+  directly with `require`, or pass its `GetFullName()` result as an absolute source path.
+
+### Fixed
+
+- Fixed requiring absolute source-file paths with extensions, including directory entry
+  points and native Windows absolute paths.
+
 ## `0.11.1-horse.16.3` - November 6th, 2026
 
 ### Fixed
