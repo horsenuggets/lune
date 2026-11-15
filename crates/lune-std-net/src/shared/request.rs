@@ -84,8 +84,7 @@ pub fn prepare_outgoing_request<B>(request: &mut HyperRequest<B>) {
     let origin_form = request
         .uri()
         .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/")
+        .map_or("/", hyper::http::uri::PathAndQuery::as_str)
         .to_string();
     if let Ok(uri) = origin_form.parse() {
         *request.uri_mut() = uri;

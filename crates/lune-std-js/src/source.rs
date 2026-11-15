@@ -164,10 +164,10 @@ impl AbsoluteNsProvider {
             return Vec::new();
         };
         let mut candidates = Vec::new();
-        if let Some(prefix) = &self.root_prefix {
-            if let Ok(qualified) = ModuleId::parse(&format!("/{prefix}{name}")) {
-                candidates.push(qualified);
-            }
+        if let Some(prefix) = &self.root_prefix
+            && let Ok(qualified) = ModuleId::parse(format!("/{prefix}{name}"))
+        {
+            candidates.push(qualified);
         }
         if let Ok(unqualified) = ModuleId::parse(name) {
             candidates.push(unqualified);

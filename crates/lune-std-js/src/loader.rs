@@ -47,6 +47,7 @@ impl SharedModuleCache {
     }
 
     /// Qualifies a module ID with the active bundle namespace.
+    #[must_use]
     pub fn qualify(&self, name: &str) -> String {
         self.absolute(name)
     }

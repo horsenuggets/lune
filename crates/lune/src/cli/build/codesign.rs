@@ -138,7 +138,7 @@ fn parse_macho(data: &[u8]) -> Option<MachOInfo> {
 
 /// Calculate the size of an ad-hoc code signature.
 fn signature_size(code_size: u32, id: &[u8]) -> usize {
-    let nhashes = (code_size as usize + PAGE_SIZE - 1) / PAGE_SIZE;
+    let nhashes = (code_size as usize).div_ceil(PAGE_SIZE);
     let id_off = CODE_DIRECTORY_SIZE;
     let hash_off = id_off + id.len() + 1; // +1 for null terminator
     let cdir_size = hash_off + nhashes * 32;
@@ -154,7 +154,7 @@ fn build_signature(
     is_main_binary: bool,
 ) -> Vec<u8> {
     let code_size = code.len() as u32;
-    let nhashes = (code.len() + PAGE_SIZE - 1) / PAGE_SIZE;
+    let nhashes = code.len().div_ceil(PAGE_SIZE);
     let id_off = CODE_DIRECTORY_SIZE as u32;
     let hash_off = id_off + id.len() as u32 + 1;
     let cdir_size = hash_off + nhashes as u32 * 32;
@@ -216,13 +216,12 @@ fn build_signature(
 /// The binary must already have an `LC_CODE_SIGNATURE` load command (which
 /// Rust-compiled macOS binaries always do). This function:
 /// 1. Parses the Mach-O headers to find the code signature location
-/// 2. Builds a new ad-hoc CodeDirectory with SHA-256 page hashes
+/// 2. Builds a new ad-hoc `CodeDirectory` with SHA-256 page hashes
 /// 3. Writes the signature at the existing code signature offset
 /// 4. Updates the load command's datasize if needed
 pub fn sign_macho(data: &mut Vec<u8>, id: &str) -> bool {
-    let info = match parse_macho(data) {
-        Some(info) => info,
-        None => return false,
+    let Some(info) = parse_macho(data) else {
+        return false;
     };
 
     let code_size = info.codesig_data_offset;
@@ -277,7 +276,7 @@ pub fn sign_macho(data: &mut Vec<u8>, id: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Build a minimal valid Mach-O 64-bit binary with LC_CODE_SIGNATURE
+    /// Build a minimal valid Mach-O 64-bit binary with `LC_CODE_SIGNATURE`
     /// for testing purposes.
     fn build_test_macho(code_pages: usize) -> Vec<u8> {
         let code_content_size = code_pages * PAGE_SIZE;
@@ -333,8 +332,13 @@ mod tests {
             .copy_from_slice(&(sig_space as u32).to_le_bytes()); // datasize
 
         // Fill code area with recognizable pattern
-        for i in header_and_cmds_size..code_content_size {
-            data[i] = (i & 0xff) as u8;
+        for (i, byte) in data
+            .iter_mut()
+            .enumerate()
+            .take(code_content_size)
+            .skip(header_and_cmds_size)
+        {
+            *byte = (i & 0xff) as u8;
         }
 
         data
@@ -559,7 +563,7 @@ mod tests {
     /// Mach-O binary in all test runners (e.g., cargo-nextest wraps tests).
     /// Run with `cargo test -- --ignored` to execute locally.
     #[test]
-    #[ignore]
+    #[ignore = "Requires a native Mach-O test executable and the macOS codesign tool."]
     #[cfg(target_os = "macos")]
     fn test_sign_real_binary_with_appended_data() {
         use std::process::Command;
@@ -612,7 +616,7 @@ mod tests {
     /// Sign a real binary without appended data — this should pass both
     /// codesign -d (inspection) and codesign -v (validation).
     #[test]
-    #[ignore]
+    #[ignore = "Requires a native Mach-O test executable and the macOS codesign tool."]
     #[cfg(target_os = "macos")]
     fn test_sign_real_binary_validates() {
         use std::process::Command;
