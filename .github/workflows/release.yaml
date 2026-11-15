@@ -156,7 +156,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v${{ needs.init.outputs.version }}" \
+          gh release create "${{ needs.init.outputs.version }}" \
             --title "${{ needs.init.outputs.version }}" \
             --notes-file /tmp/changelog.txt \
             ./releases/*.zip
