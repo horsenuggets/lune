@@ -551,7 +551,6 @@ create_tests! {
     process_cwd: "process/cwd",
     process_env: "process/env",
     process_exit: "process/exit",
-    process_exec_async: "process/exec/async",
     process_exec_basic: "process/exec/basic",
     process_exec_cwd: "process/exec/cwd",
     process_exec_no_panic: "process/exec/no_panic",
@@ -561,6 +560,79 @@ create_tests! {
     process_spawn_non_blocking: "process/create/non_blocking",
     process_spawn_status: "process/create/status",
     process_spawn_stream: "process/create/stream",
+}
+
+#[cfg(feature = "std-process")]
+#[test]
+fn process_exec_async_child() -> Result<()> {
+    let Some(directory) = std::env::var_os("LUNE_PROCESS_EXEC_CHILD_DIRECTORY") else {
+        return Ok(());
+    };
+    let directory = PathBuf::from(directory);
+    fs::write(directory.join("ready"), [])?;
+    let start = std::time::Instant::now();
+    while !directory.join("release").is_file() {
+        anyhow::ensure!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "The Luau scheduler did not release the native child process."
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    Ok(())
+}
+
+#[cfg(all(feature = "std-process", feature = "std-task"))]
+#[test]
+fn process_exec_async() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let child_directory = directory.path().to_path_buf();
+    let executable = std::env::current_exe()?;
+    async_io::block_on(async {
+        let mut runtime = Runtime::new()?.with_lib("@test/process-exec-fixture", move |lua| {
+            let fixture = lua.create_table()?;
+            fixture.set("Executable", executable.to_string_lossy().into_owned())?;
+            fixture.set(
+                "Args",
+                lua.create_sequence_from([
+                    "--exact",
+                    "tests::process_exec_async_child",
+                    "--nocapture",
+                ])?,
+            )?;
+            fixture.set(
+                "Environment",
+                lua.create_table_from([(
+                    "LUNE_PROCESS_EXEC_CHILD_DIRECTORY",
+                    child_directory.to_string_lossy().into_owned(),
+                )])?,
+            )?;
+            let ready_path = child_directory.join("ready");
+            fixture.set(
+                "IsReady",
+                lua.create_function(move |_, ()| Ok(ready_path.is_file()))?,
+            )?;
+            let release_path = child_directory.join("release");
+            fixture.set(
+                "Release",
+                lua.create_function(move |_, ()| {
+                    fs::write(&release_path, []).map_err(mlua::Error::external)
+                })?,
+            )?;
+            lua.globals()
+                .get::<mlua::Table>("_G")?
+                .set("ProcessExecFixture", fixture.clone())?;
+            Ok(mlua::Value::Table(fixture))
+        })?;
+        let result = runtime
+            .run_custom(
+                "process-exec-async",
+                include_str!("../../../tests/process/exec/async.luau"),
+            )
+            .await?;
+        assert!(result.success());
+        Ok(())
+    })
 }
 
 #[cfg(feature = "std-regex")]
