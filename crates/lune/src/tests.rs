@@ -482,6 +482,7 @@ assert(rawequal(result, require(reference:GetFullName())))
 
 #[cfg(unix)]
 #[test]
+#[serial_test::serial]
 fn symlinked_modules_share_file_coverage_in_both_load_orders() -> Result<()> {
     let root = tempfile::tempdir()?;
     let real = root.path().join("Real");
@@ -510,16 +511,56 @@ for index, entry in linkedCoverage do
     end
 end
 assert(hasHits)
+_G.LinkedCoverageReference = linked
+_G.RealCoverageReference = real
 "
             .replace("FIRST_REQUIRE", first_require),
         )?;
         async_io::block_on(async {
             let mut rt = Runtime::new()?.with_jit(false);
             assert!(rt.run_file(&main).await?.success());
+            if first_require == "linked" {
+                fs::remove_file(root.path().join("Linked"))?;
+                assert!(
+                    rt.run_custom(
+                        "coverage-after-unlink",
+                        r"
+                        assert(#debug.getcoverage(_G.LinkedCoverageReference) > 0)
+                        assert(#debug.getcoverage(_G.RealCoverageReference) > 0)
+                        ",
+                    )
+                    .await?
+                    .success()
+                );
+                std::os::unix::fs::symlink(&real, root.path().join("Linked"))?;
+            }
             anyhow::Ok(())
         })?;
     }
     Ok(())
+}
+
+#[test]
+#[serial_test::serial]
+fn relative_at_prefixed_paths_retain_file_coverage() -> Result<()> {
+    let root = tempfile::Builder::new()
+        .prefix("@coverage-")
+        .tempdir_in(std::env::current_dir()?)?;
+    fs::write(root.path().join("Module.luau"), "return {}\n")?;
+    fs::write(
+        root.path().join("Main.luau"),
+        r"
+const reference = script.Parent.Module
+require(reference:GetFullName())
+assert(#debug.getcoverage(reference) > 0)
+",
+    )?;
+    let relative = PathBuf::from(root.path().file_name().unwrap()).join("Main.luau");
+    async_io::block_on(async {
+        let mut rt = Runtime::new()?.with_jit(false);
+        assert!(rt.run_file(relative).await?.success());
+        Ok(())
+    })
 }
 
 #[cfg(feature = "std-datetime")]
