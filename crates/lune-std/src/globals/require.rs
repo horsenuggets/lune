@@ -454,10 +454,10 @@ fn resolve_require_arg(
         LuaValue::String(s) => {
             let path_str: String = s.to_str()?.to_string();
 
-            if path_str.starts_with('/') {
-                // Absolute path — treat as a bundled virtual path on all
-                // platforms. Do NOT use clean_path_and_make_absolute which
-                // would prepend the CWD drive letter on Windows.
+            if path_str.starts_with('/') || Path::new(&path_str).is_absolute() {
+                // Preserve native absolute paths and bundled virtual paths. Do not use
+                // clean_path_and_make_absolute, which would prepend the CWD drive letter
+                // to virtual paths on Windows.
                 let abs = PathBuf::from(&path_str);
                 let rel = caller_path
                     .map(|cp| make_relative_path(cp, &abs))
@@ -716,6 +716,9 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                         resolve_bundled_module(&lua, &absolute_path)
                     {
                         bundled_path
+                    } else if absolute_path.is_absolute() && absolute_path.is_file() {
+                        // Full source paths, including init files, identify an exact module.
+                        absolute_path.clone()
                     } else {
                         // Resolve to actual filesystem path (handling .luau/.lua extensions)
                         let resolved = LuauModulePath::resolve(&absolute_path).map_err(|e| {
@@ -984,6 +987,18 @@ mod tests {
     }
 
     // -- is_bundled_path --
+
+    #[test]
+    fn require_argument_accepts_native_absolute_source_paths() {
+        let lua = Lua::new();
+        let path = std::env::current_dir().unwrap().join("Module.luau");
+        let arg = LuaValue::String(lua.create_string(path.to_str().unwrap()).unwrap());
+        let result = resolve_require_arg(&lua, &arg, None).unwrap();
+        match result {
+            ResolveResult::FilePath(_, resolved) => assert_eq!(resolved, path),
+            ResolveResult::Alias(_) => panic!("An absolute source path must not be an alias."),
+        }
+    }
 
     #[test]
     fn bundled_path_detects_virtual_paths() {
