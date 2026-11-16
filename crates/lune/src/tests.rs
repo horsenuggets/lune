@@ -766,6 +766,7 @@ create_tests! {
     roblox_files_serialize_place: "roblox/files/serializePlace",
 
     roblox_instance_attributes: "roblox/instance/attributes",
+    roblox_instance_coercion: "roblox/instance/coercion",
     roblox_instance_identity: "roblox/instance/identity",
     roblox_instance_new: "roblox/instance/new",
     roblox_instance_properties: "roblox/instance/properties",
