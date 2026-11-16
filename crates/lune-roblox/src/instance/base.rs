@@ -196,24 +196,45 @@ pub fn add_methods<M: LuaUserDataMethods<Instance>>(m: &mut M) {
             }
         },
     );
-    m.add_method("GetTags", |_, this, ()| {
-        ensure_not_destroyed(this)?;
-        Ok(this.get_tags())
+    m.add_method("GetTags", |_, this, args: LuaMultiValue| {
+        let (target, _) = tag_target(this, args)?;
+        Ok(target.get_tags())
     });
-    m.add_method("HasTag", |_, this, tag: String| {
-        ensure_not_destroyed(this)?;
-        Ok(this.has_tag(tag))
+    m.add_method("HasTag", |lua, this, args: LuaMultiValue| {
+        let (target, args) = tag_target(this, args)?;
+        Ok(target.has_tag(String::from_lua_multi(args, lua)?))
     });
-    m.add_method("AddTag", |_, this, tag: String| {
-        ensure_not_destroyed(this)?;
-        this.add_tag(tag);
+    m.add_method("AddTag", |lua, this, args: LuaMultiValue| {
+        let (target, args) = tag_target(this, args)?;
+        target.add_tag(String::from_lua_multi(args, lua)?);
         Ok(())
     });
-    m.add_method("RemoveTag", |_, this, tag: String| {
-        ensure_not_destroyed(this)?;
-        this.remove_tag(tag);
+    m.add_method("RemoveTag", |lua, this, args: LuaMultiValue| {
+        let (target, args) = tag_target(this, args)?;
+        target.remove_tag(String::from_lua_multi(args, lua)?);
         Ok(())
     });
+}
+
+/*
+    Resolves the instance that a tag method operates on.
+
+    Roblox's CollectionService takes the tagged instance as its first argument,
+    as in `CollectionService:AddTag(instance, tag)`. Classes registered as
+    subclasses of CollectionService behave the same way. Every other instance,
+    and CollectionService itself when given only a tag, operates on itself.
+*/
+fn tag_target(this: &Instance, mut args: LuaMultiValue) -> LuaResult<(Instance, LuaMultiValue)> {
+    ensure_not_destroyed(this)?;
+    if class_is_a(this.get_class_name(), "CollectionService").unwrap_or(false)
+        && let Some(LuaValue::UserData(ud)) = args.front()
+        && let Ok(target) = ud.borrow::<Instance>().map(|inst| *inst)
+    {
+        args.pop_front();
+        ensure_not_destroyed(&target)?;
+        return Ok((target, args));
+    }
+    Ok((*this, args))
 }
 
 fn ensure_not_destroyed(inst: &Instance) -> LuaResult<()> {

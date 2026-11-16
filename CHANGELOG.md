@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- Fixed `CollectionService:AddTag`, `RemoveTag`, `HasTag`, and `GetTags` to operate on
+  the instance passed as their first argument, like Roblox. They previously treated the
+  instance as a tag name and errored. Calling them with only a tag still tags the service
+  itself, and other instances keep their existing tag methods.
+
 ## `0.11.1-horse.16.6` - November 16th, 2026
 
 ### Fixed
