@@ -766,11 +766,13 @@ create_tests! {
     roblox_files_serialize_place: "roblox/files/serializePlace",
 
     roblox_instance_attributes: "roblox/instance/attributes",
+    roblox_instance_coercion: "roblox/instance/coercion",
     roblox_instance_identity: "roblox/instance/identity",
     roblox_instance_new: "roblox/instance/new",
     roblox_instance_properties: "roblox/instance/properties",
     roblox_instance_tags: "roblox/instance/tags",
 
+    roblox_instance_classes_collection_service: "roblox/instance/classes/CollectionService",
     roblox_instance_classes_data_model: "roblox/instance/classes/DataModel",
     roblox_instance_classes_workspace: "roblox/instance/classes/Workspace",
     roblox_instance_classes_terrain: "roblox/instance/classes/Terrain",
