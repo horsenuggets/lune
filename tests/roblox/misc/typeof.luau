@@ -16,6 +16,7 @@ local TYPES_AND_VALUES = {
 	NumberSequence = roblox.NumberSequence.new(0, 1),
 	NumberSequenceKeypoint = roblox.NumberSequenceKeypoint.new(0, 1),
 	PhysicalProperties = roblox.PhysicalProperties.new(1, 1, 1),
+	Random = roblox.Random.new(0),
 	Ray = roblox.Ray.new(roblox.Vector3.zero, roblox.Vector3.one),
 	Rect = roblox.Rect.new(0, 0, 0, 0),
 	Region3 = roblox.Region3.new(roblox.Vector3.zero, roblox.Vector3.one),
