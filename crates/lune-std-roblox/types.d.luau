@@ -176,10 +176,31 @@ export type Instance = typeof(setmetatable(
 	(nil :: any) :: { __index: InstanceMetatable }
 ))
 
+export type CollectionServiceProperties = {}
+export type CollectionServiceMetatable = {
+	GetTags: (self: CollectionService, instance: Instance) -> { string },
+	HasTag: (self: CollectionService, instance: Instance, name: string) -> boolean,
+	AddTag: (self: CollectionService, instance: Instance, name: string) -> (),
+	RemoveTag: (self: CollectionService, instance: Instance, name: string) -> (),
+}
+
+--[=[
+	CollectionService's tag methods take the tagged instance as their first
+	argument, like Roblox. Given only a tag, they act on the service itself.
+]=]
+export type CollectionService =
+	Instance
+	& typeof(setmetatable(
+		(nil :: any) :: CollectionServiceProperties,
+		(nil :: any) :: { __index: CollectionServiceMetatable }
+	))
+
 export type DataModelProperties = {}
 export type DataModelMetatable = {
-	GetService: (self: DataModel, name: string) -> Instance,
-	FindService: (self: DataModel, name: string) -> Instance?,
+	GetService: ((self: DataModel, name: "CollectionService") -> CollectionService)
+		& ((self: DataModel, name: string) -> Instance),
+	FindService: ((self: DataModel, name: "CollectionService") -> CollectionService?)
+		& ((self: DataModel, name: string) -> Instance?),
 }
 
 export type DataModel =
