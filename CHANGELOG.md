@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## `0.11.1-horse.16.6` - November 16th, 2026
+
+### Fixed
+
+- Fixed `lune build` failing to bundle modules whose names contain a dot. Requiring a
+  module such as `Build.gen` used to look for `Build.luau`, so the standalone binary
+  failed with "cannot find alias" at runtime. It now looks for `Build.gen.luau`, the same
+  as `lune run`.
+
 ## `0.11.1-horse.16.5` - November 16th, 2026
 
 ### Added
@@ -18,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NextInteger`, `NextNumber`, `NextUnitVector`, `Shuffle`, and `Clone`. Generators
   produce the same values as Roblox for the same seed, and match its argument handling,
   edge cases, and error messages.
+
+### Fixed
+
+- Fixed scripts run through a symlink losing their script name, parent, and relative
+  dependencies when a module was first required by its full path. `GetFullName()` paths
+  stay absolute and existing without dereferencing symlinks, and module coverage records
+  the same hits whether a symlink or the physical path loads first.
 
 ## `0.11.1-horse.16.4` - November 15th, 2026
 
