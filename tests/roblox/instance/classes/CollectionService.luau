@@ -1,5 +1,4 @@
--- Typedefs share one Instance type, so they can't describe CollectionService's signatures
-local roblox = require("@lune/roblox") :: any
+local roblox = require("@lune/roblox")
 local Instance = roblox.Instance
 
 local game = Instance.new("DataModel")
@@ -54,7 +53,8 @@ assert(CollectionService:HasTag(TAG_NAME) == false)
 
 local model = Instance.new("Model")
 local success = pcall(function()
-	model:AddTag(part, TAG_NAME)
+	-- Deliberately ill-typed, since this checks the runtime rejection
+	(model :: any):AddTag(part, TAG_NAME)
 end)
 assert(not success, "Only CollectionService should accept an instance argument")
 assert(part:HasTag(TAG_NAME) == false)
@@ -71,5 +71,17 @@ end))
 -- Missing tags are still argument errors
 
 assert(not pcall(function()
-	CollectionService:AddTag(part)
+	(CollectionService :: any):AddTag(part)
 end))
+
+-- Registered subclasses of CollectionService take the tagged instance too
+
+roblox.registerClass("CustomCollectionService", "CollectionService")
+-- Custom classes are typed as plain instances, so this one is used untyped
+local custom: any = Instance.new("CustomCollectionService")
+local customTagged = Instance.new("Part")
+
+custom:AddTag(customTagged, TAG_NAME)
+assert(customTagged:HasTag(TAG_NAME) == true)
+assert(custom:HasTag(TAG_NAME) == false, "A subclass should tag the instance, not itself")
+assert(custom:GetTags(customTagged)[1] == TAG_NAME)

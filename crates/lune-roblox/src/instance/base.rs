@@ -220,12 +220,13 @@ pub fn add_methods<M: LuaUserDataMethods<Instance>>(m: &mut M) {
     Resolves the instance that a tag method operates on.
 
     Roblox's CollectionService takes the tagged instance as its first argument,
-    as in `CollectionService:AddTag(instance, tag)`. Every other instance, and
-    CollectionService itself when given only a tag, operates on itself.
+    as in `CollectionService:AddTag(instance, tag)`. Classes registered as
+    subclasses of CollectionService behave the same way. Every other instance,
+    and CollectionService itself when given only a tag, operates on itself.
 */
 fn tag_target(this: &Instance, mut args: LuaMultiValue) -> LuaResult<(Instance, LuaMultiValue)> {
     ensure_not_destroyed(this)?;
-    if this.get_class_name() == "CollectionService"
+    if class_is_a(this.get_class_name(), "CollectionService").unwrap_or(false)
         && let Some(LuaValue::UserData(ud)) = args.front()
         && let Ok(target) = ud.borrow::<Instance>().map(|inst| *inst)
     {
