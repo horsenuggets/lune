@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed requiring absolute source-file paths with extensions, including directory entry
   points and native Windows absolute paths.
+- Preserved symlink execution context in full source paths and shared file-level coverage
+  across symlink and physical module references in either load order.
 - Protected inherited Roblox global values from conflicting sandbox injection.
 - Generated WebSocket handshake nonces with the library's random source instead of
   system time.

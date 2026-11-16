@@ -627,6 +627,8 @@ async fn load_module(lua: &Lua, state: &RequireState, resolved_path: &Path) -> R
     // Cache the compiled function for file-level coverage before executing it.
     let func = chunk.into_function()?;
     let chunk_cache = get_chunk_cache(lua)?;
+    let coverage_key = format!("{FILE_CHUNK_PREFIX}{}", identity.display());
+    chunk_cache.set(coverage_key, func.clone())?;
     chunk_cache.set(chunk_name.as_str(), func.clone())?;
 
     // Push the script path before executing the module (for dynamic fallback).
