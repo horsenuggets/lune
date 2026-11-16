@@ -74,6 +74,16 @@ assert(not pcall(function()
 	(CollectionService :: any):AddTag(part)
 end))
 
+-- A directly constructed CollectionService is typed and behaves like the service
+
+local constructed = Instance.new("CollectionService")
+local constructedTagged = Instance.new("Part")
+constructed:AddTag(constructedTagged, TAG_NAME)
+assert(constructed:HasTag(constructedTagged, TAG_NAME) == true)
+assert(constructedTagged:HasTag(TAG_NAME) == true)
+constructed:RemoveTag(constructedTagged, TAG_NAME)
+assert(#constructed:GetTags(constructedTagged) == 0)
+
 -- Registered subclasses of CollectionService take the tagged instance too
 
 roblox.registerClass("CustomCollectionService", "CollectionService")
