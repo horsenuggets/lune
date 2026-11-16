@@ -1,4 +1,4 @@
-use core::fmt;
+use core::{convert::Infallible, fmt};
 
 use glam::Vec3;
 use mlua::prelude::*;
@@ -126,10 +126,27 @@ impl Random {
         Roblox does so the order matches for the same seed.
     */
     pub fn shuffle<T>(&mut self, items: &mut [T]) {
-        for upper in (2..=items.len()).rev() {
-            let picked = self.next_integer_between(1, upper as i64) as usize;
+        self.shuffle_with(items.len(), |upper, picked| {
             items.swap(upper - 1, picked - 1);
+            Ok::<_, Infallible>(())
+        })
+        .unwrap_or_else(|never| match never {});
+    }
+
+    /**
+        Runs a Fisher-Yates shuffle over `length` items by calling `swap` with the 1-based
+        positions to exchange, so callers can shuffle storage they can't borrow as a slice.
+    */
+    fn shuffle_with<E>(
+        &mut self,
+        length: usize,
+        mut swap: impl FnMut(usize, usize) -> Result<(), E>,
+    ) -> Result<(), E> {
+        for upper in (2..=length).rev() {
+            let picked = self.next_integer_between(1, upper as i64) as usize;
+            swap(upper, picked)?;
         }
+        Ok(())
     }
 }
 
@@ -250,25 +267,24 @@ impl LuaUserData for Random {
             let Some(LuaValue::Table(table)) = args.get(1) else {
                 return Err(argument_error(2, None, "table", args.get(1)));
             };
-            let mut values = Vec::with_capacity(table.raw_len());
-            for index in 1..=table.raw_len() {
-                let value: LuaValue = table.raw_get(index)?;
-                if value.is_nil() {
+            let length = table.raw_len();
+            for index in 1..=length {
+                if table.raw_get::<LuaValue>(index)?.is_nil() {
                     return Err(LuaError::runtime(SHUFFLE_NIL_ERROR));
                 }
-                values.push(value);
             }
-            if values.len() < 2 {
+            if length < 2 {
                 return Ok(());
             }
             if table.is_readonly() {
                 return Err(LuaError::runtime("attempt to modify a readonly table"));
             }
-            this.shuffle(&mut values);
-            for (index, value) in values.into_iter().enumerate() {
-                table.raw_set(index + 1, value)?;
-            }
-            Ok(())
+            this.shuffle_with(length, |upper, picked| {
+                let upper_value: LuaValue = table.raw_get(upper)?;
+                let picked_value: LuaValue = table.raw_get(picked)?;
+                table.raw_set(upper, picked_value)?;
+                table.raw_set(picked, upper_value)
+            })
         });
 
         methods.add_meta_function(
