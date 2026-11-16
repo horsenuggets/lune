@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## `0.11.1-horse.16.7` - November 16th, 2026
+
 ### Fixed
 
 - Fixed `CollectionService:AddTag`, `RemoveTag`, `HasTag`, and `GetTags` to operate on
