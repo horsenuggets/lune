@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Added the `Random` datatype to `@lune/roblox` and as a global, with `Random.new`,
+  `NextInteger`, `NextNumber`, `NextUnitVector`, `Shuffle`, and `Clone`. Generators
+  produce the same values as Roblox for the same seed, and match its argument handling,
+  edge cases, and error messages.
+
 ## `0.11.1-horse.16.4` - November 15th, 2026
 
 ### Changed
