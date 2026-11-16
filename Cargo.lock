@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "lune"
-version = "0.11.1-horse.16.3"
+version = "0.11.1-horse.16.4"
 dependencies = [
  "anyhow",
  "async-fs",
@@ -1902,6 +1902,7 @@ dependencies = [
  "clap",
  "console",
  "directories",
+ "dunce",
  "full_moon",
  "futures-lite",
  "glob",
@@ -1948,7 +1949,6 @@ dependencies = [
  "async-fs",
  "console",
  "dunce",
- "lune-roblox",
  "lune-std-datetime",
  "lune-std-fs",
  "lune-std-js",

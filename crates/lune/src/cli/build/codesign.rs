@@ -138,7 +138,7 @@ fn parse_macho(data: &[u8]) -> Option<MachOInfo> {
 
 /// Calculate the size of an ad-hoc code signature.
 fn signature_size(code_size: u32, id: &[u8]) -> usize {
-    let nhashes = (code_size as usize + PAGE_SIZE - 1) / PAGE_SIZE;
+    let nhashes = (code_size as usize).div_ceil(PAGE_SIZE);
     let id_off = CODE_DIRECTORY_SIZE;
     let hash_off = id_off + id.len() + 1; // +1 for null terminator
     let cdir_size = hash_off + nhashes * 32;
@@ -154,7 +154,7 @@ fn build_signature(
     is_main_binary: bool,
 ) -> Vec<u8> {
     let code_size = code.len() as u32;
-    let nhashes = (code.len() + PAGE_SIZE - 1) / PAGE_SIZE;
+    let nhashes = code.len().div_ceil(PAGE_SIZE);
     let id_off = CODE_DIRECTORY_SIZE as u32;
     let hash_off = id_off + id.len() as u32 + 1;
     let cdir_size = hash_off + nhashes as u32 * 32;
@@ -216,18 +216,23 @@ fn build_signature(
 /// The binary must already have an `LC_CODE_SIGNATURE` load command (which
 /// Rust-compiled macOS binaries always do). This function:
 /// 1. Parses the Mach-O headers to find the code signature location
-/// 2. Builds a new ad-hoc CodeDirectory with SHA-256 page hashes
+/// 2. Builds a new ad-hoc `CodeDirectory` with SHA-256 page hashes
 /// 3. Writes the signature at the existing code signature offset
 /// 4. Updates the load command's datasize if needed
 pub fn sign_macho(data: &mut Vec<u8>, id: &str) -> bool {
-    let info = match parse_macho(data) {
-        Some(info) => info,
-        None => return false,
+    let Some(info) = parse_macho(data) else {
+        return false;
     };
 
     let code_size = info.codesig_data_offset;
     let sig_offset = code_size as usize;
     let new_sig_size = signature_size(code_size, id.as_bytes());
+    let Some(old_end) = sig_offset
+        .checked_add(info.codesig_data_size as usize)
+        .filter(|end| *end <= data.len())
+    else {
+        return false;
+    };
 
     // Update LC_CODE_SIGNATURE datasize BEFORE hashing, since the load
     // command lives in the code region (page 0). Updating it after would
@@ -244,10 +249,12 @@ pub fn sign_macho(data: &mut Vec<u8>, id: &str) -> bool {
         true,
     );
 
-    // Ensure we have enough space
+    // Make room within the signature allocation, not the appended metadata.
     let new_end = sig_offset + new_sig.len();
-    if new_end > data.len() {
-        data.resize(new_end, 0);
+    if new_end > old_end {
+        let old_len = data.len();
+        data.resize(old_len + new_end - old_end, 0);
+        data.copy_within(old_end..old_len, new_end);
     }
 
     // Write the new signature
@@ -269,7 +276,7 @@ pub fn sign_macho(data: &mut Vec<u8>, id: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Build a minimal valid Mach-O 64-bit binary with LC_CODE_SIGNATURE
+    /// Build a minimal valid Mach-O 64-bit binary with `LC_CODE_SIGNATURE`
     /// for testing purposes.
     fn build_test_macho(code_pages: usize) -> Vec<u8> {
         let code_content_size = code_pages * PAGE_SIZE;
@@ -325,8 +332,13 @@ mod tests {
             .copy_from_slice(&(sig_space as u32).to_le_bytes()); // datasize
 
         // Fill code area with recognizable pattern
-        for i in header_and_cmds_size..code_content_size {
-            data[i] = (i & 0xff) as u8;
+        for (i, byte) in data
+            .iter_mut()
+            .enumerate()
+            .take(code_content_size)
+            .skip(header_and_cmds_size)
+        {
+            *byte = (i & 0xff) as u8;
         }
 
         data
@@ -483,6 +495,15 @@ mod tests {
     }
 
     #[test]
+    fn test_sign_macho_rejects_truncated_signature() {
+        let mut data = build_test_macho(2);
+        data.pop();
+        let original = data.clone();
+        assert!(!sign_macho(&mut data, "lune"));
+        assert_eq!(data, original);
+    }
+
+    #[test]
     fn test_sign_macho_preserves_data_after_signature() {
         let mut data = build_test_macho(2);
         // Append extra data after the binary (simulating lune build metadata)
@@ -493,6 +514,29 @@ mod tests {
         // The metadata at the end should still be intact
         let end = data.len();
         assert_eq!(&data[end - metadata.len()..], metadata);
+    }
+
+    #[test]
+    fn test_sign_macho_preserves_suffix_when_signature_grows() {
+        for suffix in [Vec::new(), b"metadata".to_vec(), vec![0xAB; 512]] {
+            let mut data = build_test_macho(2);
+            assert!(sign_macho(&mut data, "lune"));
+            let info = parse_macho(&data).unwrap();
+            let old_end = info.codesig_data_offset as usize + info.codesig_data_size as usize;
+            data.truncate(old_end);
+            data.extend_from_slice(&suffix);
+
+            let id = "a-deliberately-longer-standalone-binary-identifier";
+            assert!(sign_macho(&mut data, id));
+            let info = parse_macho(&data).unwrap();
+            let new_end = info.codesig_data_offset as usize + info.codesig_data_size as usize;
+            assert!(new_end > old_end);
+            assert_eq!(&data[new_end..], suffix);
+
+            let signed = data.clone();
+            assert!(sign_macho(&mut data, id));
+            assert_eq!(data, signed);
+        }
     }
 
     #[test]
@@ -519,7 +563,7 @@ mod tests {
     /// Mach-O binary in all test runners (e.g., cargo-nextest wraps tests).
     /// Run with `cargo test -- --ignored` to execute locally.
     #[test]
-    #[ignore]
+    #[ignore = "Requires a native Mach-O test executable and the macOS codesign tool."]
     #[cfg(target_os = "macos")]
     fn test_sign_real_binary_with_appended_data() {
         use std::process::Command;
@@ -572,7 +616,7 @@ mod tests {
     /// Sign a real binary without appended data — this should pass both
     /// codesign -d (inspection) and codesign -v (validation).
     #[test]
-    #[ignore]
+    #[ignore = "Requires a native Mach-O test executable and the macOS codesign tool."]
     #[cfg(target_os = "macos")]
     fn test_sign_real_binary_validates() {
         use std::process::Command;

@@ -112,114 +112,7 @@ impl Runtime {
         co.set("resume", fns.resume.clone())?;
         co.set("wrap", fns.wrap.clone())?;
 
-        // Enable code coverage by default. Set LUNE_COVERAGE=0 to disable.
-        let coverage_enabled = std::env::var("LUNE_COVERAGE")
-            .map(|v| v != "0" && v != "false")
-            .unwrap_or(true);
-        if coverage_enabled {
-            lua.set_compiler(
-                mlua::prelude::LuaCompiler::default()
-                    .set_optimization_level(1)
-                    .set_coverage_level(1)
-                    .set_debug_level(1),
-            );
-        }
-
-        // Store coverage state in AppData so debug.getcoverage can check it.
-        // Uses a wrapper struct to avoid type collisions with other bool AppData.
-        struct CoverageEnabled(bool);
-        lua.set_app_data(CoverageEnabled(coverage_enabled));
-
-        // Add debug.iscoverageenabled and debug.getcoverage for code
-        // coverage support. Returns an empty table / false when coverage
-        // is not enabled to avoid crashes from uninstrumented functions.
-        {
-            let debug = lua.globals().get::<LuaTable>("debug")?;
-            debug.set(
-                "iscoverageenabled",
-                lua.create_function(move |lua, ()| {
-                    let enabled = lua.app_data_ref::<CoverageEnabled>().is_some_and(|v| v.0);
-                    Ok(enabled)
-                })?,
-            )?;
-            debug.set(
-                "getcoverage",
-                lua.create_function(|lua, value: LuaValue| {
-                    let result = lua.create_table()?;
-                    let enabled = lua.app_data_ref::<CoverageEnabled>().is_some_and(|v| v.0);
-                    if !enabled {
-                        return Ok(result);
-                    }
-
-                    // Resolve the target function: either a direct function
-                    // argument or a script instance whose chunk function we
-                    // look up from the chunk cache
-                    let func = match value {
-                        LuaValue::Function(f) => f,
-                        LuaValue::UserData(ud) => {
-                            let script_ref = ud.borrow::<lune_std::ScriptReference>()?;
-                            let path_str = script_ref.path_string(lua)?;
-                            let chunk_cache = lune_std::get_chunk_cache(lua)?;
-
-                            // Try the exact path first, then with common Luau
-                            // extensions, then as init.luau inside a directory
-                            let candidates = [
-                                format!("{FILE_CHUNK_PREFIX}{path_str}"),
-                                format!("{FILE_CHUNK_PREFIX}{path_str}.luau"),
-                                format!("{FILE_CHUNK_PREFIX}{path_str}.lua"),
-                                format!("{FILE_CHUNK_PREFIX}{path_str}/init.luau"),
-                                format!("{FILE_CHUNK_PREFIX}{path_str}/init.lua"),
-                            ];
-
-                            let mut found = None;
-                            for candidate in &candidates {
-                                if let Ok(f) = chunk_cache.get::<LuaFunction>(candidate.as_str()) {
-                                    found = Some(f);
-                                    break;
-                                }
-                            }
-
-                            match found {
-                                Some(f) => f,
-                                None => {
-                                    return Err(LuaError::runtime(format!(
-                                        "no coverage data for '{path_str}' (module not yet required)"
-                                    )));
-                                }
-                            }
-                        }
-                        _ => {
-                            return Err(LuaError::runtime(
-                                "debug.getcoverage expects a function or script instance",
-                            ));
-                        }
-                    };
-
-                    // Skip C functions — lua_getcoverage asserts the function
-                    // is a Lua function and traps in debug builds otherwise
-                    if func.info().what == "C" {
-                        return Ok(result);
-                    }
-                    let mut idx = 1;
-                    func.coverage(|info| {
-                        if let Ok(entry) = lua.create_table() {
-                            let _ = entry.set("Function", info.function.unwrap_or_default());
-                            let _ = entry.set("LineDefined", info.line_defined);
-                            let _ = entry.set("Depth", info.depth);
-                            if let Ok(hits_table) = lua.create_table() {
-                                for (i, &hit) in info.hits.iter().enumerate() {
-                                    let _ = hits_table.set(i + 1, hit);
-                                }
-                                let _ = entry.set("Hits", hits_table);
-                            }
-                            let _ = result.set(idx, entry);
-                            idx += 1;
-                        }
-                    });
-                    Ok(result)
-                })?,
-            )?;
-        }
+        configure_coverage(&lua)?;
 
         // Inject all the globals that are enabled
         #[cfg(any(
@@ -572,21 +465,9 @@ impl Runtime {
         self.run_inner(module_name, module_contents, js_base).await
     }
 
-    async fn run_inner(
-        &mut self,
-        chunk_name: impl AsRef<str>,
-        chunk_contents: impl AsRef<[u8]>,
-        js_base: Option<PathBuf>,
-    ) -> RuntimeResult<RuntimeReturnValues> {
-        // Add error callback to format errors nicely + store status
-        let got_any_error = Arc::new(AtomicBool::new(false));
-        let got_any_inner = Arc::clone(&got_any_error);
-        self.sched.set_error_callback(move |e| {
-            got_any_inner.store(true, Ordering::SeqCst);
-            eprintln!("{}", RuntimeError::from(e));
-        });
-
-        // Store the provided args, environment variables, jit enablement, bundled files/aliases, and executable path as AppData
+    fn prepare_execution(&self) -> LuaResult<()> {
+        // Store the provided args, environment variables, JIT enablement,
+        // bundled files/aliases, and executable path as AppData.
         self.lua.set_app_data(self.args.clone());
         self.lua.set_app_data(self.env.clone());
         self.lua.set_app_data(self.jit);
@@ -652,6 +533,25 @@ impl Runtime {
         {
             lune_std::inject_std(self.lua.clone())?;
         }
+
+        Ok(())
+    }
+
+    async fn run_inner(
+        &mut self,
+        chunk_name: impl AsRef<str>,
+        chunk_contents: impl AsRef<[u8]>,
+        js_base: Option<PathBuf>,
+    ) -> RuntimeResult<RuntimeReturnValues> {
+        // Add error callback to format errors nicely + store status
+        let got_any_error = Arc::new(AtomicBool::new(false));
+        let got_any_inner = Arc::clone(&got_any_error);
+        self.sched.set_error_callback(move |e| {
+            got_any_inner.store(true, Ordering::SeqCst);
+            eprintln!("{}", RuntimeError::from(e));
+        });
+
+        self.prepare_execution()?;
 
         // Enable / disable the JIT as requested, before loading anything
         self.lua.enable_jit(self.jit.enabled());
@@ -719,6 +619,127 @@ impl Runtime {
             errored: got_any_error.load(Ordering::SeqCst),
             values: main_thread_values,
         })
+    }
+}
+
+// Uses a wrapper struct to avoid type collisions with other bool AppData.
+struct CoverageEnabled(bool);
+
+fn configure_coverage(lua: &Lua) -> LuaResult<()> {
+    // Enable code coverage by default. Set LUNE_COVERAGE=0 to disable.
+    let coverage_enabled = std::env::var("LUNE_COVERAGE")
+        .map(|v| v != "0" && v != "false")
+        .unwrap_or(true);
+    if coverage_enabled {
+        lua.set_compiler(
+            mlua::prelude::LuaCompiler::default()
+                .set_optimization_level(1)
+                .set_coverage_level(1)
+                .set_debug_level(1),
+        );
+    }
+
+    // Store coverage state in AppData so debug.getcoverage can check it.
+    lua.set_app_data(CoverageEnabled(coverage_enabled));
+
+    // Add debug.iscoverageenabled and debug.getcoverage for code
+    // coverage support. Returns an empty table / false when coverage
+    // is not enabled to avoid crashes from uninstrumented functions.
+    let debug = lua.globals().get::<LuaTable>("debug")?;
+    debug.set(
+        "iscoverageenabled",
+        lua.create_function(move |lua, ()| {
+            let enabled = lua.app_data_ref::<CoverageEnabled>().is_some_and(|v| v.0);
+            Ok(enabled)
+        })?,
+    )?;
+    debug.set(
+        "getcoverage",
+        lua.create_function(|lua, value: LuaValue| {
+            let result = lua.create_table()?;
+            let enabled = lua.app_data_ref::<CoverageEnabled>().is_some_and(|v| v.0);
+            if !enabled {
+                return Ok(result);
+            }
+
+            let func = resolve_coverage_target(lua, value)?;
+
+            // Skip C functions because lua_getcoverage asserts the function
+            // is a Lua function and traps in debug builds otherwise.
+            if func.info().what == "C" {
+                return Ok(result);
+            }
+            let mut idx = 1;
+            func.coverage(|info| {
+                if let Ok(entry) = lua.create_table() {
+                    let _ = entry.set("Function", info.function.unwrap_or_default());
+                    let _ = entry.set("LineDefined", info.line_defined);
+                    let _ = entry.set("Depth", info.depth);
+                    if let Ok(hits_table) = lua.create_table() {
+                        for (i, &hit) in info.hits.iter().enumerate() {
+                            let _ = hits_table.set(i + 1, hit);
+                        }
+                        let _ = entry.set("Hits", hits_table);
+                    }
+                    let _ = result.set(idx, entry);
+                    idx += 1;
+                }
+            });
+            Ok(result)
+        })?,
+    )?;
+    Ok(())
+}
+
+fn resolve_coverage_target(lua: &Lua, value: LuaValue) -> LuaResult<LuaFunction> {
+    // Resolve a direct function argument or a script instance whose chunk function
+    // is stored in the chunk cache.
+    match value {
+        LuaValue::Function(f) => Ok(f),
+        LuaValue::UserData(ud) => {
+            let script_ref = ud.borrow::<lune_std::ScriptReference>()?;
+            let path_str = script_ref.path_string(lua)?;
+            let chunk_cache = lune_std::get_chunk_cache(lua)?;
+
+            // Try the exact path first, then with common Luau
+            // extensions, then as init.luau inside a directory.
+            let candidates = [
+                format!("{FILE_CHUNK_PREFIX}{path_str}"),
+                format!("{FILE_CHUNK_PREFIX}{path_str}.luau"),
+                format!("{FILE_CHUNK_PREFIX}{path_str}.lua"),
+                format!("{FILE_CHUNK_PREFIX}{path_str}/init.luau"),
+                format!("{FILE_CHUNK_PREFIX}{path_str}/init.lua"),
+            ];
+
+            let mut found = None;
+            for candidate in &candidates {
+                if let Ok(f) = chunk_cache.get::<LuaFunction>(candidate.as_str()) {
+                    found = Some(f);
+                    break;
+                }
+                if let Ok(identity) = dunce::canonicalize(
+                    candidate
+                        .strip_prefix(FILE_CHUNK_PREFIX)
+                        .expect("chunk prefix added above"),
+                ) {
+                    let key = format!("{FILE_CHUNK_PREFIX}{}", identity.display());
+                    if let Ok(f) = chunk_cache.get::<LuaFunction>(key) {
+                        found = Some(f);
+                        break;
+                    }
+                }
+            }
+
+            match found {
+                Some(f) => Ok(f),
+                None => Err(LuaError::runtime(format!(
+                    "no coverage data for '{path_str}' (module not yet required)"
+                ))),
+            }
+        }
+        _ => Err(LuaError::runtime(
+            "debug.getcoverage expects a function or script instance",
+        )),
     }
 }
 

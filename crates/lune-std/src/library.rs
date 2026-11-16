@@ -110,7 +110,7 @@ impl LuneStandardLibrary {
             #[cfg(feature = "regex")]    Self::Regex    => lune_std_regex::module(mod_lua),
             #[cfg(feature = "serde")]    Self::Serde    => lune_std_serde::module(mod_lua),
             #[cfg(feature = "stdio")]    Self::Stdio    => lune_std_stdio::module(mod_lua),
-            #[cfg(feature = "roblox")]   Self::Roblox   => lune_std_roblox::module(mod_lua),
+            #[cfg(feature = "roblox")]   Self::Roblox   => crate::globals::roblox_globals::module(mod_lua),
 
             _ => unreachable!("no standard library enabled"),
         };

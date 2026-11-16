@@ -191,7 +191,7 @@ pub struct JsContext {
 impl JsContext {
     /// Enforces the active operation's execution limit and timeout.
     ///
-    /// Conversion loops run outside QuickJS bytecode, so they must also account
+    /// Conversion loops run outside `QuickJS` bytecode, so they must also account
     /// for the time spent in the current poll.
     pub(crate) fn check_limits(&self) -> Result<(), JsError> {
         if should_interrupt(&Rc::downgrade(&self.inner)) {
@@ -799,9 +799,8 @@ fn create_dynamic_callback<'js>(
                 })?;
                 // `import()` coerces its specifier with ToString and reports a
                 // failure as a rejection, so mirror that exactly.
-                let specifier = match coerce_specifier(&callback_ctx, &inner, value.clone()) {
-                    Ok(specifier) => specifier,
-                    Err(()) => return rejected_promise(&callback_ctx),
+                let Ok(specifier) = coerce_specifier(&callback_ctx, &inner, value.clone()) else {
+                    return rejected_promise(&callback_ctx);
                 };
                 let mut request = JsContext {
                     inner: inner.clone(),
@@ -853,7 +852,7 @@ fn coerce_specifier<'js>(
         .specifier_to_string
         .borrow()
         .as_ref()
-        .map(|function| function.clone())
+        .map(std::clone::Clone::clone)
     else {
         return Err(());
     };

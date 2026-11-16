@@ -1,47 +1,33 @@
 local process = require("@lune/process")
-local stdio = require("@lune/stdio")
 local task = require("@lune/task")
 
-local IS_WINDOWS = process.os == "windows"
+local fixture = _G.ProcessExecFixture
+local finished = false
+local result = nil
+local succeeded = false
 
--- Executing a command should not block any lua thread(s)
+task.spawn(function()
+	succeeded, result =
+		pcall(process.exec, fixture.Executable, fixture.Args, { env = fixture.Environment })
+	finished = true
+end)
 
-local SLEEP_DURATION = 1 / 4
-local SLEEP_SAMPLES = 2
-
-local thread2 = task.delay(
-	if IS_WINDOWS then 30 else (SLEEP_DURATION * SLEEP_SAMPLES * 2),
-	function()
-		stdio.ewrite("Spawning a sleep process should take a reasonable amount of time\n")
-		task.wait(1)
-		process.exit(1)
-	end
-)
+-- The native child publishes readiness before waiting for this Luau thread to release it.
+-- Blocking process execution cannot service this handshake and the child fails its gate.
+while not fixture.IsReady() and not finished do
+	task.wait()
+end
+assert(not finished, "The child process exited before the Luau scheduler released it")
 
 local sleepStart = os.clock()
-local sleepCounter = 0
-for i = 1, SLEEP_SAMPLES, 1 do
-	task.spawn(function()
-		local args = {
-			-- Sleep command on Windows in Seconds has some weird behavior with decimals ...
-			tostring(SLEEP_DURATION * (IS_WINDOWS and 1000 or 1)),
-		}
-		if IS_WINDOWS then
-			-- ... so we use milliseconds instead.
-			table.insert(args, 1, "-Milliseconds")
-		end
-		-- Windows does not have `sleep` as a process, so we use powershell instead.
-		process.exec("sleep", args, if IS_WINDOWS then { shell = true } else nil)
-		sleepCounter += 1
-	end)
-end
-while sleepCounter < SLEEP_SAMPLES do
+fixture.Release()
+while not finished do
 	task.wait()
 end
 
-task.cancel(thread2)
-
+assert(succeeded, tostring(result))
+assert(result.ok, result.stderr)
 assert(
-	(os.clock() - sleepStart) >= SLEEP_DURATION,
+	(os.clock() - sleepStart) >= 0.25,
 	"Spawning a process that does blocking sleep did not sleep enough"
 )

@@ -165,22 +165,6 @@ impl BuildTarget {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cache_path_is_scoped_to_the_lune_version() {
-        let target: BuildTarget = "linux-x86_64".parse().unwrap();
-        let path = target.cache_path();
-        assert_eq!(
-            path.parent().unwrap(),
-            CACHE_DIR.join(env!("CARGO_PKG_VERSION"))
-        );
-        assert_eq!(path.file_name().unwrap(), "linux-x86_64");
-    }
-}
-
 impl fmt::Display for BuildTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}-{}", self.os, self.arch)
@@ -198,5 +182,21 @@ impl FromStr for BuildTarget {
         let arch = right.parse()?;
 
         Ok(Self { os, arch })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_path_is_scoped_to_the_lune_version() {
+        let target: BuildTarget = "linux-x86_64".parse().unwrap();
+        let path = target.cache_path();
+        assert_eq!(
+            path.parent().unwrap(),
+            CACHE_DIR.join(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(path.file_name().unwrap(), "linux-x86_64");
     }
 }

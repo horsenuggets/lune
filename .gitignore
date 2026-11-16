@@ -34,6 +34,10 @@ scripts/physical_properties_enum_map.rs
 # Wally packages (should be installed via wally install)
 **/Packages/
 
+# Parallel worktrees at the repository root
+/.worktrees/
+/.wt/
+
 # Terraform
 .terraform/
 *.tfstate

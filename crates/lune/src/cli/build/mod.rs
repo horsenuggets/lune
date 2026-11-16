@@ -30,11 +30,11 @@ fn count_text(count: usize, singular: &str, plural: &str) -> String {
 
 /// Strip shebang line from source code if present
 fn strip_shebang(mut contents: Vec<u8>) -> Vec<u8> {
-    if contents.starts_with(b"#!") {
-        if let Some(idx) = contents.iter().position(|&c| c == b'\n') {
-            // Keep the newline to preserve line numbers
-            contents.drain(..idx);
-        }
+    if contents.starts_with(b"#!")
+        && let Some(idx) = contents.iter().position(|&c| c == b'\n')
+    {
+        // Keep the newline to preserve line numbers
+        contents.drain(..idx);
     }
     contents
 }
@@ -106,8 +106,7 @@ impl BuildCommand {
                 // This avoids conflicts where output would equal the input directory
                 self.input
                     .file_name()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| self.input.clone())
+                    .map_or_else(|| self.input.clone(), PathBuf::from)
             } else {
                 remove_source_file_ext(&self.input)
             }
@@ -176,7 +175,7 @@ impl BuildCommand {
             .canonicalize()
             .unwrap_or_else(|_| entry_file.clone());
         let entry_path = normalize_bundle_path(&canonical_entry, bundler.base_dir());
-        let patched_bin = Metadata::create_env_patched_bin(
+        let mut patched_bin = Metadata::create_env_patched_bin(
             base_exe_path,
             source_code,
             entry_path,
@@ -192,7 +191,6 @@ impl BuildCommand {
         // Appending metadata to the base executable invalidates its original
         // code signature, so we re-sign with our built-in cross-platform
         // signer. This works on any host OS (Linux, Windows, macOS).
-        let mut patched_bin = patched_bin;
         if target.os == target::BuildTargetOS::MacOS {
             let bin_name = output_path
                 .file_stem()

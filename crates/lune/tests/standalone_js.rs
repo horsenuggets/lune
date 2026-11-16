@@ -38,7 +38,7 @@ fn fixture_root_from(fixture_name: &str, name: &str) -> (tempfile::TempDir, Path
 
 fn run(command: &mut Command) -> Output {
     command.output().unwrap_or_else(|error| {
-        panic!("failed to execute {:?}. {error}", command);
+        panic!("failed to execute {command:?}. {error}");
     })
 }
 

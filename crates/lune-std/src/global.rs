@@ -31,29 +31,20 @@ pub enum LuneStandardGlobal {
 
 impl LuneStandardGlobal {
     /**
-        All available standard globals.
+        All individually registered standard globals. Additional Roblox exports are
+        installed together from the library by `inject_globals`.
 
         Note: `Executable` is not included here because it needs to be injected
-        after app_data is set (it reads the executable path from app_data).
+        after `app_data` is set (it reads the executable path from `app_data`).
     */
     pub const ALL: &'static [Self] = &[
-        #[cfg(feature = "roblox")]
-        Self::CFrame,
-        #[cfg(feature = "roblox")]
-        Self::Color3,
         Self::GTable,
-        #[cfg(feature = "roblox")]
-        Self::NumberRange,
         Self::Print,
         Self::Project,
         Self::Require,
         Self::Script,
         #[cfg(feature = "task")]
         Self::Task,
-        #[cfg(feature = "roblox")]
-        Self::Vector2,
-        #[cfg(feature = "roblox")]
-        Self::Vector3,
         Self::Version,
         Self::Warn,
     ];

@@ -40,6 +40,11 @@ use mlua::prelude::*;
 pub trait LuaExportsTable {
     const EXPORT_NAME: &'static str;
 
+    /// Creates the table exported by this type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the implementation cannot create its export table.
     fn create_exports_table(lua: Lua) -> LuaResult<LuaTable>;
 }
 
@@ -47,6 +52,10 @@ pub trait LuaExportsTable {
     Exports a single item that implements the [`LuaExportsTable`] trait.
 
     Returns the name of the export, as well as the export table.
+
+    # Errors
+
+    Returns an error if the export table cannot be created or converted to a Luau value.
 
     ### Example usage
 
