@@ -601,7 +601,9 @@ end
 
 -- TODO: Make typedefs for all of the datatypes as well...
 roblox.Instance = (nil :: any) :: {
-	new: ((className: "DataModel") -> DataModel) & ((className: string) -> Instance),
+	new: ((className: "DataModel") -> DataModel)
+		& ((className: "CollectionService") -> CollectionService)
+		& ((className: string) -> Instance),
 }
 
 --[=[
