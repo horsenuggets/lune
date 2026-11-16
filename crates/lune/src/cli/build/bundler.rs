@@ -13,6 +13,7 @@ use lune_std_js::{
     source::{HostSourceProvider, NamespacedProvider},
     store::ModuleGraph,
 };
+use lune_utils::path::append_extension;
 
 use super::js_imports::{JsImportDiscovery, discover_js_imports};
 
@@ -445,37 +446,7 @@ impl Bundler {
 
     /// Find the actual module file (handles init.luau pattern)
     fn find_module_file(path: &Path) -> Option<PathBuf> {
-        // Try exact path with extensions
-        for ext in &["", ".luau", ".lua"] {
-            let with_ext = if ext.is_empty() {
-                path.to_path_buf()
-            } else {
-                path.with_extension(&ext[1..])
-            };
-            if with_ext.is_file() {
-                return Some(with_ext);
-            }
-        }
-
-        // Try as directory with init.luau
-        if path.is_dir() {
-            let init = path.join("init.luau");
-            if init.is_file() {
-                return Some(init);
-            }
-            let init_lua = path.join("init.lua");
-            if init_lua.is_file() {
-                return Some(init_lua);
-            }
-        }
-
-        // Try adding /init.luau
-        let init = path.join("init.luau");
-        if init.is_file() {
-            return Some(init);
-        }
-
-        None
+        find_module_file_with(path, Path::is_file)
     }
 
     /// Resolve a require path to an absolute path
@@ -598,6 +569,24 @@ fn expand_js_include(pattern: &str) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// Finds the file a module path refers to, trying the exact path, then the
+/// path with `.luau` or `.lua` appended, then an `init` file inside it. This
+/// is the same order the standalone runtime uses when it looks modules up.
+///
+/// Extensions are appended rather than swapped in, so a module named with a
+/// dot, like `Build.gen`, resolves to `Build.gen.luau` instead of `Build.luau`.
+fn find_module_file_with(path: &Path, is_file: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    [
+        path.to_path_buf(),
+        append_extension(path, "luau"),
+        append_extension(path, "lua"),
+        path.join("init.luau"),
+        path.join("init.lua"),
+    ]
+    .into_iter()
+    .find(|candidate| is_file(candidate))
+}
+
 /// Normalize a canonical path into a portable bundle key.
 /// Makes the path relative to `base_dir` with a leading '/', using forward
 /// slashes on all platforms. Falls back to the full path if it's outside
@@ -613,6 +602,81 @@ pub(super) fn normalize_bundle_path(canonical: &Path, base_dir: &Path) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- find_module_file_with --
+
+    fn find_among(path: &str, files: &[&str]) -> Option<PathBuf> {
+        find_module_file_with(Path::new(path), |candidate| {
+            files.iter().any(|file| Path::new(file) == candidate)
+        })
+    }
+
+    #[test]
+    fn find_module_file_keeps_dots_in_module_names() {
+        for (module, file) in [
+            ("/src/Build.gen", "/src/Build.gen.luau"),
+            ("/src/Build.gen", "/src/Build.gen.lua"),
+            ("/src/a.b.c", "/src/a.b.c.luau"),
+            ("/src/Build.gen", "/src/Build.gen/init.luau"),
+            ("/src/Build.gen", "/src/Build.gen/init.lua"),
+        ] {
+            assert_eq!(
+                find_among(module, &[file]),
+                Some(PathBuf::from(file)),
+                "\"{module}\" should resolve to \"{file}\""
+            );
+        }
+    }
+
+    #[test]
+    fn find_module_file_never_drops_the_dotted_part() {
+        assert_eq!(find_among("/src/Build.gen", &["/src/Build.luau"]), None);
+        assert_eq!(find_among("/src/Build.gen", &["/src/Build.lua"]), None);
+    }
+
+    #[test]
+    fn find_module_file_resolves_plain_names() {
+        assert_eq!(
+            find_among("/src/Module", &["/src/Module.luau"]),
+            Some(PathBuf::from("/src/Module.luau"))
+        );
+        assert_eq!(
+            find_among("/src/Module.luau", &["/src/Module.luau"]),
+            Some(PathBuf::from("/src/Module.luau"))
+        );
+        assert_eq!(
+            find_among("/src/Module", &["/src/Module/init.luau"]),
+            Some(PathBuf::from("/src/Module/init.luau"))
+        );
+    }
+
+    #[test]
+    fn find_module_file_prefers_luau_files_over_init_files() {
+        let files = [
+            "/src/Module.luau",
+            "/src/Module.lua",
+            "/src/Module/init.luau",
+            "/src/Module/init.lua",
+        ];
+        assert_eq!(
+            find_among("/src/Module", &files),
+            Some(PathBuf::from("/src/Module.luau"))
+        );
+        assert_eq!(
+            find_among("/src/Module", &files[1..]),
+            Some(PathBuf::from("/src/Module.lua"))
+        );
+        assert_eq!(
+            find_among("/src/Module", &files[2..]),
+            Some(PathBuf::from("/src/Module/init.luau"))
+        );
+    }
+
+    #[test]
+    fn find_module_file_reports_missing_modules() {
+        assert_eq!(find_among("/src/Missing", &[]), None);
+        assert_eq!(find_among("/src/Missing.gen", &["/src/Other.luau"]), None);
+    }
 
     // -- normalize_bundle_path (relative to base_dir) --
 
