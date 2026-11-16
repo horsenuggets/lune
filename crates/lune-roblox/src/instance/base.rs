@@ -343,6 +343,30 @@ fn instance_property_get(
 }
 
 /*
+    Converts between strings and numbers the way Roblox does when assigning
+    a property, using Luau's own coercion rules.
+
+    Numbers assigned to string properties become their `tostring` form, and
+    numeric strings assigned to number properties become numbers. Every
+    other value, including strings that aren't numbers, is left unchanged
+    so that the normal conversion reports the type error.
+*/
+fn coerce_property_value(lua: &Lua, dom_type: DomType, value: LuaValue) -> LuaResult<LuaValue> {
+    match (dom_type, &value) {
+        (DomType::String, LuaValue::Integer(_) | LuaValue::Number(_)) => Ok(lua
+            .coerce_string(value.clone())?
+            .map_or(value, LuaValue::String)),
+        (
+            DomType::Float32 | DomType::Float64 | DomType::Int32 | DomType::Int64,
+            LuaValue::String(_),
+        ) => Ok(lua
+            .coerce_number(value.clone())?
+            .map_or(value, LuaValue::Number)),
+        _ => Ok(value),
+    }
+}
+
+/*
     Sets a property value for an instance.
 
     Setting a value does the following:
@@ -416,6 +440,7 @@ fn instance_property_set(
                 Err(e) => Err(e),
             }
         } else if let Some(dom_type) = info.value_type {
+            let prop_value = coerce_property_value(lua, dom_type, prop_value)?;
             match prop_value.lua_to_dom_value(lua, Some(dom_type)) {
                 Ok(dom_value) => {
                     if let Some(property_migration) = info.migration {
