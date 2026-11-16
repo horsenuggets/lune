@@ -107,7 +107,8 @@ impl ScriptReference {
                 .as_ref()
                 .to_path_buf()
         };
-        dunce::canonicalize(&resolved)
+        std::fs::metadata(&resolved)
+            .and_then(|_| std::path::absolute(&resolved))
             .map_err(LuaError::external)
             .context(format!(
                 "Cannot resolve ScriptReference \"{}\".",

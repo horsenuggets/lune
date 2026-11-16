@@ -457,20 +457,108 @@ fn require_file_symlinks_preserve_execution_context() -> Result<()> {
     )?;
     std::os::unix::fs::symlink(shared.join("Actual.luau"), modules.join("Linked.luau"))?;
     let main = root.path().join("Main.luau");
-    fs::write(
-        &main,
-        r#"
+    for first_require in ["reference", "reference:GetFullName()"] {
+        fs::write(
+            &main,
+            r#"
 const reference = script.Parent.Modules.Linked
-const result = require(reference)
+const result = require(FIRST_REQUIRE)
 assert(result.name == "Linked.luau")
 assert(result.parent == "Modules")
 assert(result.sibling == "linked")
+assert(rawequal(result, require(reference)))
 assert(rawequal(result, require(reference:GetFullName())))
-"#,
+"#
+            .replace("FIRST_REQUIRE", first_require),
+        )?;
+        async_io::block_on(async {
+            let mut rt = Runtime::new()?;
+            assert!(rt.run_file(&main).await?.success());
+            anyhow::Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn symlinked_modules_share_file_coverage_in_both_load_orders() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let real = root.path().join("Real");
+    fs::create_dir(&real)?;
+    fs::write(real.join("Module.luau"), "return { value = 42 }\n")?;
+    std::os::unix::fs::symlink(&real, root.path().join("Linked"))?;
+    let main = root.path().join("Main.luau");
+    for first_require in ["linked", "real"] {
+        fs::write(
+            &main,
+            r"
+const linked = script.Parent.Linked.Module
+const real = script.Parent.Real.Module
+const result = require(FIRST_REQUIRE)
+assert(rawequal(result, require(linked)))
+assert(rawequal(result, require(real)))
+const linkedCoverage = debug.getcoverage(linked)
+const realCoverage = debug.getcoverage(real)
+assert(#linkedCoverage > 0)
+assert(#linkedCoverage == #realCoverage)
+local hasHits = false
+for index, entry in linkedCoverage do
+    for line, hits in entry.Hits do
+        assert(hits == realCoverage[index].Hits[line])
+        hasHits = hasHits or hits > 0
+    end
+end
+assert(hasHits)
+_G.LinkedCoverageReference = linked
+_G.RealCoverageReference = real
+"
+            .replace("FIRST_REQUIRE", first_require),
+        )?;
+        async_io::block_on(async {
+            let mut rt = Runtime::new()?.with_jit(false);
+            assert!(rt.run_file(&main).await?.success());
+            if first_require == "linked" {
+                fs::remove_file(root.path().join("Linked"))?;
+                assert!(
+                    rt.run_custom(
+                        "coverage-after-unlink",
+                        r"
+                        assert(#debug.getcoverage(_G.LinkedCoverageReference) > 0)
+                        assert(#debug.getcoverage(_G.RealCoverageReference) > 0)
+                        ",
+                    )
+                    .await?
+                    .success()
+                );
+                std::os::unix::fs::symlink(&real, root.path().join("Linked"))?;
+            }
+            anyhow::Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
+#[serial_test::serial]
+fn relative_at_prefixed_paths_retain_file_coverage() -> Result<()> {
+    let root = tempfile::Builder::new()
+        .prefix("@coverage-")
+        .tempdir_in(std::env::current_dir()?)?;
+    fs::write(root.path().join("Module.luau"), "return {}\n")?;
+    fs::write(
+        root.path().join("Main.luau"),
+        r"
+const reference = script.Parent.Module
+require(reference:GetFullName())
+assert(#debug.getcoverage(reference) > 0)
+",
     )?;
+    let relative = PathBuf::from(root.path().file_name().unwrap()).join("Main.luau");
     async_io::block_on(async {
-        let mut rt = Runtime::new()?;
-        assert!(rt.run_file(main).await?.success());
+        let mut rt = Runtime::new()?.with_jit(false);
+        assert!(rt.run_file(relative).await?.success());
         Ok(())
     })
 }
