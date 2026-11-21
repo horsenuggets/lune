@@ -22,6 +22,7 @@ async-io = "2.4"
 bstr = "1.9"
 futures-lite = "2.6"
 notify = "8.2"
+tempfile = "3"
 
 lune-utils = { version = "0.4.0", path = "../lune-utils" }
 lune-std-datetime = { version = "0.4.0", path = "../lune-std-datetime" }
