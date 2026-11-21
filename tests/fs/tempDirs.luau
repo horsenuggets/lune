@@ -9,8 +9,8 @@ and explicit caller cleanup without changing existing sibling files.
 
 const fs = require("@lune/fs")
 const task = require("@lune/task")
-const ROOT = "bin/fs_temp_dirs_test"
-fs.writeDir(ROOT)
+fs.writeDir("bin")
+const ROOT = fs.createTempDir("bin", "fs_temp_dirs_test-")
 const paths: { string } = {}
 const success, problem = pcall(function()
 	const sibling = `{ROOT}/draft-existing`

@@ -7,7 +7,6 @@ use async_fs as fs;
 use bstr::{BString, ByteSlice};
 use futures_lite::prelude::*;
 use mlua::prelude::*;
-use mlua_luau_scheduler::LuaSpawnExt;
 
 use lune_utils::TableBuilder;
 
@@ -111,8 +110,7 @@ fn create_temp_dir(parent: &Path, prefix: &str) -> io::Result<tempfile::TempDir>
 }
 
 async fn fs_create_temp_dir(lua: Lua, (parent, prefix): (String, String)) -> LuaResult<LuaString> {
-    let directory = lua
-        .spawn_blocking(move || create_temp_dir(Path::new(&parent), &prefix))
+    let directory = blocking::unblock(move || create_temp_dir(Path::new(&parent), &prefix))
         .await
         .into_lua_err()?;
     let path = directory.path().to_str().ok_or_else(|| {
@@ -184,6 +182,38 @@ mod tests {
     use std::{collections::HashSet, fs};
 
     use super::*;
+
+    #[test]
+    fn temporary_directory_api_works_without_a_scheduler() {
+        let parent = tempfile::tempdir().unwrap();
+        let lua = Lua::new();
+        let function: LuaFunction = module(lua.clone()).unwrap().get("createTempDir").unwrap();
+        let path = futures_lite::future::block_on(
+            function.call_async::<String>((parent.path().to_str().unwrap(), "draft-")),
+        )
+        .unwrap();
+        let path = Path::new(&path);
+        assert!(path.is_dir());
+        assert_eq!(path.parent(), Some(parent.path()));
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn temporary_directory_api_rejects_invalid_arguments_without_a_scheduler() {
+        let parent = tempfile::tempdir().unwrap();
+        let lua = Lua::new();
+        let function: LuaFunction = module(lua.clone()).unwrap().get("createTempDir").unwrap();
+        for (parent, prefix) in [
+            ("", "draft-"),
+            (parent.path().to_str().unwrap(), "../outside"),
+        ] {
+            let error =
+                futures_lite::future::block_on(function.call_async::<String>((parent, prefix)))
+                    .unwrap_err();
+            assert!(error.to_string().contains("temporary directory"));
+        }
+        assert_eq!(fs::read_dir(parent.path()).unwrap().count(), 0);
+    }
 
     #[test]
     fn temporary_directories_are_unique_under_concurrent_creation() {

@@ -1985,6 +1985,7 @@ dependencies = [
  "async-channel",
  "async-fs",
  "async-io",
+ "blocking",
  "bstr",
  "futures-lite",
  "lune-std-datetime",
