@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- Fixed HTTP server handles to report the port actually assigned by the operating system
+  when binding port zero. Request-method and compression tests now use isolated loopback
+  servers instead of depending on a public HTTP service.
+
 ## `0.11.1-horse.16.8` - November 20th, 2026
 
 ### Added
