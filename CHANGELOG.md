@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## `0.11.1-horse.16.8` - November 20th, 2026
+
+### Added
+
+- Added `fs.createTempDir(parent, prefix)` to atomically create a uniquely named directory
+  inside an explicit parent, with owner-only permissions on Unix and inherited parent
+  permissions elsewhere. The caller owns its lifetime and removes it with `fs.removeDir`.
+  Existing files and symlinks are never reused, and invalid prefixes or unavailable parent
+  directories produce errors instead of falling back elsewhere.
+
 ## `0.11.1-horse.16.7` - November 16th, 2026
 
 ### Fixed

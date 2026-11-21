@@ -586,6 +586,7 @@ create_tests! {
     fs_dirs: "fs/dirs",
     fs_metadata: "fs/metadata",
     fs_move: "fs/move",
+    fs_temp_dirs: "fs/tempDirs",
     fs_watch: "fs/watch",
 }
 

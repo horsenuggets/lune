@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "lune"
-version = "0.11.1-horse.16.7"
+version = "0.11.1-horse.16.8"
 dependencies = [
  "anyhow",
  "async-fs",
@@ -1985,6 +1985,7 @@ dependencies = [
  "async-channel",
  "async-fs",
  "async-io",
+ "blocking",
  "bstr",
  "futures-lite",
  "lune-std-datetime",
@@ -1992,6 +1993,7 @@ dependencies = [
  "mlua",
  "mlua-luau-scheduler",
  "notify",
+ "tempfile",
 ]
 
 [[package]]
