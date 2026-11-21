@@ -34,7 +34,7 @@ pub async fn serve(lua: Lua, port: u16, config: ServeConfig) -> LuaResult<ServeH
     };
 
     let listener = TcpListener::bind(address).await?;
-    let (handle, shutdown_rx) = ServeHandle::new(address);
+    let (handle, shutdown_rx) = ServeHandle::new(listener.local_addr()?);
 
     lua.spawn_local({
         let lua = lua.clone();
