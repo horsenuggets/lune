@@ -228,6 +228,32 @@ function fs.writeDir(path: string) end
 
 --[=[
 	@within FS
+	@tag must_use
+
+	Atomically creates a uniquely named temporary directory inside `parent`.
+
+	The directory name starts with `prefix`, which must be one nonempty filename
+	component without slashes, backslashes, colons, or null bytes. The names `.` and
+	`..` are not allowed. The parent path must be nonempty and already exist.
+
+	New directories have owner-only permissions on Unix. Other platforms inherit the
+	parent directory's permissions, so use a parent that restricts access appropriately.
+	The directory remains after this call returns. The caller must remove it with
+	`fs.removeDir` when it is no longer needed.
+
+	An error is thrown for invalid arguments, a missing or non-directory parent,
+	insufficient permissions, or another I/O error. Existing entries are never reused.
+
+	@param parent The existing parent directory.
+	@param prefix The filename prefix for the new directory.
+	@return The path of the newly created directory.
+]=]
+function fs.createTempDir(parent: string, prefix: string): string
+	return nil :: any
+end
+
+--[=[
+	@within FS
 
 	Removes a file.
 
