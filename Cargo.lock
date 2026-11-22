@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "lune"
-version = "0.11.1-horse.16.9"
+version = "0.11.1-horse.16.10"
 dependencies = [
  "anyhow",
  "async-fs",
