@@ -258,6 +258,48 @@ mod tests {
     }
 
     #[test]
+    fn tiny_document_collection_advances_without_finishing_a_large_heap() -> LuaResult<()> {
+        let lua = Lua::new();
+        lua.gc_collect()?;
+        lua.gc_stop();
+        let retained = lua.create_table()?;
+        for index in 1..=1024 {
+            retained.set(index, lua.create_table_from([("Value", index)])?)?;
+        }
+        let calls = lua.used_memory().div_ceil(1024) * 4;
+        lua.gc_restart();
+
+        let mut finished = false;
+        for index in 0..calls {
+            collect_document_garbage(&lua, 1)?;
+            // SAFETY: exec_raw locks and protects the state. Querying the collector
+            // does not advance it, and the returned boolean is pushed onto its stack.
+            finished = unsafe {
+                lua.exec_raw((), |state| {
+                    let paused = mlua::ffi::lua_gc(state, mlua::ffi::LUA_GCISPAUSED, 0);
+                    mlua::ffi::lua_pushboolean(state, paused);
+                })?
+            };
+            if index == 0 {
+                assert!(
+                    !finished,
+                    "A tiny document must not collect the whole retained heap."
+                );
+            }
+            if finished {
+                break;
+            }
+        }
+        assert!(
+            finished,
+            "Further document charges must complete the cycle."
+        );
+        assert_eq!(retained.len()?, 1024);
+        assert_eq!(retained.get::<LuaTable>(1024)?.get::<i64>("Value")?, 1024);
+        Ok(())
+    }
+
+    #[test]
     fn document_collection_steps_eventually_drop_native_payloads() -> LuaResult<()> {
         for mid_cycle in [false, true] {
             let lua = Lua::new();
