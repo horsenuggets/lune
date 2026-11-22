@@ -39,4 +39,21 @@ function util.fail(method, url, message)
 	end
 end
 
+function util.withServer(handleRequest, callback)
+	assert(type(handleRequest) == "function")
+	assert(type(callback) == "function")
+	local handle = net.serve(0, {
+		address = "http://127.0.0.1",
+		handleRequest = handleRequest,
+	})
+	local success, err = pcall(function()
+		assert(handle.port > 0, "Server handle did not report its assigned port.")
+		callback(`http://127.0.0.1:{handle.port}`)
+	end)
+	handle:stop()
+	if not success then
+		error(err, 0)
+	end
+end
+
 return util
