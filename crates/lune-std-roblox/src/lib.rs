@@ -63,7 +63,31 @@ pub fn module(lua: Lua) -> LuaResult<LuaTable> {
         .build_readonly()
 }
 
+fn document_gc_budget(bytes: usize) -> i32 {
+    i32::try_from(bytes.div_ceil(1024)).unwrap_or(i32::MAX)
+}
+
+fn collect_document_garbage(lua: &Lua, bytes: usize) -> LuaResult<()> {
+    let budget = document_gc_budget(bytes);
+    if budget == 0 {
+        return Ok(());
+    }
+
+    // Native documents do not advance Luau's allocation-driven collector. Charge their
+    // serialized size as incremental work instead of collecting the whole heap per load.
+    // SAFETY: exec_raw locks and protects the state. The budget fits Lua's signed API,
+    // and checking stopped state under that same lock preserves explicit GC suspension.
+    unsafe {
+        lua.exec_raw::<()>((), |state| {
+            if mlua::ffi::lua_gc(state, mlua::ffi::LUA_GCISRUNNING, 0) != 0 {
+                mlua::ffi::lua_gc(state, mlua::ffi::LUA_GCSTEP, budget);
+            }
+        })
+    }
+}
+
 async fn deserialize_place(lua: Lua, contents: LuaString) -> LuaResult<LuaValue> {
+    collect_document_garbage(&lua, contents.as_bytes().len())?;
     let bytes = contents.as_bytes().to_vec();
     let fut = lua.spawn_blocking(move || {
         let doc = Document::from_bytes(bytes, DocumentKind::Place)?;
@@ -75,6 +99,7 @@ async fn deserialize_place(lua: Lua, contents: LuaString) -> LuaResult<LuaValue>
 }
 
 async fn deserialize_model(lua: Lua, contents: LuaString) -> LuaResult<LuaValue> {
+    collect_document_garbage(&lua, contents.as_bytes().len())?;
     let bytes = contents.as_bytes().to_vec();
     let fut = lua.spawn_blocking(move || {
         let doc = Document::from_bytes(bytes, DocumentKind::Model)?;
@@ -199,4 +224,137 @@ fn studio_builtin_plugin_path(_: &Lua, _: ()) -> LuaResult<String> {
     RobloxStudio::locate()
         .map(|rs| rs.built_in_plugins_path().display().to_string())
         .map_err(LuaError::external)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct NativePayload(Arc<AtomicUsize>);
+
+    impl LuaUserData for NativePayload {}
+
+    impl Drop for NativePayload {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn document_collection_budget_rounds_up_and_fits_the_ffi() {
+        for (bytes, expected) in [(0, 0), (1, 1), (1023, 1), (1024, 1), (1025, 2)] {
+            assert_eq!(document_gc_budget(bytes), expected);
+        }
+        if let Ok(largest_budget) = usize::try_from(i32::MAX as u64 * 1024) {
+            assert_eq!(document_gc_budget(largest_budget), i32::MAX);
+            assert_eq!(document_gc_budget(largest_budget + 1), i32::MAX);
+            assert_eq!(document_gc_budget(usize::MAX), i32::MAX);
+        }
+        assert!(document_gc_budget(usize::MAX) > 0);
+    }
+
+    #[test]
+    fn document_collection_steps_eventually_drop_native_payloads() -> LuaResult<()> {
+        for mid_cycle in [false, true] {
+            let lua = Lua::new();
+            lua.gc_collect()?;
+            lua.gc_stop();
+            let dropped = Arc::new(AtomicUsize::new(0));
+            let retained = lua.create_userdata(NativePayload(dropped.clone()))?;
+            let released = lua.create_userdata(NativePayload(dropped.clone()))?;
+            let roots = lua.create_table()?;
+            for index in 1..=1024 {
+                roots.set(index, lua.create_table_from([("Value", index)])?)?;
+            }
+            lua.gc_restart();
+            if mid_cycle {
+                assert!(
+                    !lua.gc_step()?,
+                    "The retained heap must keep the cycle active."
+                );
+            }
+            assert_eq!(dropped.load(Ordering::SeqCst), 0);
+            drop(released);
+
+            let calls = lua.used_memory().div_ceil(1024) * 4;
+            for _ in 0..calls {
+                collect_document_garbage(&lua, 1024)?;
+                if dropped.load(Ordering::SeqCst) > 0 {
+                    break;
+                }
+            }
+            assert_eq!(dropped.load(Ordering::SeqCst), 1);
+            assert!(retained.is::<NativePayload>());
+            assert_eq!(roots.len()?, 1024);
+            assert!(lua.gc_is_running());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn document_collection_releases_unreachable_objects_and_preserves_live_roots() -> LuaResult<()>
+    {
+        let lua = Lua::new();
+        lua.gc_collect()?;
+        lua.gc_stop();
+        let retained = lua.create_table_from([("Value", 42)])?;
+        let weak = lua.create_table()?;
+        weak.set_metatable(Some(lua.create_table_from([("__mode", "v")])?))?;
+        weak.set("retained", retained.clone())?;
+        weak.set("released", lua.create_table()?)?;
+        assert!(matches!(
+            weak.get::<LuaValue>("released")?,
+            LuaValue::Table(_)
+        ));
+
+        lua.gc_restart();
+        collect_document_garbage(&lua, lua.used_memory())?;
+
+        assert!(lua.gc_is_running());
+        assert!(matches!(weak.get::<LuaValue>("released")?, LuaValue::Nil));
+        assert_eq!(weak.get::<LuaTable>("retained")?.get::<i64>("Value")?, 42);
+        retained.set("Value", 43)?;
+        assert_eq!(weak.get::<LuaTable>("retained")?.get::<i64>("Value")?, 43);
+        Ok(())
+    }
+
+    #[test]
+    fn document_collection_respects_a_stopped_collector() -> LuaResult<()> {
+        let lua = Lua::new();
+        lua.gc_stop();
+        let weak = lua.create_table()?;
+        weak.set_metatable(Some(lua.create_table_from([("__mode", "v")])?))?;
+        weak.set("released", lua.create_table()?)?;
+
+        for bytes in [0, 1, lua.used_memory(), usize::MAX] {
+            collect_document_garbage(&lua, bytes)?;
+
+            assert!(!lua.gc_is_running());
+            assert!(matches!(
+                weak.get::<LuaValue>("released")?,
+                LuaValue::Table(_)
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn document_collection_preserves_returned_function_environments() -> LuaResult<()> {
+        let lua = Lua::new();
+        let callback = lua
+            .load("local state = 0; return function() state += 1; Count += 1; return state + Count end")
+            .eval::<LuaFunction>()?;
+        let environment = lua.create_table_from([("Count", 0)])?;
+        callback.set_environment(environment.clone())?;
+
+        assert_eq!(callback.call::<i64>(())?, 2);
+        collect_document_garbage(&lua, lua.used_memory())?;
+        assert_eq!(callback.call::<i64>(())?, 4);
+        assert_eq!(environment.get::<i64>("Count")?, 2);
+        Ok(())
+    }
 }

@@ -175,17 +175,68 @@ pub fn reparent(
     (e.g. a parsed `DataModel`) frees the entire dom and bounds memory use.
 */
 pub fn drop_if_empty(dom_id: DomId) {
-    let mut reg = lock();
+    let removed = {
+        let mut reg = lock();
 
-    let empty = reg.doms.get(&dom_id).is_none_or(|dom| {
-        dom.get_by_ref(dom.root_ref())
-            .is_none_or(|root| root.children().is_empty())
-    });
+        let empty = reg.doms.get(&dom_id).is_none_or(|dom| {
+            dom.get_by_ref(dom.root_ref())
+                .is_none_or(|root| root.children().is_empty())
+        });
 
-    if empty {
-        reg.doms.remove(&dom_id);
-        if reg.default_id == Some(dom_id) {
-            reg.default_id = None;
+        if empty {
+            if reg.default_id == Some(dom_id) {
+                reg.default_id = None;
+            }
+            reg.doms.remove(&dom_id)
+        } else {
+            None
         }
+    };
+
+    if let Some(dom) = removed {
+        // Destroy the document and reclaim allocator pages without the registry lock.
+        drop(dom);
+        crate::reclaim_native_document_memory();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removes_only_the_empty_document_and_allows_repeated_cleanup() {
+        let empty = register(WeakDom::new(DomInstanceBuilder::new("ROOT")));
+        let mut other_dom = WeakDom::new(DomInstanceBuilder::new("ROOT"));
+        let child = other_dom.insert(other_dom.root_ref(), DomInstanceBuilder::new("Folder"));
+        let other = register(other_dom);
+
+        drop_if_empty(empty);
+        drop_if_empty(empty);
+
+        assert!(with(empty, |_| ()).is_none());
+        assert_eq!(with(other, |dom| dom.root().children().len()), Some(1));
+        with_mut(other, |dom| dom.destroy(child));
+        drop_if_empty(other);
+        assert!(with(other, |_| ()).is_none());
+    }
+
+    #[test]
+    fn keeps_the_document_until_its_last_root_child_is_destroyed() {
+        let mut dom = WeakDom::new(DomInstanceBuilder::new("ROOT"));
+        let first = dom.insert(dom.root_ref(), DomInstanceBuilder::new("Folder"));
+        let second = dom.insert(dom.root_ref(), DomInstanceBuilder::new("Folder"));
+        let id = register(dom);
+
+        drop_if_empty(id);
+        assert_eq!(with(id, |dom| dom.root().children().len()), Some(2));
+
+        with_mut(id, |dom| dom.destroy(first));
+        drop_if_empty(id);
+        assert!(with(id, |dom| dom.get_by_ref(second).is_some()).unwrap());
+
+        with_mut(id, |dom| dom.destroy(second));
+        drop_if_empty(id);
+        assert!(with(id, |_| ()).is_none());
     }
 }
