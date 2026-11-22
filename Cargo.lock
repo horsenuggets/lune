@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "lune"
-version = "0.11.1-horse.16.8"
+version = "0.11.1-horse.16.9"
 dependencies = [
  "anyhow",
  "async-fs",
@@ -1930,6 +1930,7 @@ name = "lune-roblox"
 version = "0.4.1"
 dependencies = [
  "glam",
+ "libc",
  "lune-utils",
  "mlua",
  "rand 0.10.3",

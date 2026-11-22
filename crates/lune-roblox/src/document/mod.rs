@@ -120,7 +120,10 @@ impl Document {
         Errors if the given bytes are not a valid roblox file.
     */
     pub fn from_bytes_auto(bytes: impl AsRef<[u8]>) -> DocumentResult<Self> {
-        let (format, dom) = Self::from_bytes_inner(bytes)?;
+        crate::reclaim_native_document_memory();
+        let result = Self::from_bytes_inner(bytes);
+        crate::reclaim_native_document_memory();
+        let (format, dom) = result?;
         let kind = DocumentKind::from_weak_dom(&dom).ok_or(DocumentError::UnknownKind)?;
         Ok(Self { kind, format, dom })
     }
@@ -136,7 +139,10 @@ impl Document {
         Errors if the given bytes are not a valid roblox file or not of the given kind.
     */
     pub fn from_bytes(bytes: impl AsRef<[u8]>, kind: DocumentKind) -> DocumentResult<Self> {
-        let (format, dom) = Self::from_bytes_inner(bytes)?;
+        crate::reclaim_native_document_memory();
+        let result = Self::from_bytes_inner(bytes);
+        crate::reclaim_native_document_memory();
+        let (format, dom) = result?;
         Ok(Self { kind, format, dom })
     }
 
@@ -337,5 +343,75 @@ impl TryFrom<(DocumentFormat, WeakDom)> for Document {
     fn try_from((format, dom): (DocumentFormat, WeakDom)) -> Result<Self, Self::Error> {
         let kind = DocumentKind::from_weak_dom(&dom).ok_or(DocumentError::UnknownKind)?;
         Ok(Self { kind, format, dom })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parsing_preserves_live_documents_and_borrowed_bytes() -> DocumentResult<()> {
+        for kind in [DocumentKind::Model, DocumentKind::Place] {
+            for format in [DocumentFormat::Binary, DocumentFormat::Xml] {
+                let class = match kind {
+                    DocumentKind::Model => "Model",
+                    DocumentKind::Place => "Workspace",
+                };
+                let document = Document {
+                    kind,
+                    format,
+                    dom: WeakDom::new(
+                        DomInstanceBuilder::new("ROOT")
+                            .with_child(DomInstanceBuilder::new(class).with_name("Preserved")),
+                    ),
+                };
+                let bytes = document.to_bytes()?;
+                let original = bytes.clone();
+                let documents = [
+                    Document::from_bytes(bytes.clone(), kind)?,
+                    Document::from_bytes(&bytes, kind)?,
+                    Document::from_bytes_auto(bytes.clone())?,
+                    Document::from_bytes_auto(&bytes)?,
+                ];
+
+                for parsed in documents {
+                    assert_eq!(parsed.kind(), kind);
+                    assert_eq!(parsed.format(), format);
+                    assert_eq!(parsed.dom.root().children().len(), 1);
+                    let root = parsed
+                        .dom
+                        .get_by_ref(parsed.dom.root().children()[0])
+                        .unwrap();
+                    assert_eq!(root.class.as_str(), class);
+                    assert_eq!(root.name, "Preserved");
+                }
+                assert_eq!(bytes, original);
+                assert_eq!(document.dom.root().children().len(), 1);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parsing_keeps_invalid_input_errors_for_owned_and_borrowed_bytes() {
+        for bytes in [Vec::new(), b"not a roblox document".to_vec()] {
+            assert!(matches!(
+                Document::from_bytes(bytes.clone(), DocumentKind::Model),
+                Err(DocumentError::UnknownFormat)
+            ));
+            assert!(matches!(
+                Document::from_bytes(&bytes, DocumentKind::Model),
+                Err(DocumentError::UnknownFormat)
+            ));
+            assert!(matches!(
+                Document::from_bytes_auto(bytes.clone()),
+                Err(DocumentError::UnknownFormat)
+            ));
+            assert!(matches!(
+                Document::from_bytes_auto(&bytes),
+                Err(DocumentError::UnknownFormat)
+            ));
+        }
     }
 }

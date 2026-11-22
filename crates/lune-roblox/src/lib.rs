@@ -78,3 +78,12 @@ pub fn module(lua: Lua) -> LuaResult<LuaTable> {
         .with_values(exports)?
         .build_readonly()
 }
+
+pub(crate) fn reclaim_native_document_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: malloc_trim is thread-safe and accepts no pointers. It only returns
+    // unused glibc allocator pages, leaving every live allocation intact.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}

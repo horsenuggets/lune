@@ -1,5 +1,6 @@
 local net = require("@lune/net")
 local serde = require("@lune/serde")
+local util = require("./util")
 
 local QUERY: { [string]: string } = {
 	Key = "Value",
@@ -10,10 +11,22 @@ local QUERY: { [string]: string } = {
 -- Make a request with some basic query params as well
 -- as a special non-ascii one that needs url encoding
 
-local response = net.request({
-	url = "https://httpbingo.org/anything",
-	query = QUERY,
-})
+local response
+util.withServer(function(request)
+	local args = {}
+	for key, value in request.query do
+		args[key] = { value }
+	end
+	return {
+		headers = { ["Content-Type"] = "application/json" },
+		body = serde.encode("json", { args = args }),
+	}
+end, function(url)
+	response = net.request({
+		url = `{url}/anything`,
+		query = QUERY,
+	})
+end)
 
 assert(
 	response.ok,

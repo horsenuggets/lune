@@ -8,13 +8,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## `0.11.1-horse.16.9` - November 22nd, 2026
 
 ### Fixed
 
+- Reduced memory pressure when repeatedly deserializing large Roblox documents. Parsing
+  now advances incremental Luau collection in proportion to serialized input, without
+  restarting an explicitly stopped collector. Native parsing and whole-document teardown
+  also return unused allocator pages on GNU Linux, while preserving live documents.
 - Fixed HTTP server handles to report the port actually assigned by the operating system
-  when binding port zero. Request-method and compression tests now use isolated loopback
-  servers instead of depending on a public HTTP service.
+  when binding port zero. Request-method, compression, status, redirect, query, and
+  user-agent tests now use isolated loopback servers instead of public HTTP services.
+  Intentional HTTPS certificate coverage is unchanged.
+- Made serialization test output directories self-contained and included native workspace
+  unit tests in every existing CI test job.
 
 ## `0.11.1-horse.16.8` - November 20th, 2026
 

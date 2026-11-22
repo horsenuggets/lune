@@ -4,6 +4,7 @@ local Instance = roblox.Instance
 
 -- Smoke tests
 do
+	fs.writeDir("bin")
 	local instances = {
 		Instance.new("Model"),
 		Instance.new("Part"),
