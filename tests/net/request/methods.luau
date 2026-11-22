@@ -1,9 +1,27 @@
-local util = require("./util")
-local pass = util.pass
+local net = require("@lune/net")
 
--- stylua: ignore start
-pass("GET",    "https://httpbingo.org/get",    "Request method - GET")
-pass("POST",   "https://httpbingo.org/post",   "Request method - POST")
-pass("PATCH",  "https://httpbingo.org/patch",  "Request method - PATCH")
-pass("PUT",    "https://httpbingo.org/put",    "Request method - PUT")
-pass("DELETE", "https://httpbingo.org/delete", "Request method - DELETE")
+local METHODS = { "GET", "POST", "PATCH", "PUT", "DELETE" }
+
+local handle = net.serve(0, {
+	address = "http://127.0.0.1",
+	handleRequest = function(request)
+		return request.method
+	end,
+})
+
+local success, err = pcall(function()
+	assert(handle.port > 0, "Server handle did not report its assigned port")
+	for _, method in METHODS do
+		local response = net.request({
+			url = `http://127.0.0.1:{handle.port}`,
+			method = method :: net.HttpMethod,
+		})
+		assert(response.ok, `Request method "{method}" failed with status {response.statusCode}`)
+		assert(response.body == method, `Request method "{method}" was not echoed correctly`)
+	end
+end)
+
+handle:stop()
+if not success then
+	error(err, 0)
+end
