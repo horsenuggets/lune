@@ -4,6 +4,7 @@ local Instance = roblox.Instance
 
 -- Smoke tests
 do
+	fs.writeDir("bin")
 	local game = Instance.new("DataModel")
 
 	local workspace = game:GetService("Workspace")
