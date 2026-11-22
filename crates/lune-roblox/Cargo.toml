@@ -24,6 +24,9 @@ rand = "0.10"
 thiserror = "2.0"
 
 rbx_binary = "3.0"
+# Property pooling requires the horsenuggets/rbx-dom fork. Cargo only applies patches from
+# the root workspace, so other workspaces using this crate must copy the rbx_dom_weak entry
+# in Lune's root [patch.crates-io]. That also keeps rbx_binary and rbx_xml on one DOM crate.
 rbx_dom_weak = "4.0"
 rbx_reflection = "7.0"
 rbx_reflection_database = "3.0"
