@@ -18,12 +18,19 @@ use std::{
     sync::{LazyLock, Mutex, MutexGuard},
 };
 
-use rbx_dom_weak::{InstanceBuilder as DomInstanceBuilder, WeakDom, types::Ref as DomRef};
+use rbx_dom_weak::{
+    InstanceBuilder as DomInstanceBuilder, PropertyPool, WeakDom, types::Ref as DomRef,
+};
 
 pub type DomId = u64;
 
+struct RegisteredDom {
+    dom: WeakDom,
+    pool_work: usize,
+}
+
 struct Registry {
-    doms: HashMap<DomId, WeakDom>,
+    doms: HashMap<DomId, RegisteredDom>,
     next_id: DomId,
     default_id: Option<DomId>,
 }
@@ -36,6 +43,15 @@ static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| {
     })
 });
 
+static PROPERTY_POOL: LazyLock<Mutex<PropertyPool>> =
+    LazyLock::new(|| Mutex::new(PropertyPool::default()));
+
+fn property_pool() -> MutexGuard<'static, PropertyPool> {
+    PROPERTY_POOL
+        .lock()
+        .expect("Failed to lock native property pool")
+}
+
 fn lock() -> MutexGuard<'static, Registry> {
     REGISTRY
         .lock()
@@ -45,13 +61,17 @@ fn lock() -> MutexGuard<'static, Registry> {
 /**
     Registers a new dom and returns its freshly allocated id.
 */
-pub fn register(dom: WeakDom) -> DomId {
+pub fn register(mut dom: WeakDom) -> DomId {
+    // Pool only immutable property payloads, never instances or document identities.
+    // Finish this work and release its mutex before entering the instance registry.
+    let pool_work = dom.share_properties(&mut property_pool());
+    crate::reclaim_native_document_memory();
     let mut reg = lock();
 
     let id = reg.next_id;
 
     reg.next_id += 1;
-    reg.doms.insert(id, dom);
+    reg.doms.insert(id, RegisteredDom { dom, pool_work });
 
     id
 }
@@ -74,8 +94,13 @@ pub fn default_dom() -> DomId {
     let id = reg.next_id;
 
     reg.next_id += 1;
-    reg.doms
-        .insert(id, WeakDom::new(DomInstanceBuilder::new("ROOT")));
+    reg.doms.insert(
+        id,
+        RegisteredDom {
+            dom: WeakDom::new(DomInstanceBuilder::new("ROOT")),
+            pool_work: 0,
+        },
+    );
     reg.default_id = Some(id);
 
     id
@@ -93,7 +118,7 @@ pub fn default_dom() -> DomId {
 */
 pub fn with<R>(dom_id: DomId, f: impl FnOnce(&WeakDom) -> R) -> Option<R> {
     let reg = lock();
-    reg.doms.get(&dom_id).map(f)
+    reg.doms.get(&dom_id).map(|entry| f(&entry.dom))
 }
 
 /**
@@ -103,7 +128,7 @@ pub fn with<R>(dom_id: DomId, f: impl FnOnce(&WeakDom) -> R) -> Option<R> {
 */
 pub fn with_mut<R>(dom_id: DomId, f: impl FnOnce(&mut WeakDom) -> R) -> Option<R> {
     let mut reg = lock();
-    reg.doms.get_mut(&dom_id).map(f)
+    reg.doms.get_mut(&dom_id).map(|entry| f(&mut entry.dom))
 }
 
 fn collect_subtree(dom: &WeakDom, root: DomRef) -> Vec<DomRef> {
@@ -139,27 +164,31 @@ pub fn reparent(
     let mut reg = lock();
     match parent {
         None => {
-            if let Some(dom) = reg.doms.get_mut(&child_dom) {
-                let dom_root = dom.root_ref();
-                dom.transfer_within(child_ref, dom_root);
+            if let Some(entry) = reg.doms.get_mut(&child_dom) {
+                let dom_root = entry.dom.root_ref();
+                entry.dom.transfer_within(child_ref, dom_root);
             }
             Vec::new()
         }
         Some((parent_dom, parent_ref)) if parent_dom == child_dom => {
-            if let Some(dom) = reg.doms.get_mut(&child_dom) {
-                dom.transfer_within(child_ref, parent_ref);
+            if let Some(entry) = reg.doms.get_mut(&child_dom) {
+                entry.dom.transfer_within(child_ref, parent_ref);
             }
             Vec::new()
         }
         Some((parent_dom, parent_ref)) => {
             let moved = match reg.doms.get(&child_dom) {
-                Some(dom) => collect_subtree(dom, child_ref),
+                Some(entry) => collect_subtree(&entry.dom, child_ref),
                 None => return Vec::new(),
             };
             // Since we want to use get_disjoint_mut we cannot store doms in a BTreeMap. Unfortunate
             let [src, dst] = reg.doms.get_disjoint_mut([&child_dom, &parent_dom]);
             if let (Some(src), Some(dst)) = (src, dst) {
-                src.transfer(child_ref, dst, parent_ref);
+                src.dom.transfer(child_ref, &mut dst.dom, parent_ref);
+                // Move existing cleanup credit, rather than minting more on every arrival.
+                let pool_work = moved.len().min(src.pool_work);
+                src.pool_work -= pool_work;
+                dst.pool_work += pool_work;
                 moved
             } else {
                 Vec::new()
@@ -178,8 +207,10 @@ pub fn drop_if_empty(dom_id: DomId) {
     let removed = {
         let mut reg = lock();
 
-        let empty = reg.doms.get(&dom_id).is_none_or(|dom| {
-            dom.get_by_ref(dom.root_ref())
+        let empty = reg.doms.get(&dom_id).is_none_or(|entry| {
+            entry
+                .dom
+                .get_by_ref(entry.dom.root_ref())
                 .is_none_or(|root| root.children().is_empty())
         });
 
@@ -193,9 +224,12 @@ pub fn drop_if_empty(dom_id: DomId) {
         }
     };
 
-    if let Some(dom) = removed {
-        // Destroy the document and reclaim allocator pages without the registry lock.
+    if let Some(RegisteredDom { dom, pool_work }) = removed {
+        // Cleanup scales with this document, not every other retained place.
         drop(dom);
+        // Physical property ownership, not registry membership or cleanup credit, decides
+        // whether the last actual destructor can release all remaining pool metadata.
+        property_pool().prune_after_drop(pool_work);
         crate::reclaim_native_document_memory();
     }
 }
@@ -203,6 +237,181 @@ pub fn drop_if_empty(dom_id: DomId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unpooled_round_trip_can_leave_live_pooled_properties_with_zero_cleanup_credit() {
+        use rbx_dom_weak::ustr;
+
+        let retained = register(WeakDom::new(DomInstanceBuilder::new("ROOT").with_children(
+            (0..32).map(|value| DomInstanceBuilder::new("IntValue").with_property("Value", value)),
+        )));
+        let root = with(retained, WeakDom::root_ref).unwrap();
+        let children = with(retained, |dom| dom.root().children().to_vec()).unwrap();
+        let scratch = register(WeakDom::new(DomInstanceBuilder::new("ROOT")));
+        // Model an isolated scratch DOM without altering the process-wide default DOM.
+        lock().doms.get_mut(&scratch).unwrap().pool_work = 0;
+        let scratch_root = with(scratch, WeakDom::root_ref).unwrap();
+        let unpooled = with_mut(scratch, |dom| {
+            dom.insert(
+                scratch_root,
+                DomInstanceBuilder::new("Folder")
+                    .with_children((0..64).map(|_| DomInstanceBuilder::new("Folder"))),
+            )
+        })
+        .unwrap();
+        reparent(scratch, unpooled, Some((retained, root)));
+        reparent(retained, unpooled, Some((scratch, scratch_root)));
+        assert_eq!(lock().doms[&retained].pool_work, 0);
+        with_mut(scratch, |dom| dom.destroy(unpooled));
+        drop_if_empty(scratch);
+        for _ in 0..64 {
+            let tiny = register(WeakDom::new(DomInstanceBuilder::new("ROOT")));
+            drop_if_empty(tiny);
+        }
+        assert_eq!(
+            with(retained, |dom| dom
+                .get_by_ref(children[0])
+                .unwrap()
+                .properties[&ustr("Value")]
+                .clone()),
+            Some(0.into())
+        );
+        with_mut(retained, |dom| {
+            for child in children {
+                dom.destroy(child);
+            }
+        });
+        drop_if_empty(retained);
+        assert!(with(retained, |_| ()).is_none());
+    }
+
+    #[test]
+    fn cleanup_budget_tracks_the_document_and_transferred_instances() {
+        let branch =
+            DomInstanceBuilder::new("Folder")
+                .with_children((0..32).map(|value| {
+                    DomInstanceBuilder::new("IntValue").with_property("Value", value)
+                }));
+        let branch_ref = branch.referent();
+        let source = register(WeakDom::new(
+            DomInstanceBuilder::new("ROOT").with_child(branch),
+        ));
+        let destination = register(WeakDom::new(DomInstanceBuilder::new("ROOT")));
+        assert_eq!(lock().doms[&source].pool_work, 34);
+        assert_eq!(lock().doms[&destination].pool_work, 1);
+        let root = with(destination, WeakDom::root_ref).unwrap();
+        assert_eq!(
+            reparent(source, branch_ref, Some((destination, root))).len(),
+            33
+        );
+        assert_eq!(lock().doms[&destination].pool_work, 34);
+        assert_eq!(lock().doms[&source].pool_work, 1);
+        let source_root = with(source, WeakDom::root_ref).unwrap();
+        for _ in 0..64 {
+            reparent(destination, branch_ref, Some((source, source_root)));
+            reparent(source, branch_ref, Some((destination, root)));
+            let reg = lock();
+            assert_eq!(reg.doms[&source].pool_work, 1);
+            assert_eq!(reg.doms[&destination].pool_work, 34);
+        }
+        drop_if_empty(source);
+        with_mut(destination, |dom| dom.destroy(branch_ref));
+        drop_if_empty(destination);
+        assert!(with(source, |_| ()).is_none());
+        assert!(with(destination, |_| ()).is_none());
+    }
+
+    #[test]
+    fn transfers_of_unpooled_nodes_conserve_existing_cleanup_credit() {
+        let source = register(WeakDom::new(DomInstanceBuilder::new("ROOT")));
+        let destination = register(WeakDom::new(DomInstanceBuilder::new("ROOT")));
+        let source_root = with(source, WeakDom::root_ref).unwrap();
+        let destination_root = with(destination, WeakDom::root_ref).unwrap();
+        let branch = with_mut(source, |dom| {
+            dom.insert(
+                source_root,
+                DomInstanceBuilder::new("Folder").with_children([
+                    DomInstanceBuilder::new("Folder"),
+                    DomInstanceBuilder::new("Folder"),
+                ]),
+            )
+        })
+        .unwrap();
+        for _ in 0..64 {
+            reparent(source, branch, Some((destination, destination_root)));
+            {
+                let reg = lock();
+                assert_eq!(reg.doms[&source].pool_work, 0);
+                assert_eq!(reg.doms[&destination].pool_work, 2);
+            }
+            reparent(destination, branch, Some((source, source_root)));
+            let reg = lock();
+            assert_eq!(reg.doms[&source].pool_work, 2);
+            assert_eq!(reg.doms[&destination].pool_work, 0);
+        }
+        with_mut(source, |dom| dom.destroy(branch));
+        drop_if_empty(source);
+        drop_if_empty(destination);
+    }
+
+    #[test]
+    fn shared_payloads_preserve_colliding_ids_reparenting_mutation_and_teardown() {
+        use rbx_dom_weak::{types::Variant, ustr};
+
+        let child = DomRef::new();
+        let builder = || {
+            DomInstanceBuilder::new("ROOT").with_child(
+                DomInstanceBuilder::new("Folder")
+                    .with_referent(child)
+                    .with_property("Value", "original"),
+            )
+        };
+        let first = register(WeakDom::new(builder()));
+        let second = register(WeakDom::new(builder()));
+        assert_ne!(first, second);
+        let pointer = |dom: &WeakDom| {
+            std::ptr::from_ref(
+                dom.get_by_ref(child)
+                    .unwrap()
+                    .properties
+                    .get(&ustr("Value"))
+                    .unwrap(),
+            ) as usize
+        };
+        assert_eq!(with(first, pointer), with(second, pointer));
+        let third = register(WeakDom::new(DomInstanceBuilder::new("ROOT")));
+        let third_root = with(third, WeakDom::root_ref).unwrap();
+        assert_eq!(
+            reparent(first, child, Some((third, third_root))),
+            vec![child]
+        );
+        drop_if_empty(first);
+        assert!(with(first, |_| ()).is_none());
+        with_mut(third, |dom| {
+            dom.get_by_ref_mut(child)
+                .unwrap()
+                .properties
+                .insert(ustr("Value"), "changed".into());
+        });
+        assert_ne!(with(third, pointer), with(second, pointer));
+        assert_eq!(
+            with(second, |dom| dom.get_by_ref(child).unwrap().properties
+                [&ustr("Value")]
+                .clone()),
+            Some(Variant::String("original".into()))
+        );
+        with_mut(second, |dom| dom.destroy(child));
+        drop_if_empty(second);
+        assert_eq!(
+            with(third, |dom| dom.get_by_ref(child).unwrap().properties
+                [&ustr("Value")]
+                .clone()),
+            Some(Variant::String("changed".into()))
+        );
+        with_mut(third, |dom| dom.destroy(child));
+        drop_if_empty(third);
+        assert!(with(third, |_| ()).is_none());
+    }
 
     #[test]
     fn removes_only_the_empty_document_and_allows_repeated_cleanup() {

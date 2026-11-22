@@ -8,6 +8,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.11.1-horse.16.10` - November 22nd, 2026
+
+### Fixed
+
+- Reduced memory used by several live Roblox documents. Parsed places and models now share
+  exactly identical native property maps, matched by typed values that preserve float bits
+  and references. Changing one instance copies only its own properties, so other instances
+  and documents are unaffected. Pool cleanup stays proportional to destroyed documents and
+  releases all remaining pool metadata after the last pooled document is gone.
+
 ## `0.11.1-horse.16.9` - November 22nd, 2026
 
 ### Fixed
