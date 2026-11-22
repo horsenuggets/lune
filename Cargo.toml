@@ -65,4 +65,7 @@ needless_pass_by_value = { level = "allow", priority = 1 }
 wildcard_imports = { level = "allow", priority = 1 }
 
 [patch.crates-io]
+# Shares identical property maps between parsed documents while keeping published
+# rbx_binary, rbx_xml and rbx_types, so every crate uses one rbx_types identity.
+rbx_dom_weak = { git = "https://github.com/horsenuggets/rbx-dom.git", branch = "main" }
 serde_json = { git = "https://github.com/horsenuggets/rust-serde-json.git", branch = "master" }

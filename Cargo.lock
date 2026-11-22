@@ -3143,11 +3143,11 @@ dependencies = [
 [[package]]
 name = "rbx_dom_weak"
 version = "4.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63614f84aae649ff71ef6e693d4fc9e2184c6ef55852d48a29685ebd0470114f"
+source = "git+https://github.com/horsenuggets/rbx-dom.git?branch=main#4d4679210ce59703f82cee16c8000773988aa6c2"
 dependencies = [
  "ahash",
  "rbx_types",
+ "rmp-serde",
  "serde",
  "ustr",
 ]
