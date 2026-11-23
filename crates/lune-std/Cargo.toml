@@ -43,7 +43,7 @@ task = ["dep:lune-std-task"]
 
 [dependencies]
 mlua = { version = "0.12.2", features = ["luau"] }
-mlua-luau-scheduler = { version = "0.3.0", path = "../mlua-luau-scheduler" }
+mlua-luau-scheduler = { version = "0.4.0", path = "../mlua-luau-scheduler" }
 
 async-channel = "2.3"
 async-fs = "2.1"

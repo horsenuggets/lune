@@ -1928,7 +1928,7 @@ dependencies = [
 
 [[package]]
 name = "lune-roblox"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "glam",
  "libc",
@@ -2275,7 +2275,7 @@ dependencies = [
 
 [[package]]
 name = "mlua-luau-scheduler"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-channel",
  "async-executor",
