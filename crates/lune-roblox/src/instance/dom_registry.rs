@@ -78,13 +78,8 @@ pub fn register(mut dom: WeakDom) -> DomId {
 
 /**
     Returns the id of the shared default scratch dom, creating it if needed.
-
-    Manually created orphan instances (e.g. `Instance.new(...)`) should live
-    here until they are parented into another dom.
 */
-pub fn default_dom() -> DomId {
-    let mut reg = lock();
-
+fn default_dom_locked(reg: &mut Registry) -> DomId {
     if let Some(id) = reg.default_id
         && reg.doms.contains_key(&id)
     {
@@ -104,6 +99,28 @@ pub fn default_dom() -> DomId {
     reg.default_id = Some(id);
 
     id
+}
+
+/**
+    Inserts a new orphaned instance at the root of the shared default scratch dom,
+    creating that dom if needed, and returns where the instance now lives.
+
+    Manually created orphan instances (e.g. `Instance.new(...)`) live there until
+    they are parented into another dom. Looking up the scratch dom and inserting into
+    it happen under one registry lock, so another thread destroying the last orphan
+    (and with it the scratch dom) can never remove the dom in between.
+*/
+pub fn insert_orphan(class_name: &str) -> (DomId, DomRef) {
+    let mut reg = lock();
+    let id = default_dom_locked(&mut reg);
+    let dom = &mut reg
+        .doms
+        .get_mut(&id)
+        .expect("the default dom was registered above")
+        .dom;
+    let dom_root = dom.root_ref();
+    let dom_ref = dom.insert(dom_root, DomInstanceBuilder::new(class_name));
+    (id, dom_ref)
 }
 
 /**
@@ -447,5 +464,27 @@ mod tests {
         with_mut(id, |dom| dom.destroy(second));
         drop_if_empty(id);
         assert!(with(id, |_| ()).is_none());
+    }
+
+    #[test]
+    fn concurrent_orphans_never_lose_their_scratch_dom() {
+        // Each thread repeatedly empties the shared scratch dom, which drops it, while
+        // the others keep creating orphans in it. Every orphan must still land in a live
+        // dom, so a lookup and an insert can never be split by another thread's drop.
+        let threads: Vec<_> = (0..6)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    for _ in 0..20_000 {
+                        let (id, referent) = insert_orphan("Folder");
+                        let destroyed = with_mut(id, |dom| dom.destroy(referent));
+                        assert!(destroyed.is_some(), "the orphan's dom must exist");
+                        drop_if_empty(id);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("a thread lost its scratch dom");
+        }
     }
 }

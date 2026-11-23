@@ -115,7 +115,13 @@ impl Instance {
     */
     #[must_use]
     pub fn new_orphaned(class_name: impl AsRef<str>) -> Self {
-        Self::new_in_dom(dom_registry::default_dom(), class_name)
+        let class_name = class_name.as_ref();
+        let (dom_id, dom_ref) = dom_registry::insert_orphan(class_name);
+        Self {
+            dom_id,
+            dom_ref,
+            class_name: ustr(class_name),
+        }
     }
 
     /**
