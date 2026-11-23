@@ -88,6 +88,7 @@ pub struct ActorLink {
     done_rx: Receiver<()>,
     done_tx: Sender<()>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    alive: AtomicBool,
 }
 
 impl ActorLink {
@@ -103,7 +104,16 @@ impl ActorLink {
             done_rx,
             done_tx,
             thread: Mutex::new(None),
+            alive: AtomicBool::new(false),
         }
+    }
+
+    /**
+        Whether the actor's OS thread is still running its body. The thread clears this
+        as the very last thing it does, so joining the thread always observes `false`.
+    */
+    pub(crate) fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
     }
 
     /**
@@ -204,14 +214,21 @@ impl ActorLink {
             .unwrap_or_else(PoisonError::into_inner)
             .take()
     }
+}
 
-    /// Whether the actor's OS thread may still be running.
-    pub(crate) fn has_running_thread(&self) -> bool {
-        self.thread
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .is_some_and(|thread| !thread.is_finished())
+/**
+    The stack size of every actor thread. Rust's default for spawned threads is only
+    2 MiB, while the main thread of Linux and macOS processes gets 8 MiB, so actors use
+    the same 8 MiB to allow scripts the same recursion depth as their owner.
+*/
+const ACTOR_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+/// Clears an actor's liveness flag once its thread is done, even when it panics.
+struct AliveGuard(Arc<ActorLink>);
+
+impl Drop for AliveGuard {
+    fn drop(&mut self) {
+        self.0.alive.store(false, Ordering::SeqCst);
     }
 }
 
@@ -240,9 +257,12 @@ where
     F: FnOnce(Arc<ActorLink>) -> ActorOutcome + Send + 'static,
 {
     let thread_link = Arc::clone(&link);
-    let handle = Builder::new()
+    link.alive.store(true, Ordering::SeqCst);
+    let spawned = Builder::new()
         .name("lune-actor".to_string())
+        .stack_size(ACTOR_STACK_SIZE)
         .spawn(move || {
+            let _alive = AliveGuard(Arc::clone(&thread_link));
             let body_link = Arc::clone(&thread_link);
             let outcome =
                 catch_unwind(AssertUnwindSafe(move || body(body_link))).unwrap_or_else(|payload| {
@@ -252,7 +272,14 @@ where
                     ))
                 });
             thread_link.finish(outcome);
-        })?;
+        });
+    let handle = match spawned {
+        Ok(handle) => handle,
+        Err(error) => {
+            link.alive.store(false, Ordering::SeqCst);
+            return Err(error);
+        }
+    };
     *link.thread.lock().unwrap_or_else(PoisonError::into_inner) = Some(handle);
     Ok(())
 }
@@ -280,34 +307,6 @@ mod tests {
             ActorOutcome::Completed(_) => panic!("a panic must fail the actor"),
         }
         link.take_thread().unwrap().join().unwrap();
-    }
-
-    #[test]
-    fn delivers_the_outcome_to_every_waiter() {
-        let link = link();
-        spawn_actor_thread(Arc::clone(&link), |_| {
-            ActorOutcome::Completed(vec![Transfer::Number(4.0)])
-        })
-        .unwrap();
-        for _ in 0..2 {
-            assert!(matches!(
-                block_on(link.wait()),
-                ActorOutcome::Completed(values) if matches!(values[..], [Transfer::Number(n)] if n == 4.0)
-            ));
-        }
-        link.take_thread().unwrap().join().unwrap();
-        assert!(!link.has_running_thread());
-    }
-
-    #[test]
-    fn termination_before_attaching_stops_the_scheduler_immediately() {
-        let link = link();
-        link.terminate();
-        let lua = Lua::new();
-        let scheduler = mlua_luau_scheduler::Scheduler::new(lua.clone());
-        link.attach(&lua, scheduler.exit_handle()).unwrap();
-        assert_eq!(scheduler.get_exit_code(), Some(TERMINATED_EXIT_CODE));
-        assert!(link.inbox.is_closed());
     }
 
     #[test]
@@ -349,6 +348,34 @@ mod tests {
             ActorOutcome::Completed(_) => panic!("a panic in Luau-called Rust must fail"),
         }
         link.take_thread().unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn delivers_the_outcome_to_every_waiter() {
+        let link = link();
+        spawn_actor_thread(Arc::clone(&link), |_| {
+            ActorOutcome::Completed(vec![Transfer::Number(4.0)])
+        })
+        .unwrap();
+        for _ in 0..2 {
+            assert!(matches!(
+                block_on(link.wait()),
+                ActorOutcome::Completed(values) if matches!(values[..], [Transfer::Number(n)] if n == 4.0)
+            ));
+        }
+        link.take_thread().unwrap().join().unwrap();
+        assert!(!link.is_alive());
+    }
+
+    #[test]
+    fn termination_before_attaching_stops_the_scheduler_immediately() {
+        let link = link();
+        link.terminate();
+        let lua = Lua::new();
+        let scheduler = mlua_luau_scheduler::Scheduler::new(lua.clone());
+        link.attach(&lua, scheduler.exit_handle()).unwrap();
+        assert_eq!(scheduler.get_exit_code(), Some(TERMINATED_EXIT_CODE));
+        assert!(link.inbox.is_closed());
     }
 
     #[test]

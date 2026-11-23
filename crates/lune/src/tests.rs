@@ -123,9 +123,13 @@ fn actor_coverage() -> Result<ExitCode> {
     run_test_with_jit("actor/coverage", false)
 }
 
+/**
+    Runs an owner script that leaves an idle and a busy actor running, and checks that no
+    actor thread outlives it. The count observes every actor the owner ever started,
+    including ones it already shut down, so a leaked thread cannot hide from it.
+*/
 #[cfg(all(feature = "std-actor", feature = "std-process", feature = "std-task"))]
-#[test]
-fn actor_owner_exit_stops_actors() -> Result<()> {
+fn assert_owner_stops_actors(script: &str) -> Result<()> {
     async_io::block_on(async {
         let workspace_dir = clean_path(PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -133,11 +137,10 @@ fn actor_owner_exit_stops_actors() -> Result<()> {
         )));
         set_current_dir(&workspace_dir)?;
 
-        // The script starts an idle and a busy actor, then returns without joining them
         let started = std::time::Instant::now();
         let mut rt = Runtime::new()?;
         let values = rt
-            .run_file(workspace_dir.join("tests/actor/workers/abandoned.luau"))
+            .run_file(workspace_dir.join("tests/actor/workers").join(script))
             .await?;
 
         assert!(values.success(), "the owner should finish successfully");
@@ -152,6 +155,18 @@ fn actor_owner_exit_stops_actors() -> Result<()> {
         );
         Ok(())
     })
+}
+
+#[cfg(all(feature = "std-actor", feature = "std-process", feature = "std-task"))]
+#[test]
+fn actor_owner_return_stops_actors() -> Result<()> {
+    assert_owner_stops_actors("abandoned.luau")
+}
+
+#[cfg(all(feature = "std-actor", feature = "std-process", feature = "std-task"))]
+#[test]
+fn actor_owner_process_exit_stops_actors() -> Result<()> {
+    assert_owner_stops_actors("exiting_owner.luau")
 }
 
 // Coverage tests run serially to prevent LUNE_COVERAGE env var contamination.

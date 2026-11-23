@@ -4,8 +4,10 @@
 	Runs scripts in parallel on other OS threads, similar to Roblox's Parallel Luau.
 
 	Every actor runs its script in its own Luau VM, with its own `require` cache, globals,
-	coverage data and Roblox documents. Values sent between actors are copied, except for
-	`SharedTable` values, which every actor can update at the same time.
+	coverage data and method implementations. Instances never cross between actors, so each
+	actor only reaches the Roblox documents and instances it created itself. Values sent
+	between actors are copied, except for `SharedTable` values, which every actor can update
+	at the same time.
 
 	### Example usage
 
@@ -54,11 +56,15 @@
 	### Lifetime
 
 	`join` waits for an actor to finish and stops sending it messages, which also ends any
-	`bindToMessage` callbacks. When the owning script finishes, every actor it started
-	that is still running is terminated. Terminating an actor makes its running Luau code
-	error at the next interrupt check, so blocking native calls finish first.
+	`bindToMessage` callbacks. When the owning script finishes or calls `process.exit`,
+	every actor it started that is still running is terminated and its thread is joined.
+	Terminating an actor makes its running Luau code error at the next interrupt check, so
+	blocking native calls finish first.
+
+	Shared tables can never contain themselves. Storing a shared table where that would
+	create a cycle is rejected with an error.
 ]=]
-const actor = {}
+local actor = {}
 
 --[=[
 	@within Actor
@@ -112,7 +118,8 @@ export type SpawnOptions = {
 	A table that every actor can read and update atomically, without copying it.
 
 	Keys must be strings or finite numbers. Values may be booleans, numbers, vectors,
-	strings or other shared tables, and plain tables become new shared tables.
+	strings or other shared tables, and plain tables become new shared tables. A shared
+	table can never contain itself, directly or through nested shared tables.
 ]=]
 export type SharedTable = { [string | number]: any }
 
