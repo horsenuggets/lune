@@ -5,7 +5,7 @@ const task = require("@lune/task")
 -- Behaves according to the command in its first argument, so that tests can exercise
 -- failures, exits and termination without needing a separate script for each one
 
-const command = actor.Args[1]
+const command = actor.args[1]
 
 if command == "Error" then
 	error("Controlled actor error")
@@ -13,7 +13,7 @@ elseif command == "SpawnedError" then
 	task.spawn(error, "Controlled spawned error")
 	return "Main finished"
 elseif command == "Exit" then
-	process.exit(actor.Args[2])
+	process.exit(actor.args[2])
 elseif command == "Spin" then
 	while true do
 	end

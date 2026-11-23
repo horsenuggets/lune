@@ -4,12 +4,12 @@ const actor = require("@lune/actor")
 
 assert(actor.isWorker == false, "The main runtime should not be an actor")
 assert(actor.parent == nil, "The main runtime should not have a parent")
-assert(#actor.Args == 0, "The main runtime should have empty actor arguments")
+assert(#actor.args == 0, "The main runtime should have empty actor arguments")
 
 -- Actors receive copies of their arguments and return values to their owner
 
 const arguments = { 1, 2, 3 }
-const worker = actor.spawn("./workers/sum.luau", { Args = arguments })
+const worker = actor.spawn("./workers/sum.luau", { args = arguments })
 arguments[1] = 100
 const ok, total, context = worker:join()
 assert(ok, total)
@@ -29,7 +29,7 @@ assert(empty and emptyTotal == 0, "Actors without arguments should receive an em
 
 -- Paths that do not start with a dot are relative to the working directory
 
-const fromCwd, cwdTotal = actor.spawn("tests/actor/workers/sum.luau", { Args = { 2 } }):join()
+const fromCwd, cwdTotal = actor.spawn("tests/actor/workers/sum.luau", { args = { 2 } }):join()
 assert(fromCwd and cwdTotal == 2, "Paths without a leading dot should use the working directory")
 
 -- Invalid options are rejected before any actor starts
@@ -38,7 +38,7 @@ const unknownOk, unknownError = pcall(actor.spawn, "./workers/sum.luau", { Unkno
 assert(not unknownOk, "Unknown options should be rejected")
 assert(string.find(tostring(unknownError), "Unknown actor option", 1, true), unknownError)
 
-const argsOk, argsError = pcall(actor.spawn, "./workers/sum.luau", { Args = 5 } :: any)
+const argsOk, argsError = pcall(actor.spawn, "./workers/sum.luau", { args = 5 } :: any)
 assert(not argsOk, "Arguments that are not tables should be rejected")
 assert(string.find(tostring(argsError), "must be a table", 1, true), argsError)
 

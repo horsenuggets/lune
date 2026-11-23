@@ -2,7 +2,7 @@ const actor = require("@lune/actor")
 const task = require("@lune/task")
 
 local function terminated(command: string)
-	const worker = actor.spawn("./workers/command.luau", { Args = { command } })
+	const worker = actor.spawn("./workers/command.luau", { args = { command } })
 	task.wait(0.05)
 	worker:terminate()
 	worker:terminate()
@@ -25,7 +25,7 @@ assert(not sendOk, "Terminated actors should not accept messages")
 
 -- Terminating an actor that already finished keeps its result
 
-const finished = actor.spawn("./workers/command.luau", { Args = { "Finish" } })
+const finished = actor.spawn("./workers/command.luau", { args = { "Finish" } })
 assert(finished:join(), "The actor should finish")
 finished:terminate()
 const ok, value = finished:join()

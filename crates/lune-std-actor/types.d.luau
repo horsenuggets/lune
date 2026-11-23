@@ -13,7 +13,7 @@
 	-- Main.luau
 	local actor = require("@lune/actor")
 
-	local worker = actor.spawn("./Worker.luau", { Args = { 10 } })
+	local worker = actor.spawn("./Worker.luau", { args = { 10 } })
 	worker:send("Greeting", { Text = "Hello" })
 	print(worker:receive("Progress")) --> Started
 
@@ -28,7 +28,7 @@
 	parent:send("Progress", "Started")
 
 	local total = 0
-	for index = 1, actor.Args[1] do
+	for index = 1, actor.args[1] do
 		total += index
 	end
 	return total
@@ -79,21 +79,21 @@ export type ActorParent = {
 --[=[
 	@within Actor
 	@interface ActorConnection
-	.Connected boolean -- Whether the callback still receives messages
-	.Disconnect (self: ActorConnection) -> () -- Stops the callback from receiving messages
+	.connected boolean -- Whether the callback still receives messages
+	.disconnect (self: ActorConnection) -> () -- Stops the callback from receiving messages
 ]=]
 export type ActorConnection = {
-	Connected: boolean,
-	Disconnect: (self: ActorConnection) -> (),
+	connected: boolean,
+	disconnect: (self: ActorConnection) -> (),
 }
 
 --[=[
 	@within Actor
 	@interface SpawnOptions
-	.Args { any }? -- Values copied into `actor.Args` inside the new actor
+	.args { any }? -- Values copied into `actor.args` inside the new actor
 ]=]
 export type SpawnOptions = {
-	Args: { any }?,
+	args: { any }?,
 }
 
 --[=[
@@ -131,11 +131,11 @@ export type SharedTableLibrary = {
 
 --[=[
 	@within Actor
-	@prop Args { any }
+	@prop args { any }
 
 	The arguments the owner passed to `actor.spawn`, or an empty table outside of actors.
 ]=]
-actor.Args = {} :: { any }
+actor.args = {} :: { any }
 
 --[=[
 	@within Actor

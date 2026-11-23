@@ -19,16 +19,16 @@ actor.bindToMessage("Value", function(value)
 end)
 
 actor.bindToMessage("Disconnect", function()
-	first:Disconnect()
-	first:Disconnect()
-	parent:send("Disconnected", first.Connected)
+	first:disconnect()
+	first:disconnect()
+	parent:send("Disconnected", first.connected)
 end)
 
 actor.bindToMessage("Report", function()
 	parent:send("Counts", { First = firstCount, Second = secondCount })
 end)
 
-parent:send("Ready", first.Connected)
+parent:send("Ready", first.connected)
 
 -- The main thread finishes now, but the actor keeps running while callbacks are bound
 return "Bound"

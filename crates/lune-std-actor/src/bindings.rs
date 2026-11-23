@@ -47,11 +47,11 @@ struct Connection {
 impl LuaUserData for Connection {
     fn add_fields<F: LuaUserDataFields<Self>>(fields: &mut F) {
         fields.add_meta_field("__type", "ActorConnection");
-        fields.add_field_method_get("Connected", |_, this| Ok(this.connected.get()));
+        fields.add_field_method_get("connected", |_, this| Ok(this.connected.get()));
     }
 
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method("Disconnect", |lua, this, ()| {
+        methods.add_method("disconnect", |lua, this, ()| {
             if !this.connected.replace(false) {
                 return Ok(());
             }

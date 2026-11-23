@@ -26,5 +26,5 @@ return {
 	InheritedGlobal = _G.OwnerValue,
 	PromptError = if promptOk then nil else tostring(promptError),
 	WorkerMethod = (folder :: any):WorkerOnly(),
-	Args = actor.Args,
+	args = actor.args,
 }

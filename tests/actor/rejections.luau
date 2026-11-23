@@ -39,6 +39,6 @@ assert(worker:join(), "The actor should finish normally")
 
 -- Values that an actor returns follow the same rules
 
-const ok, message = actor.spawn("./workers/command.luau", { Args = { "ReturnFunction" } }):join()
+const ok, message = actor.spawn("./workers/command.luau", { args = { "ReturnFunction" } }):join()
 assert(not ok, "Returning a function should fail the actor")
 assert(string.find(message, "cannot be sent to its owner", 1, true), message)

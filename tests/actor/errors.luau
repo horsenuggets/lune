@@ -1,7 +1,7 @@
 const actor = require("@lune/actor")
 
 local function run(...: any): (boolean, any)
-	const worker = actor.spawn("./workers/command.luau", { Args = { ... } })
+	const worker = actor.spawn("./workers/command.luau", { args = { ... } })
 	return worker:join()
 end
 

@@ -73,7 +73,7 @@ assert(SharedTable.size(deep) == 0, "Clear should remove every entry")
 const counter = SharedTable.new({ Count = 0 })
 const workers = {}
 for index = 1, 4 do
-	workers[index] = actor.spawn("./workers/counter.luau", { Args = { counter :: any, 500 } })
+	workers[index] = actor.spawn("./workers/counter.luau", { args = { counter :: any, 500 } })
 end
 for _, worker in workers do
 	const ok, size = worker:join()

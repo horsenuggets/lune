@@ -24,7 +24,7 @@ const serialSeconds = now() - serialStarted
 const parallelStarted = now()
 const handles = {}
 for index = 1, workers do
-	handles[index] = actor.spawn("./actor_benchmark_worker.luau", { Args = { iterations } })
+	handles[index] = actor.spawn("./actor_benchmark_worker.luau", { args = { iterations } })
 end
 local parallelTotal = 0
 for _, handle in handles do
@@ -39,5 +39,7 @@ assert(serialTotal == parallelTotal, "Both halves should compute the same result
 const units = if workers == 1 then "actor" else "actors"
 print(`Ran {workers} units of {iterations} iterations each.`)
 print(`Serial execution took {string.format("%.3f", serialSeconds)} seconds.`)
-print(`Parallel execution in {workers} {units} took {string.format("%.3f", parallelSeconds)} seconds.`)
+print(
+	`Parallel execution in {workers} {units} took {string.format("%.3f", parallelSeconds)} seconds.`
+)
 print(`The speedup was {string.format("%.2f", serialSeconds / parallelSeconds)} times.`)

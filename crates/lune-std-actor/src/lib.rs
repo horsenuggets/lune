@@ -118,15 +118,15 @@ fn actor_spawn(
         for pair in options.pairs::<String, LuaValue>() {
             let (key, value) = pair?;
             match key.as_str() {
-                "Args" => {
+                "args" => {
                     if !value.is_table() {
-                        return Err(LuaError::runtime("The Args option must be a table."));
+                        return Err(LuaError::runtime("The args option must be a table."));
                     }
                     args = Transfer::from_lua(&value)?;
                 }
                 other => {
                     return Err(LuaError::runtime(format!(
-                        "Unknown actor option \"{other}\". The only option is \"Args\"."
+                        "Unknown actor option \"{other}\". The only option is \"args\"."
                     )));
                 }
             }
@@ -168,7 +168,7 @@ pub fn module(lua: Lua) -> LuaResult<LuaTable> {
     };
     let bind_link = context.map(|WorkerContext(link)| link);
     TableBuilder::new(lua.clone())?
-        .with_value("Args", args)?
+        .with_value("args", args)?
         .with_function(
             "bindToMessage",
             move |lua, (topic, callback): (String, LuaFunction)| {

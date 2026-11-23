@@ -20,7 +20,7 @@ assert(first.Seen == true and second.Seen == nil, "Each callback should receive 
 -- Disconnected callbacks stop receiving messages
 
 worker:send("Disconnect", true)
-assert(worker:receive("Disconnected") == false, "Disconnecting should update Connected")
+assert(worker:receive("Disconnected") == false, "Disconnecting should update connected")
 
 worker:send("Value", { Index = 2 })
 assert(worker:receive("Second").Index == 2, "Remaining callbacks should keep receiving")
