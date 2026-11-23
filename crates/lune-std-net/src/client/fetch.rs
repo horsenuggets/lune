@@ -1,6 +1,13 @@
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    any::Any,
+    collections::HashMap,
+    panic::AssertUnwindSafe,
+    str::FromStr,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use async_executor::Executor;
+use futures_lite::FutureExt;
 use http_body_util::Full;
 use hyper::{
     Method, Request as HyperRequest,
@@ -84,10 +91,66 @@ pub async fn fetch(
     exec.run(fut).await
 }
 
-async fn fetch_inner(
+/**
+    The first panic of a connection driver, if any driver of a request panicked.
+
+    The executor discards panics of detached tasks, and a driver that panics while a
+    body is streaming drops its body sender, which reads as a normal end of the body.
+    Recording the panic lets the request fail instead of returning a truncated body.
+*/
+type DriverPanic = Arc<Mutex<Option<String>>>;
+
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "an unknown panic payload".to_string()
+    }
+}
+
+/**
+    Spawns a connection driver that records a panic instead of letting it vanish.
+*/
+fn spawn_driver<F>(exec: &Executor<'_>, driver: F, panic: &DriverPanic)
+where
+    F: Future + Send + 'static,
+{
+    let panic = Arc::clone(panic);
+    exec.spawn(async move {
+        if let Err(payload) = AssertUnwindSafe(driver).catch_unwind().await {
+            let mut slot = panic.lock().unwrap_or_else(PoisonError::into_inner);
+            slot.get_or_insert_with(|| panic_message(payload.as_ref()));
+        }
+    })
+    .detach();
+}
+
+/**
+    Fails a request whose connection driver panicked, whatever its result was.
+*/
+fn finish<T>(result: Result<T, String>, panic: &DriverPanic) -> Result<T, String> {
+    let slot = panic.lock().unwrap_or_else(PoisonError::into_inner);
+    match slot.as_ref() {
+        Some(message) => Err(format!(
+            "The connection failed while sending the request. {message}"
+        )),
+        None => result,
+    }
+}
+
+async fn fetch_inner(exec: &Executor<'_>, url: Url, request: Request) -> Result<Response, String> {
+    let panic = DriverPanic::default();
+    let result = send_with_redirects(exec, url, request, &panic).await;
+    finish(result, &panic)
+}
+
+async fn send_with_redirects(
     exec: &Executor<'_>,
     mut url: Url,
     mut request: Request,
+    panic: &DriverPanic,
 ) -> Result<Response, String> {
     loop {
         let stream = HttpStream::connect_url(url.clone())
@@ -98,7 +161,7 @@ async fn fetch_inner(
             .await
             .map_err(|e| e.to_string())?;
 
-        exec.spawn(conn).detach();
+        spawn_driver(exec, conn, panic);
 
         let mut outgoing = request.clone_inner();
         prepare_outgoing_request(&mut outgoing);
@@ -113,8 +176,60 @@ async fn fetch_inner(
             continue;
         }
 
-        break Response::from_incoming(incoming, request.decompress)
+        break Response::from_incoming(incoming, &request.method(), request.decompress)
             .await
             .map_err(|e| e.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_driver<F>(driver: F) -> DriverPanic
+    where
+        F: Future + Send + 'static,
+    {
+        let exec = Executor::new();
+        let panic = DriverPanic::default();
+        spawn_driver(&exec, driver, &panic);
+        async_io::block_on(exec.run(async {
+            for _ in 0..4 {
+                futures_lite::future::yield_now().await;
+            }
+        }));
+        panic
+    }
+
+    #[test]
+    fn fails_a_successful_response_when_its_driver_panicked() {
+        let panic = run_driver(async { panic!("Driver panic sentinel") });
+        let error = finish(Ok("complete-looking body"), &panic).unwrap_err();
+        assert!(error.contains("Driver panic sentinel"), "{error}");
+    }
+
+    #[test]
+    fn keeps_the_first_panic_of_several_drivers() {
+        let exec = Executor::new();
+        let panic = DriverPanic::default();
+        spawn_driver(&exec, async { panic!("First driver") }, &panic);
+        spawn_driver(&exec, async { panic!("Second driver") }, &panic);
+        async_io::block_on(exec.run(async {
+            for _ in 0..4 {
+                futures_lite::future::yield_now().await;
+            }
+        }));
+        let error = finish(Ok(()), &panic).unwrap_err();
+        assert!(error.contains("First driver"), "{error}");
+    }
+
+    #[test]
+    fn passes_results_through_when_no_driver_panicked() {
+        let panic = run_driver(async {});
+        assert_eq!(finish(Ok(7), &panic), Ok(7));
+        assert_eq!(
+            finish::<()>(Err("Refused".to_string()), &panic),
+            Err("Refused".to_string())
+        );
     }
 }
