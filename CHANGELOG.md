@@ -13,22 +13,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added the `@lune/actor` library for running scripts in parallel, similar to Roblox's
-  Parallel Luau. `actor.spawn(path, { Args = { ... } })` runs a script on its own OS
-  thread in its own Luau VM, with separate `require` caches, globals, coverage data,
-  method implementations and Roblox documents. Owners and actors exchange messages by
-  topic with `send` and `receive`, actors can bind callbacks with `actor.bindToMessage`,
-  and `join` returns an actor's values or its error and traceback.
+  Parallel Luau. `actor.spawn(path, { args = { ... } })` runs a script on its own OS
+  thread in its own Luau VM, with separate `require` caches, globals, coverage data and
+  method implementations. Instances never cross between actors, so each actor only
+  reaches the Roblox documents and instances it created. Owners and actors exchange
+  messages by topic with `send` and `receive`, and actors can bind callbacks with
+  `actor.bindToMessage`.
+- `join` returns `true` and the actor's returned values, or `false` and one error message
+  string that includes the traceback and, when several threads errored, every error in
+  order. Actors never print their errors themselves, so parallel actors cannot interleave
+  duplicate reports. Panics inside native code, non-zero exit codes, termination and
+  scripts that end without returning all make `join` return `false`.
 - Messages copy `nil`, booleans, numbers, vectors, strings, buffers and plain tables,
   keeping frozen tables frozen. Functions, threads, Instances and other userdata,
   cyclic tables and tables with metatables are rejected with clear errors.
 - Added `actor.SharedTable`, which every actor can read and update at the same time
   without copying, with atomic `increment` and `update` plus `clone`, `cloneAndFreeze`,
-  `clear`, `size` and `isFrozen`.
+  `clear`, `size` and `isFrozen`. Storing a shared table where it would contain itself is
+  rejected, and cloning and releasing deeply nested shared tables cannot overflow the
+  stack.
 - `terminate` stops busy, protected and idle actors, `process.exit` inside an actor ends
-  only that actor, and actors still running when their owner's script finishes are
-  terminated and joined. `stdio.prompt` is unavailable inside actors.
+  only that actor, and actors still running when their owner's script finishes or calls
+  `process.exit` are terminated and joined. Actor threads get the same 8 MiB stack as the
+  main thread on Linux and macOS. `stdio.prompt` is unavailable inside actors.
 - Schedulers now provide a thread-safe exit handle, so other threads can stop them even
   while they are idle.
+
+### Fixed
+
+- Creating Instances from several threads at once no longer panics with "Failed to find
+  dom to create instance in". New orphaned instances are now inserted into the shared
+  scratch document under the same lock that looks it up.
+- A panic in Rust code called by a scheduled Luau thread is now reported as an error of
+  that thread. Previously the thread silently disappeared without a result or an error,
+  so a script could exit successfully after a crash.
+- Bundled files of standalone executables are shared between runs instead of being
+  copied into each one.
 
 ## `0.11.1-horse.16.10` - November 22nd, 2026
 
