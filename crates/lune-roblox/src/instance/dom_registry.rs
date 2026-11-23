@@ -361,6 +361,7 @@ mod tests {
 
     #[test]
     fn refused_reparents_move_nothing() {
+        let _serial = POISON_TESTS.lock().unwrap_or_else(PoisonError::into_inner);
         let branch =
             DomInstanceBuilder::new("Folder").with_child(DomInstanceBuilder::new("Folder"));
         let branch_ref = branch.referent();

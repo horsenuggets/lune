@@ -214,14 +214,15 @@ impl ActorLink {
     }
 
     fn finish(&self, outcome: ActorOutcome) {
+        self.inbox.close();
+        // Closing keeps queued messages available to the owner.
+        self.outbox.close();
         {
             let mut current = self.outcome.lock().unwrap_or_else(PoisonError::into_inner);
             if current.is_none() {
                 *current = Some(outcome);
             }
         }
-        // Owners can still receive messages that were sent before the actor finished.
-        self.outbox.close();
         self.done_tx.close();
     }
 
@@ -354,6 +355,34 @@ mod tests {
 
     fn link() -> Arc<ActorLink> {
         Arc::new(ActorLink::new(Transfer::Nil))
+    }
+
+    #[test]
+    fn publishing_an_outcome_closes_the_inbox_and_preserves_queued_outbox_messages() {
+        for outcome in [
+            ActorOutcome::Completed(Vec::new()),
+            ActorOutcome::Failed("setup failure".to_string()),
+        ] {
+            let link = link();
+            let inbox = link.inbox.receiver("Existing");
+            assert!(
+                link.outbox
+                    .send("Progress", Transfer::String(b"queued".to_vec()))
+            );
+            link.finish(outcome);
+            assert!(link.is_finished());
+            assert!(inbox.is_closed());
+            assert!(!link.inbox.send("Existing", Transfer::Nil));
+            assert!(!link.inbox.send("New", Transfer::Nil));
+            let progress = link.outbox.receiver("Progress");
+            assert!(
+                matches!(progress.try_recv(), Ok(Transfer::String(value)) if value == b"queued")
+            );
+            assert!(progress.try_recv().is_err());
+            assert!(progress.is_closed());
+            link.terminate();
+            assert!(!link.inbox.send("AfterTerminate", Transfer::Nil));
+        }
     }
 
     #[test]
