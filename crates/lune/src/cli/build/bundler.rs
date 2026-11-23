@@ -149,9 +149,19 @@ impl Bundler {
     }
 
     /// Bundle all dependencies starting from the entry file
-    pub fn bundle(&mut self, entry_path: &Path, js_include: &[String]) -> Result<BundleResult> {
+    pub fn bundle(
+        &mut self,
+        entry_path: &Path,
+        include: &[String],
+        js_include: &[String],
+    ) -> Result<BundleResult> {
         // First pass: collect all files with canonical paths
         self.process_file(entry_path)?;
+        for pattern in include {
+            for path in expand_luau_include(pattern)? {
+                self.process_file(&path)?;
+            }
+        }
         let (js_modules, js_roots) = self.process_js_modules(js_include)?;
         // An opaque context is only fatal when nothing could be embedded from it.
         if let Some((file, receiver)) = self.js_unresolved.first() {
@@ -545,6 +555,42 @@ fn absolute_path(path: &Path) -> PathBuf {
     }
 }
 
+fn expand_luau_include(pattern: &str) -> Result<Vec<PathBuf>> {
+    let paths = if pattern.contains(['*', '?', '[']) {
+        glob::glob(pattern)
+            .with_context(|| format!("Invalid --include pattern \"{pattern}\"."))?
+            .map(|entry| {
+                entry.with_context(|| format!("Failed to expand --include pattern \"{pattern}\"."))
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        vec![PathBuf::from(pattern)]
+    };
+    if paths.is_empty() {
+        bail!("The --include pattern \"{pattern}\" matched no files.");
+    }
+    let mut sources = BTreeSet::new();
+    for path in paths {
+        let source = Bundler::find_module_file(&path).with_context(|| {
+            format!(
+                "Included Luau source \"{}\" does not exist.",
+                path.display()
+            )
+        })?;
+        if !matches!(
+            source.extension().and_then(|ext| ext.to_str()),
+            Some("lua" | "luau")
+        ) {
+            bail!(
+                "Included source \"{}\" must be a .lua or .luau file.",
+                source.display()
+            );
+        }
+        sources.insert(source);
+    }
+    Ok(sources.into_iter().collect())
+}
+
 fn expand_js_include(pattern: &str) -> Result<Vec<PathBuf>> {
     if !pattern.contains(['*', '?', '[']) {
         let path = PathBuf::from(pattern);
@@ -602,6 +648,177 @@ pub(super) fn normalize_bundle_path(canonical: &Path, base_dir: &Path) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn source_fixture(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        for (name, source) in files {
+            let path = directory.path().join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, source).unwrap();
+        }
+        directory
+    }
+
+    #[test]
+    fn includes_luau_sources_and_their_require_dependencies() {
+        let fixture = source_fixture(&[
+            ("Main.luau", "return true"),
+            ("Worker.luau", "return require(\"./Dependency\")"),
+            ("Dependency.lua", "return 42"),
+        ]);
+        let entry = fixture.path().join("Main.luau");
+        let mut bundler = Bundler::new(&entry).unwrap();
+        let result = bundler
+            .bundle(
+                &entry,
+                &[fixture.path().join("Worker.luau").display().to_string()],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(result.files.len(), 3);
+        for name in ["Main.luau", "Worker.luau", "Dependency.lua"] {
+            assert!(result.files.contains_key(&format!("/{name}")));
+        }
+    }
+
+    #[test]
+    fn includes_globs_in_sorted_order_without_duplicates() {
+        let fixture = source_fixture(&[
+            ("Main.luau", "return true"),
+            ("Workers/Zeta.luau", "return 2"),
+            ("Workers/Alpha.luau", "return 1"),
+        ]);
+        let pattern = format!("{}/*.luau", fixture.path().join("Workers").display());
+        let paths = expand_luau_include(&pattern).unwrap();
+        assert_eq!(
+            paths,
+            [
+                fixture.path().join("Workers/Alpha.luau"),
+                fixture.path().join("Workers/Zeta.luau"),
+            ]
+        );
+        let entry = fixture.path().join("Main.luau");
+        let mut bundler = Bundler::new(&entry).unwrap();
+        let result = bundler
+            .bundle(
+                &entry,
+                &[
+                    pattern.clone(),
+                    fixture
+                        .path()
+                        .join("Workers/Alpha.luau")
+                        .display()
+                        .to_string(),
+                    pattern,
+                ],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(result.files.len(), 3);
+    }
+
+    #[test]
+    fn includes_directory_modules_and_extensionless_module_paths() {
+        let fixture = source_fixture(&[
+            ("Main.luau", "return true"),
+            ("Workers/init.luau", "return require(\"./Nested\")"),
+            ("Workers/Nested.luau", "return 1"),
+            ("Dotted.worker.lua", "return 2"),
+        ]);
+        let entry = fixture.path().join("Main.luau");
+        let mut bundler = Bundler::new(&entry).unwrap();
+        let result = bundler
+            .bundle(
+                &entry,
+                &[
+                    fixture.path().join("Workers").display().to_string(),
+                    fixture.path().join("Dotted.worker").display().to_string(),
+                ],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(result.files.len(), 4);
+        assert!(result.files.contains_key("/Workers/init.luau"));
+        assert!(result.files.contains_key("/Workers/Nested.luau"));
+        assert!(result.files.contains_key("/Dotted.worker.lua"));
+    }
+
+    #[test]
+    fn included_sources_expand_the_relocated_bundle_root() {
+        let fixture = source_fixture(&[
+            ("App/Main.luau", "return true"),
+            ("Workers/Worker.luau", "return require(\"../Shared\")"),
+            ("Shared.luau", "return 42"),
+        ]);
+        let entry = fixture.path().join("App/Main.luau");
+        let mut bundler = Bundler::new(&entry).unwrap();
+        let result = bundler
+            .bundle(
+                &entry,
+                &[fixture
+                    .path()
+                    .join("Workers/Worker.luau")
+                    .display()
+                    .to_string()],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(bundler.base_dir(), fixture.path().canonicalize().unwrap());
+        assert_eq!(result.files.len(), 3);
+        for name in ["App/Main.luau", "Workers/Worker.luau", "Shared.luau"] {
+            assert!(result.files.contains_key(&format!("/{name}")));
+        }
+    }
+
+    #[test]
+    fn included_luau_sources_discover_their_javascript_imports() {
+        let fixture = source_fixture(&[
+            ("Main.luau", "return true"),
+            (
+                "Worker.luau",
+                "const js = require(\"@lune/js\") const context = js.newContext() return context:Import(\"./Worker.js\")",
+            ),
+            ("Worker.js", "export const answer = 42;"),
+        ]);
+        let entry = fixture.path().join("Main.luau");
+        let mut bundler = Bundler::new(&entry).unwrap();
+        let result = bundler
+            .bundle(
+                &entry,
+                &[fixture.path().join("Worker.luau").display().to_string()],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(result.files.len(), 2);
+        assert_eq!(result.js_modules.len(), 1);
+    }
+
+    #[test]
+    fn rejects_invalid_missing_and_non_luau_includes() {
+        let fixture = source_fixture(&[("Wrong.txt", "not Luau")]);
+        for (pattern, expected) in [
+            ("[".to_string(), "Invalid --include pattern"),
+            (
+                fixture.path().join("Missing.luau").display().to_string(),
+                "does not exist",
+            ),
+            (
+                format!("{}/*.luau", fixture.path().display()),
+                "matched no files",
+            ),
+            (
+                fixture.path().join("Wrong.txt").display().to_string(),
+                "must be a .lua or .luau file",
+            ),
+            (
+                format!("{}/*.txt", fixture.path().display()),
+                "must be a .lua or .luau file",
+            ),
+        ] {
+            let message = expand_luau_include(&pattern).unwrap_err().to_string();
+            assert!(message.contains(expected), "{pattern} gave {message}");
+        }
+    }
 
     // -- find_module_file_with --
 
