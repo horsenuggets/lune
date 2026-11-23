@@ -21,9 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `actor.bindToMessage`.
 - `join` returns `true` and the actor's returned values, or `false` and one error message
   string that includes the traceback and, when several threads errored, every error in
-  order. Actors never print their errors themselves, so parallel actors cannot interleave
-  duplicate reports. Panics inside native code, non-zero exit codes, termination and
-  scripts that end without returning all make `join` return `false`.
+  order. Actors never print their errors or panics themselves, so parallel actors cannot
+  interleave duplicate reports. Panics inside native code, including in background tasks,
+  non-zero exit codes, termination and scripts that end without returning all make `join`
+  return `false`. An explicit `process.exit(0)` makes `join` return `true` with no values,
+  even after errors in other threads, matching how an explicit exit code decides the
+  result of an ordinary Lune script.
 - Messages copy `nil`, booleans, numbers, vectors, strings, buffers and plain tables,
   keeping frozen tables frozen. Functions, threads, Instances and other userdata,
   cyclic tables and tables with metatables are rejected with clear errors.
@@ -31,11 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without copying, with atomic `increment` and `update` plus `clone`, `cloneAndFreeze`,
   `clear`, `size` and `isFrozen`. Storing a shared table where it would contain itself is
   rejected, and cloning and releasing deeply nested shared tables cannot overflow the
-  stack.
-- `terminate` stops busy, protected and idle actors, `process.exit` inside an actor ends
-  only that actor, and actors still running when their owner's script finishes or calls
-  `process.exit` are terminated and joined. Actor threads get the same 8 MiB stack as the
-  main thread on Linux and macOS. `stdio.prompt` is unavailable inside actors.
+  stack. A deep clone copies each shared table once and keeps tables that were shared
+  between several places shared in the copy.
+- `terminate` stops busy, protected, idle and still-starting actors, `process.exit` inside
+  an actor ends only that actor, and actors still running when their owner's script
+  finishes or calls `process.exit` are terminated and joined. Actor threads get the same
+  8 MiB stack as the main thread on Linux and macOS. `stdio.prompt` is unavailable inside
+  actors.
 - Schedulers now provide a thread-safe exit handle, so other threads can stop them even
   while they are idle.
 
@@ -47,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A panic in Rust code called by a scheduled Luau thread is now reported as an error of
   that thread. Previously the thread silently disappeared without a result or an error,
   so a script could exit successfully after a crash.
+- A panic in a background task that was detached, or dropped without being awaited, is
+  now reported as an error, so the script exits with code 1. Previously the panic was
+  silently discarded. Awaited tasks still resume their panic in the awaiting code, and it
+  is reported once. `LuaSpawnExt::spawn` and `spawn_blocking` now return a
+  `SpawnedTask`, which can be awaited or detached like the executor task it wraps.
+- A panic on one thread while the process-wide instance registry was locked no longer
+  breaks instances on every other thread, which previously failed with a `PoisonError`.
+  Class-specific members such as `DataModel:GetService` now reject a destroyed instance
+  with an ordinary "Instance has been destroyed" error instead of panicking.
 - Bundled files of standalone executables are shared between runs instead of being
   copied into each one.
 

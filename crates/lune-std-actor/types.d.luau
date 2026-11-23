@@ -48,10 +48,15 @@
 	`join` returns `true` followed by the values the actor's script returned, or `false`
 	followed by a single error message string. That message contains the traceback, and
 	when several of the actor's threads errored, every error in order. Actors never print
-	their own errors, so their owner only learns about them through `join`.
+	their own errors or panics, so their owner only learns about them through `join`.
 
-	A panic inside native code that the actor called, an exit with a non-zero code, being
-	terminated and a script that ends without returning all make `join` return `false`.
+	A panic inside native code that the actor called, including in a background task it
+	started, an exit with a non-zero code, being terminated and a script that ends without
+	returning all make `join` return `false`.
+
+	An explicit `process.exit(0)` inside an actor makes `join` return `true` with no values,
+	even when other threads of the actor errored before it, the same way an explicit exit
+	code decides the result of an ordinary Lune script.
 
 	### Lifetime
 
