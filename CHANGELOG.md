@@ -81,9 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Content-Length` header declares, and `fetch` also fails when its connection driver
   panics. Previously a driver panic while the body was streaming ended the body early,
   and the truncated body was returned as if it were complete.
-- A deep `SharedTable.clone` keeps every source table alive until it finishes. Previously
-  another actor could free an already copied table during the clone, and a new table at
-  the same address was then matched to the wrong copy.
+- Deep `SharedTable.clone` and `cloneAndFreeze` operations block table-valued writes
+  until copying finishes, so concurrent edge reversals cannot create a cyclic copy. Deep
+  clones also keep every source table alive until they finish. Previously another actor
+  could free an already copied table during the clone, and a new table at the same address
+  was then matched to the wrong copy.
 - A panic on one thread while the process-wide instance registry was locked no longer
   breaks instances on every other thread, which previously failed with a `PoisonError`.
   Class-specific members such as `DataModel:GetService` now reject a destroyed instance

@@ -98,11 +98,13 @@ fn option_to_lua(value: Option<&SharedValue>, lua: &Lua) -> LuaResult<LuaValue> 
 }
 
 /**
-    Serializes every write that stores a shared table inside another one.
+    Serializes table-valued writes with each other and with deep copies.
 
     A cycle can only appear when a write stores a table value, so holding this lock while
     checking reachability and writing means that two actors storing each other's tables at
-    the same moment can never form a cycle together. Writes of other values never take it.
+    the same moment can never form a cycle together. Deep copies hold it across all their
+    snapshots so concurrent edge reversals cannot create a cyclic copy. Writes of other
+    values never take it.
 */
 static STRUCTURE: Mutex<()> = Mutex::new(());
 
@@ -321,7 +323,9 @@ impl SharedTable {
     /**
         Copies this table, and with `deep` every table nested inside it, one table at a
         time instead of recursively, so arbitrarily deep chains cannot overflow the stack.
-        Shared tables can never contain themselves, so the copy always terminates.
+        Deep copies hold the structure lock so concurrent edge reversals cannot combine
+        snapshots from different acyclic graphs into a cyclic copy. Edge removals and
+        scalar writes may still proceed, since neither can introduce a cycle.
 
         A table reached through several paths is copied once and shared the same way in
         the result, so the work grows with the number of distinct tables, not paths.
@@ -332,6 +336,7 @@ impl SharedTable {
         to that earlier copy.
     */
     fn copy(&self, deep: bool, frozen: bool) -> LuaResult<Self> {
+        let _guard = deep.then(structure);
         let root = Self::with_entries(HashMap::new(), frozen);
         let mut copies: HashMap<*const SharedInner, (Self, Self)> = HashMap::new();
         copies.insert(Arc::as_ptr(&self.inner), (self.clone(), root.clone()));
@@ -792,6 +797,70 @@ mod tests {
             Some(true),
             "a copied source table must stay alive until the copy finishes"
         );
+    }
+
+    #[test]
+    fn deep_clones_cannot_capture_cycles_from_concurrent_edge_reversals() {
+        for frozen in [false, true] {
+            let child_key = SharedKey::String(b"Child".to_vec());
+            let back_key = SharedKey::String(b"Back".to_vec());
+            let root = SharedTable::with_entries(HashMap::new(), false);
+            let child = SharedTable::with_entries(HashMap::new(), false);
+            root.set(child_key.clone(), Some(SharedValue::Table(child.clone())))
+                .unwrap();
+            let hook_root = root.clone();
+            let hook_child = child.clone();
+            let hook_child_key = child_key.clone();
+            let hook_back_key = back_key.clone();
+            let writer = Rc::new(RefCell::new(None));
+            let hook_writer = Rc::clone(&writer);
+            COPY_STEP.with(|hook| {
+                *hook.borrow_mut() = Some((
+                    0,
+                    Box::new(move |step| {
+                        if step != 1 {
+                            return;
+                        }
+                        // The root snapshot already contains Child. Reverse that edge
+                        // before the child's snapshot unless the deep copy blocks stores.
+                        hook_root.set(hook_child_key.clone(), None).unwrap();
+                        let root = hook_root.clone();
+                        let child = hook_child.clone();
+                        let back_key = hook_back_key.clone();
+                        let (started, ready) = std::sync::mpsc::channel();
+                        let (finished, completion) = std::sync::mpsc::channel();
+                        *hook_writer.borrow_mut() = Some(thread::spawn(move || {
+                            started.send(()).unwrap();
+                            child.set(back_key, Some(SharedValue::Table(root))).unwrap();
+                            let _ = finished.send(());
+                        }));
+                        ready.recv().unwrap();
+                        let _ = completion.recv_timeout(RENDEZVOUS_TIMEOUT);
+                    }),
+                ));
+            });
+            let copy = root.copy(true, frozen);
+            COPY_STEP.with(|hook| hook.borrow_mut().take());
+            writer.borrow_mut().take().unwrap().join().unwrap();
+            let copy = copy.unwrap();
+            let Some(SharedValue::Table(copied_child)) =
+                copy.read(|state| state.entries.get(&child_key).cloned())
+            else {
+                panic!("the root snapshot must preserve its child");
+            };
+            let copied_back = copied_child.read(|state| state.entries.get(&back_key).cloned());
+            let cyclic =
+                matches!(copied_back, Some(SharedValue::Table(back)) if back.is_same(&copy));
+            // Also release an invalid frozen copy when testing without the fix.
+            copied_child.inner.state.write().unwrap().entries.clear();
+            child.set(back_key, None).unwrap();
+            assert!(
+                !cyclic,
+                "a deep copy must not combine reversed edges into a cycle"
+            );
+            assert_eq!(copy.inner.frozen, frozen);
+            assert_eq!(copied_child.inner.frozen, frozen);
+        }
     }
 
     #[test]
