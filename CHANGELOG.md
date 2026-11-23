@@ -70,6 +70,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ancestor searches no longer expose the synthetic document root. Previously an actor
+  could obtain the shared scratch root and reach orphaned instances created by another
+  VM. Real ancestors, including folders named `ROOT` and DataModels, remain discoverable.
+- Finished actors stop accepting messages as soon as they publish their outcome, even
+  before `join`. Previously sends could silently queue messages for a VM that had exited.
+  Messages already sent to the owner remain available to receive.
+- Spawning and joining actors now reap completed workers from the owner's child registry,
+  releasing abandoned arguments, results and mailboxes while user-held handles retain
+  their own results. Live workers remain tracked for owner shutdown.
 - Relative `require` paths in `init.luau` and project-remapped entrypoints now resolve
   beside the actual source file instead of beside its shortened module identity.
 - Creating Instances from several threads at once no longer panics with "Failed to find
@@ -80,10 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a script could exit successfully after a crash.
 - A panic in a background task that was detached, or whose handle was dropped while it
   ran, is now reported as an error, so the script exits with code 1. Previously the panic
-  was silently discarded. Awaited tasks still resume their panic in the awaiting code, and
-  it is reported once. One case remains: a `spawn_blocking` function keeps running after
-  its handle is dropped, and a panic it raises afterward is still lost, though the code
-  that dropped the handle was no longer waiting for its result.
+  was silently discarded. Dropping a handle while its future is already being polled
+  also reports a panic raised later in that poll. Awaited tasks still resume their panic
+  in the awaiting code, and it is reported once. One case remains: a `spawn_blocking`
+  function keeps running after its handle is cancelled, and a panic it raises afterward
+  can still be lost, allowing the run to finish successfully despite that operation failing.
 - `fetch` and `net.request` now fail when a response body ends before the length its
   `Content-Length` header declares, and `fetch` also fails when its connection driver
   panics. Previously a driver panic while the body was streaming ended the body early,
