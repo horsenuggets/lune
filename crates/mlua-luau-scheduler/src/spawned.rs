@@ -42,7 +42,7 @@ pub(crate) fn background_panic_message(payload: &str) -> String {
 
 #[derive(Default)]
 struct PanicState {
-    detached: bool,
+    ownerless: bool,
     observed: bool,
     pending: Option<String>,
 }
@@ -57,8 +57,8 @@ struct PanicState {
 
     One case is still not reported. Dropping the handle cancels the task, but a closure
     given to `spawn_blocking` keeps running on its blocking thread, and a panic it raises
-    after the cancellation is lost. Whoever dropped the handle has already stopped waiting
-    for its result, so this cannot make a failed run look successful.
+    after the cancellation is lost. The scheduler cannot observe that panic, so the run
+    may still finish successfully despite the blocking operation's failure.
 */
 pub struct SpawnedTask<T> {
     task: Option<Task<T>>,
@@ -81,7 +81,7 @@ impl<T: Send + 'static> SpawnedTask<T> {
                 Err(payload) => {
                     let message = background_panic_message(panic_message(payload.as_ref()));
                     let mut state = task_state.lock().unwrap_or_else(PoisonError::into_inner);
-                    if state.detached {
+                    if state.ownerless {
                         task_sink.report(message);
                     } else {
                         state.pending = Some(message);
@@ -109,7 +109,7 @@ impl<T> SpawnedTask<T> {
     */
     pub fn detach(mut self) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.detached = true;
+        state.ownerless = true;
         if let Some(message) = state.pending.take() {
             self.sink.report(message);
         }
@@ -145,11 +145,130 @@ impl<T> Future for SpawnedTask<T> {
 impl<T> Drop for SpawnedTask<T> {
     fn drop(&mut self) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        // A poll already running on another thread can still panic after cancellation.
+        state.ownerless = true;
         if !state.observed
             && let Some(message) = state.pending.take()
         {
             // The handle was dropped after the task panicked without anyone awaiting it.
             self.sink.report(message);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::mpsc, thread, time::Duration};
+
+    use super::*;
+
+    fn assert_reported_once(reports: &Receiver<String>, message: &str) {
+        assert_eq!(
+            reports.try_recv().unwrap(),
+            background_panic_message(message)
+        );
+        assert!(
+            reports.try_recv().is_err(),
+            "a panic must only be reported once"
+        );
+    }
+
+    #[test]
+    fn dropping_a_handle_during_poll_reports_a_later_panic_once() {
+        let executor = Arc::new(Executor::new());
+        let (sink, reports) = PanicSink::new();
+        let (started, polling) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let task: SpawnedTask<()> = SpawnedTask::spawn(
+            &executor,
+            async move {
+                started.send(()).unwrap();
+                released.recv().unwrap();
+                panic!("panic after the handle was dropped");
+            },
+            sink,
+        );
+        let runner = thread::spawn(move || executor.try_tick());
+        polling.recv_timeout(Duration::from_secs(10)).unwrap();
+        drop(task);
+        release.send(()).unwrap();
+        assert!(runner.join().unwrap());
+        assert_reported_once(&reports, "panic after the handle was dropped");
+    }
+
+    #[test]
+    fn awaited_panics_do_not_also_become_background_errors() {
+        let executor = Executor::new();
+        let (sink, reports) = PanicSink::new();
+        let task: SpawnedTask<()> =
+            SpawnedTask::spawn(&executor, async { panic!("awaited panic") }, sink);
+        let result =
+            futures_lite::future::block_on(executor.run(AssertUnwindSafe(task).catch_unwind()));
+        assert_eq!(panic_message(result.unwrap_err().as_ref()), "awaited panic");
+        assert!(reports.try_recv().is_err());
+    }
+
+    #[test]
+    fn detached_panics_are_reported_once_before_or_after_completion() {
+        for detach_after_panic in [false, true] {
+            let executor = Executor::new();
+            let (sink, reports) = PanicSink::new();
+            let task: SpawnedTask<()> =
+                SpawnedTask::spawn(&executor, async { panic!("detached panic") }, sink);
+            if detach_after_panic {
+                assert!(executor.try_tick());
+                assert!(reports.try_recv().is_err());
+                task.detach();
+            } else {
+                task.detach();
+                assert!(executor.try_tick());
+            }
+            assert_reported_once(&reports, "detached panic");
+        }
+    }
+
+    #[test]
+    fn dropping_a_handle_after_a_panic_reports_it_once() {
+        let executor = Executor::new();
+        let (sink, reports) = PanicSink::new();
+        let task: SpawnedTask<()> =
+            SpawnedTask::spawn(&executor, async { panic!("unobserved panic") }, sink);
+        assert!(executor.try_tick());
+        assert!(reports.try_recv().is_err());
+        drop(task);
+        assert_reported_once(&reports, "unobserved panic");
+    }
+
+    #[test]
+    fn dropping_a_handle_cancels_a_pending_future_without_background_errors() {
+        let executor = Executor::new();
+        let (sink, reports) = PanicSink::new();
+        let (sender, receiver) = async_channel::bounded::<()>(1);
+        let task = SpawnedTask::spawn(
+            &executor,
+            async move {
+                futures_lite::future::pending::<()>().await;
+                sender.send(()).await.unwrap();
+            },
+            sink,
+        );
+        assert!(executor.try_tick());
+        assert!(!receiver.is_closed());
+        drop(task);
+        while executor.try_tick() {}
+        assert!(
+            receiver.is_closed(),
+            "cancellation must drop the pending future"
+        );
+        assert!(reports.try_recv().is_err());
+    }
+
+    #[test]
+    fn successful_tasks_return_values_without_background_errors() {
+        let executor = Executor::new();
+        let (sink, reports) = PanicSink::new();
+        let task = SpawnedTask::spawn(&executor, async { 42 }, sink);
+        assert_eq!(futures_lite::future::block_on(executor.run(task)), 42);
+        assert!(reports.try_recv().is_err());
     }
 }
