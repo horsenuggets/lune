@@ -7,6 +7,10 @@ const state = require("./workers/state")
 state.Count = 100
 _G.OwnerValue = "Owner"
 
+const ownerFolder = roblox.Instance.new("Folder")
+ownerFolder.Name = "OwnerFolder"
+ownerFolder:SetAttribute("OwnerValue", "Unchanged")
+
 const results = {}
 for index = 1, 2 do
 	const ok, result = actor.spawn("./workers/isolated.luau", { args = { index } }):join()
@@ -29,6 +33,13 @@ end
 
 assert(state.Count == 100, "Actors should not change the owner's modules")
 assert(_G.ActorValue == nil, "Actors should not change the owner's globals")
+assert(ownerFolder.Name == "OwnerFolder", "Actors must not reach and rename the owner's orphan")
+assert(
+	ownerFolder:GetAttribute("OwnerValue") == "Unchanged",
+	"Actors must not alter the owner's orphan"
+)
+assert(ownerFolder.Parent == nil, "The owner's orphan must remain unparented")
+ownerFolder:Destroy()
 
 const folder = roblox.Instance.new("Folder")
 assert(not pcall(function()

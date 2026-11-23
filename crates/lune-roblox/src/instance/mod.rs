@@ -819,7 +819,9 @@ impl Instance {
         self.read(|dom, instance| {
             let mut ancestor_ref = instance.parent();
 
-            while let Some(ancestor) = dom.get_by_ref(ancestor_ref) {
+            while ancestor_ref != dom.root_ref()
+                && let Some(ancestor) = dom.get_by_ref(ancestor_ref)
+            {
                 if predicate(ancestor) {
                     return Some(Self::from_dom_instance(self.dom_id, ancestor_ref, ancestor));
                 }
@@ -1073,6 +1075,59 @@ mod tests {
             "Destroying the last child must drop the document"
         );
         (folder, part)
+    }
+
+    #[test]
+    fn ancestor_walks_stop_before_the_synthetic_document_root() {
+        let part = DomInstanceBuilder::new("Part");
+        let part_ref = part.referent();
+        let folder = DomInstanceBuilder::new("Folder")
+            .with_name("ROOT")
+            .with_child(part);
+        let folder_ref = folder.referent();
+        let data_model = DomInstanceBuilder::new("DataModel").with_child(folder);
+        let data_model_ref = data_model.referent();
+        let dom_id = dom_registry::register(WeakDom::new(
+            DomInstanceBuilder::new("ROOT").with_child(data_model),
+        ));
+        let synthetic_root = dom_registry::with(dom_id, WeakDom::root_ref).unwrap();
+        let part = Instance::new(dom_id, part_ref);
+        let folder = Instance::new(dom_id, folder_ref);
+        let mut data_model = Instance::new(dom_id, data_model_ref);
+
+        assert_eq!(
+            part.find_ancestor(|ancestor| ancestor.name == "ROOT"),
+            Some(folder)
+        );
+        assert_eq!(
+            part.find_ancestor(|ancestor| ancestor.class == "Folder"),
+            Some(folder)
+        );
+        assert_eq!(
+            part.find_ancestor(|ancestor| class_is_a(ancestor.class, "DataModel").unwrap_or(false)),
+            Some(data_model)
+        );
+        assert_eq!(folder.find_ancestor(|_| true), Some(data_model));
+        assert_eq!(data_model.find_ancestor(|_| true), None);
+        assert_eq!(
+            part.find_ancestor(|ancestor| ancestor.class == "ROOT"),
+            None
+        );
+        assert_eq!(
+            part.find_ancestor(|ancestor| ancestor.referent() == synthetic_root),
+            None
+        );
+        let visited = std::cell::RefCell::new(Vec::new());
+        assert_eq!(
+            part.find_ancestor(|ancestor| {
+                visited.borrow_mut().push(ancestor.referent());
+                false
+            }),
+            None
+        );
+        assert_eq!(*visited.borrow(), [folder_ref, data_model_ref]);
+        assert!(data_model.destroy());
+        assert!(dom_registry::with(dom_id, |_| ()).is_none());
     }
 
     #[test]

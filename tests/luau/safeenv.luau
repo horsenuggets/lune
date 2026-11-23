@@ -1,14 +1,18 @@
 local luau = require("@lune/luau")
 
-local TEST_SCRIPT = [[
-    local start = os.clock()
-    local x
-    for i = 1, 1e6 do
-        x = math.sqrt(i)
-    end
-    local finish = os.clock()
+-- _G is explicitly mutable in Luau, so use an ordinary global for the import probe.
+local setProbe, originalProbe = luau.load([[
+    return function(value)
+        __luneSafeenvProbe = value
+    end, __luneSafeenvProbe
+]])()
+local probe = { Value = 1 }
+setProbe(probe)
 
-    return finish - start
+-- Safe environments cache imported values at load time. Custom environments must
+-- resolve the same import dynamically, without depending on shared-runner timings.
+local TEST_SCRIPT = [[
+    return __luneSafeenvProbe.Value
 ]]
 
 local TEST_BYTECODE = luau.compile(TEST_SCRIPT, {
@@ -39,26 +43,24 @@ local unsafeFunction = luau.load(TEST_BYTECODE, {
 	codegenEnabled = false,
 })
 
--- Run the functions to get the timings
-local safeCodegenTime = safeCodegenFunction()
-local unsafeCodegenTime = unsafeCodegenFunction()
-local safeTime = safeFunction()
-local unsafeTime = unsafeFunction()
+for _, func in { safeCodegenFunction, unsafeCodegenFunction, safeFunction, unsafeFunction } do
+	assert(func() == 1, "Every configuration must see the original import value")
+end
 
--- Assert that safeCodegenTime is always twice as fast as both unsafe functions
-local safeCodegenUpperBound = safeCodegenTime * 2
+probe.Value = 2
+local safeCodegenValue = safeCodegenFunction()
+local unsafeCodegenValue = unsafeCodegenFunction()
+local safeValue = safeFunction()
+local unsafeValue = unsafeFunction()
+setProbe(originalProbe)
+
+assert(safeCodegenValue == 1, "Codegen with the default environment must preserve cached imports")
+assert(safeValue == 1, "The default environment must preserve cached imports without codegen")
 assert(
-	unsafeCodegenTime > safeCodegenUpperBound and unsafeTime > safeCodegenUpperBound,
-	"expected luau.load with codegenEnabled = true and no custom environment to use codegen"
+	unsafeCodegenValue == 2,
+	"A custom environment must resolve imports dynamically with codegen requested"
 )
+assert(unsafeValue == 2, "A custom environment must resolve imports dynamically without codegen")
 
--- Assert that safeTime is always atleast twice as fast as both unsafe functions
-local safeUpperBound = safeTime * 2
-assert(
-	unsafeCodegenTime > safeUpperBound and unsafeTime > safeUpperBound,
-	"expected luau.load with codegenEnabled = false and no custom environment to have safeenv enabled"
-)
-
--- Normally we'd also want to check whether codegen is actually being enabled by
--- comparing timings of safe_codegen_fn and safe_fn but since we don't have a way of
--- checking whether the current device even supports codegen, we can't safely test this.
+-- Native generation and execution flags are checked directly by the standard-library
+-- Rust tests, including platforms that cannot generate native code.

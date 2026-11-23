@@ -33,7 +33,7 @@ impl LuaUserData for ActorHandle {
                 Ok(())
             } else {
                 Err(LuaError::runtime(
-                    "This actor no longer accepts messages, since it was joined or terminated.",
+                    "This actor no longer accepts messages, since it finished, was joined or was terminated.",
                 ))
             }
         });
@@ -63,6 +63,7 @@ impl LuaUserData for ActorHandle {
                     })
                     .await;
                 }
+                crate::reap_children(&lua);
                 let mut results = LuaMultiValue::new();
                 match outcome {
                     ActorOutcome::Completed(values) => {
