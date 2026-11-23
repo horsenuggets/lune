@@ -107,6 +107,25 @@ pub struct ActorLink {
 }
 
 impl ActorLink {
+    /**
+        Creates a link with no arguments, optionally already terminated.
+
+        # WARNING
+
+        This is an API meant only for private consumption by the main `lune`
+        crate's tests, which need a link to check how a runtime reports
+        termination. It is NOT guaranteed to follow semver or remain stable.
+    */
+    #[doc(hidden)]
+    #[must_use]
+    pub fn for_testing(terminated: bool) -> Arc<Self> {
+        let link = Arc::new(Self::new(Transfer::Nil));
+        if terminated {
+            link.terminate();
+        }
+        link
+    }
+
     pub(crate) fn new(args: Transfer) -> Self {
         let (done_tx, done_rx) = async_channel::bounded(1);
         Self {

@@ -533,18 +533,7 @@ impl Runtime {
         #[cfg(feature = "std-actor")]
         {
             self.lua
-                .set_app_data(super::actor::launcher(super::actor::WorkerConfig {
-                    args: self.args.clone(),
-                    env: self.env.clone(),
-                    jit: self.jit,
-                    bundled_files: self.bundled_files.clone(),
-                    bundled_aliases: self.bundled_aliases.clone(),
-                    #[cfg(feature = "std-js")]
-                    bundled_js_modules: self.bundled_js_modules.clone(),
-                    #[cfg(feature = "std-js")]
-                    bundled_js_roots: self.bundled_js_roots.clone(),
-                    executable_path: self.executable_path.clone(),
-                }));
+                .set_app_data(super::actor::launcher(self.worker_config()));
             if let Some(link) = &self.actor {
                 lune_std_actor::install_worker(&self.lua, Arc::clone(link));
             }
@@ -682,6 +671,24 @@ impl Runtime {
 
 #[cfg(feature = "std-actor")]
 impl Runtime {
+    /**
+        The configuration that actors started by this runtime inherit.
+    */
+    pub(super) fn worker_config(&self) -> super::actor::WorkerConfig {
+        super::actor::WorkerConfig {
+            args: self.args.clone(),
+            env: self.env.clone(),
+            jit: self.jit,
+            bundled_files: self.bundled_files.clone(),
+            bundled_aliases: self.bundled_aliases.clone(),
+            #[cfg(feature = "std-js")]
+            bundled_js_modules: self.bundled_js_modules.clone(),
+            #[cfg(feature = "std-js")]
+            bundled_js_roots: self.bundled_js_roots.clone(),
+            executable_path: self.executable_path.clone(),
+        }
+    }
+
     /**
         Creates the runtime of an actor, inheriting its owner's configuration.
 

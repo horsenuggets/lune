@@ -87,3 +87,81 @@ pub(crate) fn launcher(config: WorkerConfig) -> ActorLauncher {
         })
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::thread;
+
+    use lune_std_actor::TERMINATED_MESSAGE;
+
+    use super::*;
+
+    const MISSING_SCRIPT: &str = "tests/actor/workers/this-script-does-not-exist.luau";
+
+    fn config() -> WorkerConfig {
+        Runtime::new().unwrap().worker_config()
+    }
+
+    fn failure(outcome: ActorOutcome) -> String {
+        match outcome {
+            ActorOutcome::Failed(message) => message,
+            ActorOutcome::Completed(_) => panic!("the actor should have failed"),
+        }
+    }
+
+    #[test]
+    fn run_failures_of_a_live_actor_keep_their_own_message() {
+        let outcome = thread::spawn(|| {
+            run_actor(
+                config(),
+                PathBuf::from(MISSING_SCRIPT),
+                ActorLink::for_testing(false),
+            )
+        })
+        .join()
+        .unwrap();
+        assert_ne!(failure(outcome), TERMINATED_MESSAGE);
+    }
+
+    #[test]
+    fn run_failures_of_a_terminated_actor_report_termination() {
+        // The script cannot be read, so running it fails after a successful setup.
+        let outcome = thread::spawn(|| {
+            run_actor(
+                config(),
+                PathBuf::from(MISSING_SCRIPT),
+                ActorLink::for_testing(true),
+            )
+        })
+        .join()
+        .unwrap();
+        assert_eq!(failure(outcome), TERMINATED_MESSAGE);
+    }
+
+    #[test]
+    fn setup_failures_of_a_terminated_actor_report_termination() {
+        // A thread can host only one actor runtime, so creating a second one on the same
+        // thread makes the actor's setup fail.
+        let (live, terminated) = thread::spawn(|| {
+            let _first = Runtime::new_actor(config(), ActorLink::for_testing(false)).unwrap();
+            let live = run_actor(
+                config(),
+                PathBuf::from(MISSING_SCRIPT),
+                ActorLink::for_testing(false),
+            );
+            let terminated = run_actor(
+                config(),
+                PathBuf::from(MISSING_SCRIPT),
+                ActorLink::for_testing(true),
+            );
+            (live, terminated)
+        })
+        .join()
+        .unwrap();
+        assert!(
+            failure(live).contains("Failed to create the actor runtime"),
+            "a live actor must report its setup failure"
+        );
+        assert_eq!(failure(terminated), TERMINATED_MESSAGE);
+    }
+}
