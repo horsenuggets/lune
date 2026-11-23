@@ -30,7 +30,7 @@ assert(
 )
 assert(child:GetFullName() == "Home.Part", "The child must stay fully attached")
 
--- A destroyed DataModel is the root of its own document, which is gone entirely
+-- A destroyed DataModel refuses children like any other destroyed instance
 const destroyedModel = Instance.new("DataModel")
 destroyedModel:Destroy()
 expectError("the new parent has been destroyed", function()
@@ -61,6 +61,85 @@ expectError("its own descendant", function()
 end)
 assert(home.Parent == nil, "A refused circular reparent must keep the old parent")
 assert(grandchild.Parent == child and child.Parent == home, "The subtree must be unchanged")
+
+-- Every Instance.new shares one scratch document, which other live instances keep. A
+-- deserialized model gets a document of its own, so destroying its last top-level
+-- instance drops that whole document. Its instances keep the members Roblox keeps
+-- readable after Destroy, and every other member is an ordinary error.
+const source = Instance.new("Folder")
+const sourcePart = Instance.new("Part")
+sourcePart.Parent = source
+const loaded = roblox.deserializeModel(roblox.serializeModel({ source }))
+assert(#loaded == 1, "The model must load one top-level instance")
+const loadedFolder = loaded[1]
+const loadedPart = loadedFolder:FindFirstChildOfClass("Part")
+assert(loadedPart, "The loaded model must keep its child")
+loadedFolder:Destroy()
+for _, instance in { loadedFolder, loadedPart } do
+	assert(instance.Parent == nil, "A destroyed instance must read a nil Parent")
+	assert(type(instance.ClassName) == "string", "A destroyed instance must keep its ClassName")
+	assert(instance:IsA(instance.ClassName), "A destroyed instance must keep IsA")
+	assert(type(instance:GetDebugId()) == "string", "A destroyed instance must keep GetDebugId")
+	instance:ClearAllChildren()
+	instance:Destroy()
+	const members: { [string]: () -> ...any } = {
+		Clone = function()
+			return instance:Clone()
+		end,
+		FindFirstAncestor = function()
+			return instance:FindFirstAncestor("Missing")
+		end,
+		FindFirstChild = function()
+			return instance:FindFirstChild("Missing")
+		end,
+		GetAttribute = function()
+			return instance:GetAttribute("Missing")
+		end,
+		GetAttributes = function()
+			return instance:GetAttributes()
+		end,
+		GetChildren = function()
+			return instance:GetChildren()
+		end,
+		GetDescendants = function()
+			return instance:GetDescendants()
+		end,
+		GetFullName = function()
+			return instance:GetFullName()
+		end,
+		GetTags = function()
+			return instance:GetTags()
+		end,
+		HasTag = function()
+			return instance:HasTag("Missing")
+		end,
+		Name = function()
+			return instance.Name
+		end,
+		SetAttribute = function()
+			instance:SetAttribute("Key", 1)
+		end,
+		SetName = function()
+			instance.Name = "Renamed"
+		end,
+		ToString = function()
+			return tostring(instance)
+		end,
+	}
+	for name, member in members do
+		const ok, message = pcall(member)
+		assert(not ok, `"{name}" on a destroyed {instance.ClassName} must error`)
+		assert(
+			string.find(tostring(message), "has been destroyed", 1, true),
+			`"{name}" on a destroyed {instance.ClassName} raised "{tostring(message)}"`
+		)
+	end
+end
+assert(loadedFolder:IsA("Folder") and loadedPart:IsA("Part"), "Destroyed classes must not change")
+assert(
+	source.Parent == nil and sourcePart.Parent == source,
+	"The serialized source must be untouched"
+)
 
 -- Everything keeps working afterward
 const fresh = Instance.new("Folder")
