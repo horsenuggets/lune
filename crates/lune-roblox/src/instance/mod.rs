@@ -48,6 +48,8 @@ pub mod registry;
 
 use dom_registry::DomId;
 
+pub use dom_registry::ReparentError;
+
 const PROPERTY_NAME_ATTRIBUTES: &str = "Attributes";
 const PROPERTY_NAME_TAGS: &str = "Tags";
 
@@ -276,7 +278,7 @@ impl Instance {
         }
     }
 
-    fn is_destroyed(&self) -> bool {
+    pub(crate) fn is_destroyed(&self) -> bool {
         // NOTE: This property can not be cached since instance references
         // other than this one may have destroyed this one, and we don't
         // keep track of all current instance reference structs
@@ -293,7 +295,9 @@ impl Instance {
           on the Roblox Developer Hub
     */
     pub fn clear_all_children(&mut self) {
-        self.with_dom_mut(|dom| {
+        // A destroyed instance has no children left. When it was the root of its
+        // document, that whole document is gone too, so there is nothing to clear.
+        dom_registry::with_mut(self.dom_id, |dom| {
             if let Some(instance) = dom.get_by_ref(self.dom_ref) {
                 let child_refs = instance.children().to_vec();
                 for child_ref in child_refs {
@@ -394,9 +398,29 @@ impl Instance {
         ### See Also
         * [`Parent`](https://create.roblox.com/docs/reference/engine/classes/Instance#Parent)
           on the Roblox Developer Hub
+
+        # Panics
+
+        Panics, before moving anything, in the cases where
+        [`Instance::try_set_parent`] returns an error.
     */
     #[allow(clippy::must_use_candidate)]
     pub fn set_parent(&self, parent: Option<Instance>) -> Vec<DomRef> {
+        self.try_set_parent(parent)
+            .unwrap_or_else(|error| panic!("Failed to set Parent - {error}"))
+    }
+
+    /**
+        Sets the parent of the instance, like [`Instance::set_parent`], but returns
+        an error instead of panicking when the reparent is impossible.
+
+        # Errors
+
+        Returns an error, and moves nothing, if this instance or the new parent has
+        been destroyed, if the new parent is this instance or one of its
+        descendants, or if this instance is the root of its document.
+    */
+    pub fn try_set_parent(&self, parent: Option<Instance>) -> Result<Vec<DomRef>, ReparentError> {
         let parent = parent.map(|p| (p.dom_id, p.dom_ref));
         dom_registry::reparent(self.dom_id, self.dom_ref, parent)
     }

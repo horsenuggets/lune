@@ -15,6 +15,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    fmt,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     sync::{LazyLock, Mutex, MutexGuard, PoisonError},
 };
@@ -180,6 +181,82 @@ fn collect_subtree(dom: &WeakDom, root: DomRef) -> Vec<DomRef> {
 }
 
 /**
+    Why a reparent was refused. No instance has been moved when one is returned.
+*/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReparentError {
+    /// The instance being moved has been destroyed.
+    Destroyed,
+    /// The new parent has been destroyed.
+    ParentDestroyed,
+    /// The new parent is the instance itself or one of its descendants.
+    Circular,
+    /// The instance is the root of its document, which can never be moved.
+    Root,
+}
+
+impl fmt::Display for ReparentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Destroyed => "the instance has been destroyed",
+            Self::ParentDestroyed => "the new parent has been destroyed",
+            Self::Circular => "an instance can not be parented to itself or its own descendant",
+            Self::Root => "the root instance of a document can not be reparented",
+        })
+    }
+}
+
+impl std::error::Error for ReparentError {}
+
+/**
+    Checks that a reparent can complete, before anything is moved.
+
+    The native transfers detach the instance from its old parent first and only
+    then look up the new one, so an invalid parent would panic halfway through and
+    leave the instance detached from both. Validating up front means a refused
+    reparent changes nothing.
+*/
+fn validate_reparent(
+    reg: &Registry,
+    child_dom: DomId,
+    child_ref: DomRef,
+    parent: Option<(DomId, DomRef)>,
+) -> Result<(), ReparentError> {
+    let Some(child_entry) = reg.doms.get(&child_dom) else {
+        return Err(ReparentError::Destroyed);
+    };
+    if child_entry.dom.get_by_ref(child_ref).is_none() {
+        return Err(ReparentError::Destroyed);
+    }
+    if child_ref == child_entry.dom.root_ref() {
+        return Err(ReparentError::Root);
+    }
+    let Some((parent_dom, parent_ref)) = parent else {
+        return Ok(());
+    };
+    let Some(parent_entry) = reg.doms.get(&parent_dom) else {
+        return Err(ReparentError::ParentDestroyed);
+    };
+    if parent_entry.dom.get_by_ref(parent_ref).is_none() {
+        return Err(ReparentError::ParentDestroyed);
+    }
+    // Only a parent in the same document can be a descendant of the instance.
+    if parent_dom == child_dom {
+        let mut cursor = parent_ref;
+        while cursor.is_some() {
+            if cursor == child_ref {
+                return Err(ReparentError::Circular);
+            }
+            cursor = child_entry
+                .dom
+                .get_by_ref(cursor)
+                .map_or_else(DomRef::none, rbx_dom_weak::Instance::parent);
+        }
+    }
+    Ok(())
+}
+
+/**
     Reparents `child_ref` (currently in `child_dom`) under an optional parent.
 
     - `parent` is `None`: the instance is orphaned within its current dom (moved
@@ -189,45 +266,55 @@ fn collect_subtree(dom: &WeakDom, root: DomRef) -> Vec<DomRef> {
       are transferred into the parent's dom. The list of moved referents is
       returned so that callers can re-key any cached userdata; for same-dom
       moves an empty vec is returned.
+
+    # Errors
+
+    Returns an error, without moving anything, if either instance has been
+    destroyed, if the new parent is the instance or one of its descendants, or
+    if the instance is the root of its document.
 */
 pub fn reparent(
     child_dom: DomId,
     child_ref: DomRef,
     parent: Option<(DomId, DomRef)>,
-) -> Vec<DomRef> {
-    // The native transfers panic on invalid referents, so they must not poison the lock.
-    run_released(lock(), |reg| match parent {
-        None => {
-            if let Some(entry) = reg.doms.get_mut(&child_dom) {
-                let dom_root = entry.dom.root_ref();
-                entry.dom.transfer_within(child_ref, dom_root);
-            }
-            Vec::new()
-        }
-        Some((parent_dom, parent_ref)) if parent_dom == child_dom => {
-            if let Some(entry) = reg.doms.get_mut(&child_dom) {
-                entry.dom.transfer_within(child_ref, parent_ref);
-            }
-            Vec::new()
-        }
-        Some((parent_dom, parent_ref)) => {
-            let moved = match reg.doms.get(&child_dom) {
-                Some(entry) => collect_subtree(&entry.dom, child_ref),
-                None => return Vec::new(),
-            };
-            // Since we want to use get_disjoint_mut we cannot store doms in a BTreeMap. Unfortunate
-            let [src, dst] = reg.doms.get_disjoint_mut([&child_dom, &parent_dom]);
-            if let (Some(src), Some(dst)) = (src, dst) {
-                src.dom.transfer(child_ref, &mut dst.dom, parent_ref);
-                // Move existing cleanup credit, rather than minting more on every arrival.
-                let pool_work = moved.len().min(src.pool_work);
-                src.pool_work -= pool_work;
-                dst.pool_work += pool_work;
-                moved
-            } else {
+) -> Result<Vec<DomRef>, ReparentError> {
+    // Validation makes the transfers below unable to panic, and they still run with the
+    // lock released on unwind so that nothing could ever poison it.
+    run_released(lock(), |reg| {
+        validate_reparent(reg, child_dom, child_ref, parent)?;
+        Ok(match parent {
+            None => {
+                if let Some(entry) = reg.doms.get_mut(&child_dom) {
+                    let dom_root = entry.dom.root_ref();
+                    entry.dom.transfer_within(child_ref, dom_root);
+                }
                 Vec::new()
             }
-        }
+            Some((parent_dom, parent_ref)) if parent_dom == child_dom => {
+                if let Some(entry) = reg.doms.get_mut(&child_dom) {
+                    entry.dom.transfer_within(child_ref, parent_ref);
+                }
+                Vec::new()
+            }
+            Some((parent_dom, parent_ref)) => {
+                let moved = match reg.doms.get(&child_dom) {
+                    Some(entry) => collect_subtree(&entry.dom, child_ref),
+                    None => return Ok(Vec::new()),
+                };
+                // Since we want to use get_disjoint_mut we cannot store doms in a BTreeMap. Unfortunate
+                let [src, dst] = reg.doms.get_disjoint_mut([&child_dom, &parent_dom]);
+                if let (Some(src), Some(dst)) = (src, dst) {
+                    src.dom.transfer(child_ref, &mut dst.dom, parent_ref);
+                    // Move existing cleanup credit, rather than minting more on every arrival.
+                    let pool_work = moved.len().min(src.pool_work);
+                    src.pool_work -= pool_work;
+                    dst.pool_work += pool_work;
+                    moved
+                } else {
+                    Vec::new()
+                }
+            }
+        })
     })
 }
 
@@ -273,6 +360,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn refused_reparents_move_nothing() {
+        let branch =
+            DomInstanceBuilder::new("Folder").with_child(DomInstanceBuilder::new("Folder"));
+        let branch_ref = branch.referent();
+        let home = register(WeakDom::new(
+            DomInstanceBuilder::new("ROOT").with_child(branch),
+        ));
+        let home_root = with(home, WeakDom::root_ref).unwrap();
+        let leaf = with(home, |dom| {
+            dom.get_by_ref(branch_ref).unwrap().children()[0]
+        })
+        .unwrap();
+        let state = || {
+            with(home, |dom| {
+                (
+                    dom.root().children().to_vec(),
+                    dom.get_by_ref(branch_ref).unwrap().parent(),
+                    dom.get_by_ref(leaf).unwrap().parent(),
+                )
+            })
+            .unwrap()
+        };
+        let before = state();
+
+        // A destroyed parent, in the same document and in a document that is gone.
+        let gone = with_mut(home, |dom| {
+            let referent = dom.insert(home_root, DomInstanceBuilder::new("Folder"));
+            dom.destroy(referent);
+            referent
+        })
+        .unwrap();
+        assert_eq!(
+            reparent(home, branch_ref, Some((home, gone))),
+            Err(ReparentError::ParentDestroyed)
+        );
+        let other = register(WeakDom::new(DomInstanceBuilder::new("ROOT")));
+        let other_root = with(other, WeakDom::root_ref).unwrap();
+        drop_if_empty(other);
+        assert_eq!(
+            reparent(home, branch_ref, Some((other, other_root))),
+            Err(ReparentError::ParentDestroyed)
+        );
+
+        // The instance itself, or one of its own descendants.
+        assert_eq!(
+            reparent(home, branch_ref, Some((home, branch_ref))),
+            Err(ReparentError::Circular)
+        );
+        assert_eq!(
+            reparent(home, branch_ref, Some((home, leaf))),
+            Err(ReparentError::Circular)
+        );
+
+        // A destroyed instance, and the root of a document.
+        assert_eq!(
+            reparent(home, gone, Some((home, home_root))),
+            Err(ReparentError::Destroyed)
+        );
+        assert_eq!(reparent(home, home_root, None), Err(ReparentError::Root));
+
+        assert_eq!(state(), before, "a refused reparent must change nothing");
+        assert!(
+            REGISTRY.lock().is_ok(),
+            "refusals must never poison the registry"
+        );
+        with_mut(home, |dom| dom.destroy(branch_ref));
+        drop_if_empty(home);
+    }
+
+    #[test]
     fn unpooled_round_trip_can_leave_live_pooled_properties_with_zero_cleanup_credit() {
         use rbx_dom_weak::ustr;
 
@@ -293,8 +450,8 @@ mod tests {
             )
         })
         .unwrap();
-        reparent(scratch, unpooled, Some((retained, root)));
-        reparent(retained, unpooled, Some((scratch, scratch_root)));
+        reparent(scratch, unpooled, Some((retained, root))).unwrap();
+        reparent(retained, unpooled, Some((scratch, scratch_root))).unwrap();
         assert_eq!(lock().doms[&retained].pool_work, 0);
         with_mut(scratch, |dom| dom.destroy(unpooled));
         drop_if_empty(scratch);
@@ -335,15 +492,17 @@ mod tests {
         assert_eq!(lock().doms[&destination].pool_work, 1);
         let root = with(destination, WeakDom::root_ref).unwrap();
         assert_eq!(
-            reparent(source, branch_ref, Some((destination, root))).len(),
+            reparent(source, branch_ref, Some((destination, root)))
+                .unwrap()
+                .len(),
             33
         );
         assert_eq!(lock().doms[&destination].pool_work, 34);
         assert_eq!(lock().doms[&source].pool_work, 1);
         let source_root = with(source, WeakDom::root_ref).unwrap();
         for _ in 0..64 {
-            reparent(destination, branch_ref, Some((source, source_root)));
-            reparent(source, branch_ref, Some((destination, root)));
+            reparent(destination, branch_ref, Some((source, source_root))).unwrap();
+            reparent(source, branch_ref, Some((destination, root))).unwrap();
             let reg = lock();
             assert_eq!(reg.doms[&source].pool_work, 1);
             assert_eq!(reg.doms[&destination].pool_work, 34);
@@ -372,13 +531,13 @@ mod tests {
         })
         .unwrap();
         for _ in 0..64 {
-            reparent(source, branch, Some((destination, destination_root)));
+            reparent(source, branch, Some((destination, destination_root))).unwrap();
             {
                 let reg = lock();
                 assert_eq!(reg.doms[&source].pool_work, 0);
                 assert_eq!(reg.doms[&destination].pool_work, 2);
             }
-            reparent(destination, branch, Some((source, source_root)));
+            reparent(destination, branch, Some((source, source_root))).unwrap();
             let reg = lock();
             assert_eq!(reg.doms[&source].pool_work, 2);
             assert_eq!(reg.doms[&destination].pool_work, 0);
@@ -416,7 +575,7 @@ mod tests {
         let third = register(WeakDom::new(DomInstanceBuilder::new("ROOT")));
         let third_root = with(third, WeakDom::root_ref).unwrap();
         assert_eq!(
-            reparent(first, child, Some((third, third_root))),
+            reparent(first, child, Some((third, third_root))).unwrap(),
             vec![child]
         );
         drop_if_empty(first);

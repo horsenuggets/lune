@@ -21,6 +21,8 @@ pub enum DocumentError {
     FromDataModelInvalidArgs,
     #[error("Failed to convert into a model - a given instance is a DataModel")]
     FromInstanceArrayInvalidArgs,
+    #[error("Failed to convert into a document - a given instance has been destroyed")]
+    DestroyedInstance,
 }
 
 #[cfg(feature = "mlua")]

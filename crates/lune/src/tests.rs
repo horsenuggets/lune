@@ -901,6 +901,7 @@ create_tests! {
     roblox_instance_methods_destroy: "roblox/instance/methods/Destroy",
     roblox_instance_methods_find_first_ancestor: "roblox/instance/methods/FindFirstAncestor",
     roblox_instance_methods_find_first_ancestor_of_class: "roblox/instance/methods/FindFirstAncestorOfClass",
+    roblox_instance_destroyed: "roblox/instance/destroyed",
     roblox_instance_methods_find_first_ancestor_which_is_a: "roblox/instance/methods/FindFirstAncestorWhichIsA",
     roblox_instance_methods_find_first_child: "roblox/instance/methods/FindFirstChild",
     roblox_instance_methods_find_first_child_of_class: "roblox/instance/methods/FindFirstChildOfClass",
