@@ -35,6 +35,20 @@ pub enum ActorOutcome {
 
 impl ActorOutcome {
     /**
+        Decides the outcome of an actor whose runtime could not be set up or could not
+        start its script. Termination takes priority, exactly as in [`Self::from_run`],
+        since terminating an actor during setup also makes the setup fail.
+    */
+    #[must_use]
+    pub fn from_failure(link: &ActorLink, message: String) -> Self {
+        if link.is_terminated() {
+            Self::Failed(TERMINATED_MESSAGE.to_string())
+        } else {
+            Self::Failed(message)
+        }
+    }
+
+    /**
         Decides the outcome of an actor whose runtime finished running its script.
 
         Termination takes priority, then explicit exit codes, then errors from any of the
@@ -507,6 +521,23 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(message.contains(TERMINATED_MESSAGE), "{message}");
+    }
+
+    #[test]
+    fn setup_failures_report_termination_first() {
+        // Terminating an actor while its runtime is still being set up makes that setup
+        // fail too, and the owner must still see the documented termination message.
+        let fresh = link();
+        assert!(matches!(
+            ActorOutcome::from_failure(&fresh, "Failed to create standard library".into()),
+            ActorOutcome::Failed(m) if m == "Failed to create standard library"
+        ));
+        let terminated = link();
+        terminated.terminate();
+        assert!(matches!(
+            ActorOutcome::from_failure(&terminated, "Failed to create standard library".into()),
+            ActorOutcome::Failed(m) if m == TERMINATED_MESSAGE
+        ));
     }
 
     #[test]

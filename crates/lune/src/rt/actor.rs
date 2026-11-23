@@ -56,9 +56,10 @@ fn run_actor(config: WorkerConfig, path: PathBuf, link: Arc<ActorLink>) -> Actor
         let mut rt = match Runtime::new_actor(config, Arc::clone(&link)) {
             Ok(rt) => rt,
             Err(error) => {
-                return ActorOutcome::Failed(format!(
-                    "Failed to create the actor runtime. {error}"
-                ));
+                return ActorOutcome::from_failure(
+                    &link,
+                    format!("Failed to create the actor runtime. {error}"),
+                );
             }
         };
         match rt.run_file(path).await {
@@ -69,7 +70,7 @@ fn run_actor(config: WorkerConfig, path: PathBuf, link: Arc<ActorLink>) -> Actor
                 values.finished,
                 &values.values,
             ),
-            Err(error) => ActorOutcome::Failed(error.to_string()),
+            Err(error) => ActorOutcome::from_failure(&link, error.to_string()),
         }
     })
 }
