@@ -125,10 +125,15 @@ impl ActorLink {
         Prepares the actor's VM on the actor's own OS thread. Terminating the actor then
         stops its scheduler, even while it is idle, and makes running Luau code error at
         its next interrupt check.
+
+        # Errors
+
+        Errors if this OS thread already runs the VM of another actor.
     */
-    pub fn attach(self: &Arc<Self>, lua: &Lua, handle: ExitHandle) {
-        crate::interrupt::install(lua, Arc::clone(self));
+    pub fn attach(self: &Arc<Self>, lua: &Lua, handle: ExitHandle) -> LuaResult<()> {
+        crate::interrupt::install(lua, Arc::clone(self))?;
         self.attach_exit(handle);
+        Ok(())
     }
 
     /// Whether the actor has delivered its final outcome.
@@ -292,7 +297,7 @@ mod tests {
         link.terminate();
         let lua = Lua::new();
         let scheduler = mlua_luau_scheduler::Scheduler::new(lua.clone());
-        link.attach(&lua, scheduler.exit_handle());
+        link.attach(&lua, scheduler.exit_handle()).unwrap();
         assert_eq!(scheduler.get_exit_code(), Some(TERMINATED_EXIT_CODE));
         assert!(link.inbox.is_closed());
     }
@@ -302,7 +307,7 @@ mod tests {
         let link = link();
         let lua = Lua::new();
         let scheduler = mlua_luau_scheduler::Scheduler::new(lua.clone());
-        link.attach(&lua, scheduler.exit_handle());
+        link.attach(&lua, scheduler.exit_handle()).unwrap();
         let flag = Arc::clone(&link);
         lua.globals()
             .set(

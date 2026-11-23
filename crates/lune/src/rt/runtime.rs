@@ -706,7 +706,7 @@ impl Runtime {
         }
         rt.executable_path = config.executable_path;
 
-        link.attach(&rt.lua, rt.sched.exit_handle());
+        link.attach(&rt.lua, rt.sched.exit_handle())?;
         rt.actor = Some(link);
         Ok(rt)
     }
