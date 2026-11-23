@@ -61,6 +61,10 @@ name = "remote_exit"
 test = true
 
 [[example]]
+name = "rust_panic"
+test = true
+
+[[example]]
 name = "scheduler_ordering"
 test = true
 
