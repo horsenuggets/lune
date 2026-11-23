@@ -1,9 +1,10 @@
 use std::{
     any::Any,
+    cell::Cell,
     io,
-    panic::{AssertUnwindSafe, catch_unwind},
+    panic::{self, AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc, Mutex, Once, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     thread::{Builder, JoinHandle},
@@ -232,6 +233,29 @@ impl Drop for AliveGuard {
     }
 }
 
+thread_local! {
+    static ON_ACTOR_THREAD: Cell<bool> = const { Cell::new(false) };
+}
+
+static QUIET_ACTOR_PANICS: Once = Once::new();
+
+/**
+    Keeps panics on actor threads from printing to stderr. Every actor panic is caught
+    and delivered to its owner through `join`, so printing it as well would interleave
+    unrelated output from parallel actors. Panics on any other thread still reach the
+    panic hook that was installed before, so the main runtime prints exactly as before.
+*/
+fn quiet_actor_panics() {
+    QUIET_ACTOR_PANICS.call_once(|| {
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            if !ON_ACTOR_THREAD.with(Cell::get) {
+                previous(info);
+            }
+        }));
+    });
+}
+
 fn panic_message(payload: &(dyn Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_string()
@@ -246,7 +270,8 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
     Runs an actor's body on a new OS thread and delivers its outcome to the link.
 
     Panics in the body are caught at the thread boundary and reported as failures, so
-    the owner is never left waiting for an actor that crashed.
+    the owner is never left waiting for an actor that crashed. They are delivered only
+    through the outcome, never printed.
 
     # Errors
 
@@ -256,12 +281,14 @@ pub fn spawn_actor_thread<F>(link: Arc<ActorLink>, body: F) -> io::Result<()>
 where
     F: FnOnce(Arc<ActorLink>) -> ActorOutcome + Send + 'static,
 {
+    quiet_actor_panics();
     let thread_link = Arc::clone(&link);
     link.alive.store(true, Ordering::SeqCst);
     let spawned = Builder::new()
         .name("lune-actor".to_string())
         .stack_size(ACTOR_STACK_SIZE)
         .spawn(move || {
+            ON_ACTOR_THREAD.with(|on_actor| on_actor.set(true));
             let _alive = AliveGuard(Arc::clone(&thread_link));
             let body_link = Arc::clone(&thread_link);
             let outcome =
@@ -338,6 +365,49 @@ mod tests {
         let outcome = block_on(link.wait());
         link.take_thread().unwrap().join().unwrap();
         outcome
+    }
+
+    const PANIC_OUTPUT_CHILD: &str = "LUNE_ACTOR_PANIC_OUTPUT_CHILD";
+
+    #[test]
+    fn actor_panics_reach_join_without_printing() {
+        // Panic output goes to the process's stderr, so the scenario runs in a child copy
+        // of this test binary and the parent inspects what the child printed.
+        if std::env::var_os(PANIC_OUTPUT_CHILD).is_some() {
+            let link = link();
+            spawn_actor_thread(Arc::clone(&link), |_| panic!("hidden actor panic")).unwrap();
+            let outcome = block_on(link.wait());
+            link.take_thread().unwrap().join().unwrap();
+            assert!(
+                matches!(&outcome, ActorOutcome::Failed(message) if message.contains("hidden actor panic")),
+                "the actor panic must still reach join: {outcome:?}"
+            );
+            let _ = std::thread::spawn(|| panic!("visible thread panic")).join();
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "link::tests::actor_panics_reach_join_without_printing",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(PANIC_OUTPUT_CHILD, "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "the child scenario failed: {stderr}"
+        );
+        assert!(
+            !stderr.contains("hidden actor panic"),
+            "an actor panic must not print: {stderr}"
+        );
+        assert!(
+            stderr.contains("visible thread panic"),
+            "other threads must keep printing panics: {stderr}"
+        );
     }
 
     #[test]
