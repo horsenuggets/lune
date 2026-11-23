@@ -291,6 +291,8 @@ impl SharedTable {
         if nested.reaches(self) {
             return Err(LuaError::runtime(CYCLE_ERROR));
         }
+        #[cfg(test)]
+        tests::after_cycle_check();
         Ok(Some(guard))
     }
 
@@ -540,9 +542,36 @@ pub(crate) fn library(lua: Lua) -> LuaResult<LuaTable> {
 #[cfg(test)]
 #[allow(clippy::float_cmp)] // Counters hold exact integers, so exact comparisons are intended
 mod tests {
-    use std::{thread, time::Duration};
+    use std::{sync::Condvar, thread, time::Duration};
 
     use super::*;
+
+    /**
+        A rendezvous that stores taking part in the race test wait at, right after their
+        cycle check and before their write, until both have arrived. With the structure
+        lock in place the second store cannot get past the lock, so the first gives up
+        after a short timeout. Without the lock both checks pass before either write.
+    */
+    static RENDEZVOUS: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+    const RENDEZVOUS_TIMEOUT: Duration = Duration::from_millis(200);
+
+    thread_local! {
+        // Only the race test's own store threads take part, never other tests' threads.
+        static IN_RACE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn after_cycle_check() {
+        if !IN_RACE.with(Cell::get) {
+            return;
+        }
+        let (count, arrived) = &RENDEZVOUS;
+        let mut count = count.lock().unwrap_or_else(PoisonError::into_inner);
+        *count += 1;
+        arrived.notify_all();
+        let _ = arrived
+            .wait_timeout_while(count, RENDEZVOUS_TIMEOUT, |count| *count < 2)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
 
     fn library_lua() -> Lua {
         let lua = Lua::new();
@@ -666,9 +695,12 @@ mod tests {
     #[test]
     fn concurrent_cross_stores_never_form_a_cycle() {
         // Two actors store each other's tables at the same moment. At most one of the
-        // two writes may succeed, otherwise each table would contain the other.
+        // two writes may succeed, otherwise each table would contain the other. The
+        // rendezvous makes both stores reach the window between their cycle check and
+        // their write together whenever nothing serializes them, so this is deterministic.
         let key = SharedKey::String(b"Other".to_vec());
-        for _ in 0..300 {
+        for _ in 0..3 {
+            *RENDEZVOUS.0.lock().unwrap_or_else(PoisonError::into_inner) = 0;
             let a = SharedTable::with_entries(HashMap::new(), false);
             let b = SharedTable::with_entries(HashMap::new(), false);
             let barrier = Arc::new(std::sync::Barrier::new(2));
@@ -678,6 +710,7 @@ mod tests {
                     let barrier = Arc::clone(&barrier);
                     let key = key.clone();
                     thread::spawn(move || {
+                        IN_RACE.with(|in_race| in_race.set(true));
                         barrier.wait();
                         parent.set(key, Some(SharedValue::Table(child))).is_ok()
                     })
