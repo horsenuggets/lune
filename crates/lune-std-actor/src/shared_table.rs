@@ -325,26 +325,29 @@ impl SharedTable {
 
         A table reached through several paths is copied once and shared the same way in
         the result, so the work grows with the number of distinct tables, not paths.
+
+        Copies are found by the address of their source table, so every source table is
+        kept alive until the copy finishes. Otherwise another actor could free a source
+        that was already copied, and a new table at the same address would wrongly map
+        to that earlier copy.
     */
     fn copy(&self, deep: bool, frozen: bool) -> LuaResult<Self> {
         let root = Self::with_entries(HashMap::new(), frozen);
-        let mut copies: HashMap<*const SharedInner, Self> = HashMap::new();
-        copies.insert(Arc::as_ptr(&self.inner), root.clone());
+        let mut copies: HashMap<*const SharedInner, (Self, Self)> = HashMap::new();
+        copies.insert(Arc::as_ptr(&self.inner), (self.clone(), root.clone()));
         let mut pending = vec![(self.clone(), root.clone())];
         while let Some((source, destination)) = pending.pop() {
             let mut entries = HashMap::new();
             for (key, value) in source.snapshot() {
                 let value = match value {
                     SharedValue::Table(nested) if deep => {
-                        let copy = copies
-                            .entry(Arc::as_ptr(&nested.inner))
-                            .or_insert_with(|| {
+                        let (_, copy) =
+                            copies.entry(Arc::as_ptr(&nested.inner)).or_insert_with(|| {
                                 let copy = Self::with_entries(HashMap::new(), frozen);
-                                pending.push((nested, copy.clone()));
-                                copy
-                            })
-                            .clone();
-                        SharedValue::Table(copy)
+                                pending.push((nested.clone(), copy.clone()));
+                                (nested, copy)
+                            });
+                        SharedValue::Table(copy.clone())
                     }
                     SharedValue::Table(nested) if frozen && !nested.inner.frozen => {
                         return Err(LuaError::runtime(
@@ -362,6 +365,9 @@ impl SharedTable {
                 .write()
                 .unwrap_or_else(PoisonError::into_inner)
                 .entries = entries;
+            drop((source, destination));
+            #[cfg(test)]
+            tests::after_copy_step();
         }
         Ok(root)
     }
@@ -542,7 +548,7 @@ pub(crate) fn library(lua: Lua) -> LuaResult<LuaTable> {
 #[cfg(test)]
 #[allow(clippy::float_cmp)] // Counters hold exact integers, so exact comparisons are intended
 mod tests {
-    use std::{sync::Condvar, thread, time::Duration};
+    use std::{cell::RefCell, rc::Rc, sync::Condvar, thread, time::Duration};
 
     use super::*;
 
@@ -571,6 +577,26 @@ mod tests {
         let _ = arrived
             .wait_timeout_while(count, RENDEZVOUS_TIMEOUT, |count| *count < 2)
             .unwrap_or_else(PoisonError::into_inner);
+    }
+
+    /**
+        A hook that runs after each table of a deep copy has been copied and its source
+        handle dropped. The stale-address test uses it to free an already copied source
+        table in the middle of a copy, the way another actor could.
+    */
+    type CopyStep = Box<dyn FnMut(usize)>;
+
+    thread_local! {
+        static COPY_STEP: RefCell<Option<(usize, CopyStep)>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn after_copy_step() {
+        COPY_STEP.with(|hook| {
+            if let Some((step, callback)) = hook.borrow_mut().as_mut() {
+                *step += 1;
+                callback(*step);
+            }
+        });
     }
 
     fn library_lua() -> Lua {
@@ -726,6 +752,91 @@ mod tests {
             // Break the edge so the pair is released like any other tables.
             a.set(key.clone(), None).unwrap();
             b.set(key.clone(), None).unwrap();
+        }
+    }
+
+    #[test]
+    fn deep_clones_keep_copied_sources_alive_so_their_addresses_cannot_be_reused() {
+        // Another actor releases a source table right after it was copied. Copies are found
+        // by source address, so the clone must keep that table alive until it finishes.
+        // Otherwise the freed address could be reused by a new table, which would then map
+        // to the earlier, unrelated copy. A weak handle observes whether it stayed alive,
+        // which does not depend on when the allocator reuses an address.
+        let key = SharedKey::String(b"Child".to_vec());
+        let root = SharedTable::with_entries(HashMap::new(), false);
+        let child = SharedTable::with_entries(HashMap::new(), false);
+        let weak_child = Arc::downgrade(&child.inner);
+        root.set(key.clone(), Some(SharedValue::Table(child)))
+            .unwrap();
+        let alive = Rc::new(Cell::new(None));
+        let hook_root = root.clone();
+        let hook_alive = Rc::clone(&alive);
+        COPY_STEP.with(|hook| {
+            *hook.borrow_mut() = Some((
+                0,
+                Box::new(move |step| {
+                    // Step one copies the root, step two copies the child.
+                    if step != 2 {
+                        return;
+                    }
+                    hook_root.set(key.clone(), None).unwrap();
+                    hook_alive.set(Some(weak_child.upgrade().is_some()));
+                }),
+            ));
+        });
+        let copy = root.copy(true, false);
+        COPY_STEP.with(|hook| hook.borrow_mut().take());
+        assert!(copy.is_ok());
+        assert_eq!(
+            alive.get(),
+            Some(true),
+            "a copied source table must stay alive until the copy finishes"
+        );
+    }
+
+    #[test]
+    fn deep_clones_stay_acyclic_and_complete_while_other_threads_churn_tables() {
+        // A sanity check under real concurrency. Other threads keep replacing the shared
+        // structure and allocating and freeing tables while this thread deep-clones it.
+        let key = SharedKey::String(b"Child".to_vec());
+        let root = SharedTable::with_entries(HashMap::new(), false);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let churners: Vec<_> = (0..3)
+            .map(|_| {
+                let root = root.clone();
+                let key = key.clone();
+                let stop = Arc::clone(&stop);
+                thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let chain = SharedTable::with_entries(HashMap::new(), false);
+                        let leaf = SharedTable::with_entries(HashMap::new(), false);
+                        chain
+                            .set(key.clone(), Some(SharedValue::Table(leaf)))
+                            .unwrap();
+                        root.set(key.clone(), Some(SharedValue::Table(chain)))
+                            .unwrap();
+                        drop(SharedTable::with_entries(HashMap::new(), false));
+                    }
+                })
+            })
+            .collect();
+        for _ in 0..2_000 {
+            let copy = root.copy(true, false).unwrap();
+            assert!(!copy.reaches(&root), "a copy must never contain its source");
+            let mut cursor = copy.clone();
+            let mut depth = 0;
+            while let Some(SharedValue::Table(next)) =
+                cursor.read(|state| state.entries.get(&key).cloned())
+            {
+                assert!(!next.reaches(&cursor), "a copy must never contain a cycle");
+                cursor = next;
+                depth += 1;
+                assert!(depth <= 2, "a copy must have the shape of one stored chain");
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for churner in churners {
+            churner.join().unwrap();
         }
     }
 
