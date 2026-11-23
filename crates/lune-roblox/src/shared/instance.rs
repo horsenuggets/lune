@@ -3,7 +3,7 @@
 use std::{
     borrow::Cow,
     collections::HashMap,
-    sync::{LazyLock, RwLock},
+    sync::{LazyLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
 use rbx_dom_weak::types::{Variant as DomValue, VariantType as DomType};
@@ -30,6 +30,24 @@ fn custom_classes() -> &'static RwLock<HashMap<String, CustomClass>> {
     &CUSTOM_CLASSES
 }
 
+/*
+    The custom class registry is shared by every runtime in the process, including actors.
+    Each access is a single map operation that leaves the map consistent, so a panic on one
+    thread must not make the registry unusable for every other thread.
+*/
+
+fn read_custom_classes() -> RwLockReadGuard<'static, HashMap<String, CustomClass>> {
+    custom_classes()
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+fn write_custom_classes() -> RwLockWriteGuard<'static, HashMap<String, CustomClass>> {
+    custom_classes()
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 /**
     Error that may occur when registering a custom class through
     [`register_custom_class`].
@@ -52,10 +70,6 @@ pub enum CustomClassError {
 
     - If a class with the given name already exists (built-in or custom).
     - If the given superclass is not a valid class name.
-
-    # Panics
-
-    - If the custom class registry lock has been poisoned.
 */
 pub fn register_custom_class(
     class_name: &str,
@@ -69,7 +83,7 @@ pub fn register_custom_class(
         return Err(CustomClassError::InvalidSuperclass(superclass.to_string()));
     }
 
-    custom_classes().write().unwrap().insert(
+    write_custom_classes().insert(
         class_name.to_string(),
         CustomClass {
             superclass: superclass.to_string(),
@@ -92,9 +106,7 @@ fn superclass_of(class_name: &str) -> Option<String> {
     if let Some(class) = db.classes.get(class_name) {
         return class.superclass.as_ref().map(ToString::to_string);
     }
-    custom_classes()
-        .read()
-        .unwrap()
+    read_custom_classes()
         .get(class_name)
         .map(|c| c.superclass.clone())
 }
@@ -209,7 +221,7 @@ pub(crate) fn find_property_info(
 pub fn class_exists(class_name: impl AsRef<str>) -> bool {
     let class_name = class_name.as_ref();
     let db = rbx_reflection_database::get().unwrap();
-    db.classes.contains_key(class_name) || custom_classes().read().unwrap().contains_key(class_name)
+    db.classes.contains_key(class_name) || read_custom_classes().contains_key(class_name)
 }
 
 /**
@@ -279,7 +291,7 @@ pub fn class_is_a_service(instance_class: impl AsRef<str>) -> Option<bool> {
     loop {
         // A custom class may be flagged as a service directly, otherwise we
         // keep walking up its superclass chain like any built-in class
-        if let Some(custom) = custom_classes().read().unwrap().get(&current).cloned() {
+        if let Some(custom) = read_custom_classes().get(&current).cloned() {
             if custom.is_service {
                 return Some(true);
             }

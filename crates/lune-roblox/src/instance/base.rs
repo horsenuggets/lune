@@ -237,7 +237,7 @@ fn tag_target(this: &Instance, mut args: LuaMultiValue) -> LuaResult<(Instance, 
     Ok((*this, args))
 }
 
-fn ensure_not_destroyed(inst: &Instance) -> LuaResult<()> {
+pub(crate) fn ensure_not_destroyed(inst: &Instance) -> LuaResult<()> {
     if inst.is_destroyed() {
         Err(LuaError::RuntimeError(
             "Instance has been destroyed".to_string(),

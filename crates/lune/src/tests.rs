@@ -114,6 +114,11 @@ create_tests! {
     actor_rejections: "actor/rejections",
 }
 
+#[cfg(all(feature = "std-actor", feature = "std-roblox"))]
+create_tests! {
+    actor_destroyed_instance: "actor/destroyed_instance",
+}
+
 // Actor coverage runs serially like the other coverage tests, so that no test changes
 // LUNE_COVERAGE while the actor's runtime reads it.
 #[cfg(feature = "std-actor")]

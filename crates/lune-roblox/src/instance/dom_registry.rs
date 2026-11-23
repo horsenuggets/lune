@@ -15,7 +15,8 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{LazyLock, Mutex, MutexGuard},
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    sync::{LazyLock, Mutex, MutexGuard, PoisonError},
 };
 
 use rbx_dom_weak::{
@@ -46,16 +47,30 @@ static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| {
 static PROPERTY_POOL: LazyLock<Mutex<PropertyPool>> =
     LazyLock::new(|| Mutex::new(PropertyPool::default()));
 
+/*
+    Both locks recover from poisoning. Every operation leaves the registry and pool
+    consistent before it returns, and closures run under the registry lock are kept
+    from poisoning it, so a panic on one thread (for example in one actor) must never
+    break every other thread's instances.
+*/
+
 fn property_pool() -> MutexGuard<'static, PropertyPool> {
-    PROPERTY_POOL
-        .lock()
-        .expect("Failed to lock native property pool")
+    PROPERTY_POOL.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn lock() -> MutexGuard<'static, Registry> {
-    REGISTRY
-        .lock()
-        .expect("Failed to lock instance dom registry")
+    REGISTRY.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/**
+    Runs a closure while the registry lock is held, releasing the lock before resuming
+    any panic of the closure, so that the panic fails only the calling thread.
+*/
+fn run_released<R>(reg: MutexGuard<'static, Registry>, f: impl FnOnce(&mut Registry) -> R) -> R {
+    let mut reg = reg;
+    let result = catch_unwind(AssertUnwindSafe(|| f(&mut reg)));
+    drop(reg);
+    result.unwrap_or_else(|payload| resume_unwind(payload))
 }
 
 /**
@@ -134,8 +149,9 @@ pub fn insert_orphan(class_name: &str) -> (DomId, DomRef) {
     `&WeakDom` already in hand instead.
 */
 pub fn with<R>(dom_id: DomId, f: impl FnOnce(&WeakDom) -> R) -> Option<R> {
-    let reg = lock();
-    reg.doms.get(&dom_id).map(|entry| f(&entry.dom))
+    run_released(lock(), |reg| {
+        reg.doms.get(&dom_id).map(|entry| f(&entry.dom))
+    })
 }
 
 /**
@@ -144,8 +160,9 @@ pub fn with<R>(dom_id: DomId, f: impl FnOnce(&WeakDom) -> R) -> Option<R> {
     Returns `None` if no such dom exists. Same re-entrancy rules as [`with`].
 */
 pub fn with_mut<R>(dom_id: DomId, f: impl FnOnce(&mut WeakDom) -> R) -> Option<R> {
-    let mut reg = lock();
-    reg.doms.get_mut(&dom_id).map(|entry| f(&mut entry.dom))
+    run_released(lock(), |reg| {
+        reg.doms.get_mut(&dom_id).map(|entry| f(&mut entry.dom))
+    })
 }
 
 fn collect_subtree(dom: &WeakDom, root: DomRef) -> Vec<DomRef> {
@@ -178,8 +195,8 @@ pub fn reparent(
     child_ref: DomRef,
     parent: Option<(DomId, DomRef)>,
 ) -> Vec<DomRef> {
-    let mut reg = lock();
-    match parent {
+    // The native transfers panic on invalid referents, so they must not poison the lock.
+    run_released(lock(), |reg| match parent {
         None => {
             if let Some(entry) = reg.doms.get_mut(&child_dom) {
                 let dom_root = entry.dom.root_ref();
@@ -211,7 +228,7 @@ pub fn reparent(
                 Vec::new()
             }
         }
-    }
+    })
 }
 
 /**
@@ -486,5 +503,49 @@ mod tests {
         for thread in threads {
             thread.join().expect("a thread lost its scratch dom");
         }
+    }
+
+    /// Serializes the tests that observe or set the registry's process-wide poison flag.
+    static POISON_TESTS: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn a_panicking_closure_fails_only_its_own_thread() {
+        // A panic while a dom is borrowed must release the registry lock before it
+        // unwinds, so another thread can keep creating and reading instances.
+        let _serial = POISON_TESTS.lock().unwrap_or_else(PoisonError::into_inner);
+        let id = register(WeakDom::new(DomInstanceBuilder::new("ROOT")));
+        let panicked = std::thread::spawn(move || {
+            with_mut(id, |_| panic!("controlled panic under the registry lock"));
+        })
+        .join();
+        assert!(panicked.is_err(), "the closure's panic must still unwind");
+        assert!(
+            !REGISTRY.is_poisoned(),
+            "the panic must not poison the registry"
+        );
+        let (orphan_id, referent) = insert_orphan("Folder");
+        assert!(with(orphan_id, |dom| dom.get_by_ref(referent).is_some()).unwrap());
+        with_mut(orphan_id, |dom| dom.destroy(referent));
+        drop_if_empty(orphan_id);
+        drop_if_empty(id);
+    }
+
+    #[test]
+    fn a_poisoned_registry_keeps_serving_every_thread() {
+        // Even if some future path panicked while holding the lock directly, a panic on
+        // one thread (for example one actor) must never break instances for all others.
+        let _serial = POISON_TESTS.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = std::thread::spawn(|| {
+            let _reg = lock();
+            panic!("controlled panic while holding the registry lock");
+        })
+        .join();
+        assert!(REGISTRY.is_poisoned(), "the setup must poison the registry");
+        let (id, referent) = insert_orphan("Folder");
+        let found = with(id, |dom| dom.get_by_ref(referent).is_some());
+        with_mut(id, |dom| dom.destroy(referent));
+        drop_if_empty(id);
+        REGISTRY.clear_poison();
+        assert_eq!(found, Some(true), "a poisoned registry must keep working");
     }
 }

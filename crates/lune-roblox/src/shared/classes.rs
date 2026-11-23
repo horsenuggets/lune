@@ -2,9 +2,30 @@ use mlua::prelude::*;
 
 use rbx_dom_weak::types::Variant as DomValue;
 
-use crate::instance::{Instance, instance_to_lua};
+use crate::instance::{Instance, base::ensure_not_destroyed, instance_to_lua};
 
 use super::instance::class_is_a;
+
+/**
+    Checks that a class-restricted member is used on a live instance of its class.
+
+    Class members read the instance's document, so a destroyed instance gets an
+    ordinary Luau error here instead of reaching document lookups that expect it to
+    still exist.
+*/
+fn ensure_class_member(
+    this: &Instance,
+    class_name: &'static str,
+    member_name: &'static str,
+) -> LuaResult<()> {
+    if class_is_a(this.get_class_name(), class_name).unwrap_or(false) {
+        ensure_not_destroyed(this)
+    } else {
+        Err(LuaError::RuntimeError(format!(
+            "{member_name} is not a valid member of {class_name}",
+        )))
+    }
+}
 
 pub(crate) fn add_class_restricted_getter<F: LuaUserDataFields<Instance>, R, G>(
     fields: &mut F,
@@ -16,13 +37,8 @@ pub(crate) fn add_class_restricted_getter<F: LuaUserDataFields<Instance>, R, G>(
     G: 'static + Fn(&Lua, &Instance) -> LuaResult<R>,
 {
     fields.add_field_method_get(field_name, move |lua, this| {
-        if class_is_a(this.get_class_name(), class_name).unwrap_or(false) {
-            field_getter(lua, this)
-        } else {
-            Err(LuaError::RuntimeError(format!(
-                "{field_name} is not a valid member of {class_name}",
-            )))
-        }
+        ensure_class_member(this, class_name, field_name)?;
+        field_getter(lua, this)
     });
 }
 
@@ -37,13 +53,8 @@ pub(crate) fn add_class_restricted_setter<F: LuaUserDataFields<Instance>, A, G>(
     G: 'static + Fn(&Lua, &Instance, A) -> LuaResult<()>,
 {
     fields.add_field_method_set(field_name, move |lua, this, value| {
-        if class_is_a(this.get_class_name(), class_name).unwrap_or(false) {
-            field_getter(lua, this, value)
-        } else {
-            Err(LuaError::RuntimeError(format!(
-                "{field_name} is not a valid member of {class_name}",
-            )))
-        }
+        ensure_class_member(this, class_name, field_name)?;
+        field_getter(lua, this, value)
     });
 }
 
@@ -58,13 +69,8 @@ pub(crate) fn add_class_restricted_method<M: LuaUserDataMethods<Instance>, A, R,
     F: 'static + Fn(&Lua, &Instance, A) -> LuaResult<R>,
 {
     methods.add_method(method_name, move |lua, this, args| {
-        if class_is_a(this.get_class_name(), class_name).unwrap_or(false) {
-            method(lua, this, args)
-        } else {
-            Err(LuaError::RuntimeError(format!(
-                "{method_name} is not a valid member of {class_name}",
-            )))
-        }
+        ensure_class_member(this, class_name, method_name)?;
+        method(lua, this, args)
     });
 }
 
@@ -79,13 +85,8 @@ pub(crate) fn add_class_restricted_method_mut<M: LuaUserDataMethods<Instance>, A
     F: 'static + Fn(&Lua, &mut Instance, A) -> LuaResult<R>,
 {
     methods.add_method_mut(method_name, move |lua, this, args| {
-        if class_is_a(this.get_class_name(), class_name).unwrap_or(false) {
-            method(lua, this, args)
-        } else {
-            Err(LuaError::RuntimeError(format!(
-                "{method_name} is not a valid member of {class_name}",
-            )))
-        }
+        ensure_class_member(this, class_name, method_name)?;
+        method(lua, this, args)
     });
 }
 
