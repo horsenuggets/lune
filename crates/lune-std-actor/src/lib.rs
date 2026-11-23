@@ -277,7 +277,9 @@ mod tests {
         let launch_observed = Rc::clone(&observed);
         lua.set_app_data(ActorLauncher::new(move |_, _, link| {
             launch_observed.borrow_mut().push(Arc::downgrade(&link));
-            spawn_actor_thread(link, |_| {
+            spawn_actor_thread(link, |link| {
+                // Keep the worker alive until its handle is registered with the owner.
+                async_io::block_on(link.inbox.receiver("Finish").recv()).unwrap();
                 ActorOutcome::Completed(vec![Transfer::String(b"result".to_vec())])
             })
             .map_err(LuaError::external)
@@ -291,6 +293,7 @@ mod tests {
                     r#"
             for _ = 1, 12 do
                 const handle = actor.spawn("worker", { args = { string.rep("x", 65536) } })
+                handle:send("Finish", true)
                 const ok, result = handle:join()
                 assert(ok and result == "result")
                 retained = handle
