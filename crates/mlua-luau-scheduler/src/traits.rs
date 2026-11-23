@@ -247,7 +247,10 @@ pub trait LuaSpawnExt {
         Spawns the given blocking function and returns its [`SpawnedTask`].
 
         This function will run on a separate thread pool and not block the current executor.
-        Panics are handled like those of [`LuaSpawnExt::spawn`].
+        Panics are handled like those of [`LuaSpawnExt::spawn`], with one exception.
+        Dropping the handle cancels the task but cannot stop the function itself, so a panic
+        it raises after the handle was dropped is lost. The code that dropped the handle has
+        already stopped waiting for its result.
 
         # Panics
 

@@ -44,6 +44,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Schedulers now provide a thread-safe exit handle, so other threads can stop them even
   while they are idle.
 
+### Changed
+
+- **Breaking**. `LuaSpawnExt::spawn` and `spawn_blocking` in `mlua-luau-scheduler` now
+  return a `SpawnedTask` instead of an `async_executor::Task`, so that panics of detached
+  and dropped tasks are reported. It can still be awaited, detached with `detach` and
+  polled once with `poll_once`. Code that names `async_executor::Task` as the return type,
+  or calls `cancel`, `is_finished` or `fallible` on it, no longer compiles. Name
+  `SpawnedTask` instead, and drop the handle to cancel the task. `mlua-luau-scheduler` is
+  now `0.4.0`.
+- **Breaking**. `lune-roblox` is now `0.5.0`. Its `DocumentError` enum gained a
+  `DestroyedInstance` variant, so exhaustive matches on it need a new arm, and
+  `Instance::try_set_parent` with `ReparentError` is new.
+- Setting `Parent` to a destroyed instance, to the instance itself or to one of its own
+  descendants now raises an ordinary error and leaves every instance where it was.
+  Previously a destroyed parent panicked halfway through the move, and a circular parent
+  silently corrupted the tree. `serializePlace` and `serializeModel` now raise an error for
+  destroyed instances instead of panicking, and `ClearAllChildren` on a destroyed
+  `DataModel` does nothing, like on any other destroyed instance.
+
 ### Fixed
 
 - Creating Instances from several threads at once no longer panics with "Failed to find
@@ -52,11 +71,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A panic in Rust code called by a scheduled Luau thread is now reported as an error of
   that thread. Previously the thread silently disappeared without a result or an error,
   so a script could exit successfully after a crash.
-- A panic in a background task that was detached, or dropped without being awaited, is
-  now reported as an error, so the script exits with code 1. Previously the panic was
-  silently discarded. Awaited tasks still resume their panic in the awaiting code, and it
-  is reported once. `LuaSpawnExt::spawn` and `spawn_blocking` now return a
-  `SpawnedTask`, which can be awaited or detached like the executor task it wraps.
+- A panic in a background task that was detached, or whose handle was dropped while it
+  ran, is now reported as an error, so the script exits with code 1. Previously the panic
+  was silently discarded. Awaited tasks still resume their panic in the awaiting code, and
+  it is reported once. One case remains: a `spawn_blocking` function keeps running after
+  its handle is dropped, and a panic it raises afterward is still lost, though the code
+  that dropped the handle was no longer waiting for its result.
+- `fetch` and `net.request` now fail when a response body ends before the length its
+  `Content-Length` header declares, and `fetch` also fails when its connection driver
+  panics. Previously a driver panic while the body was streaming ended the body early,
+  and the truncated body was returned as if it were complete.
+- A deep `SharedTable.clone` keeps every source table alive until it finishes. Previously
+  another actor could free an already copied table during the clone, and a new table at
+  the same address was then matched to the wrong copy.
 - A panic on one thread while the process-wide instance registry was locked no longer
   breaks instances on every other thread, which previously failed with a `PoisonError`.
   Class-specific members such as `DataModel:GetService` now reject a destroyed instance

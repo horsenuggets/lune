@@ -52,8 +52,13 @@ struct PanicState {
 
     Awaiting it resumes a panic of the task in the awaiting code, exactly like the
     underlying executor task, so the awaiting Lua thread fails with that panic. A panic
-    that no code will observe, because the handle was detached or dropped first, is
-    instead reported through the scheduler's error callback, so it can never be lost.
+    of a detached task, or of a task whose handle is dropped while it runs, is instead
+    reported through the scheduler's error callback.
+
+    One case is still not reported. Dropping the handle cancels the task, but a closure
+    given to `spawn_blocking` keeps running on its blocking thread, and a panic it raises
+    after the cancellation is lost. Whoever dropped the handle has already stopped waiting
+    for its result, so this cannot make a failed run look successful.
 */
 pub struct SpawnedTask<T> {
     task: Option<Task<T>>,
