@@ -46,6 +46,8 @@ struct WorkerContext(Arc<ActorLink>);
 /**
     Every actor started from a Lua state, so that they can be shut down with it.
 
+    Finished actors are reaped when registering or joining children. User-held handles
+    retain their own results without keeping abandoned results in the owner's registry.
     Actors that were shut down are retired, and the retired ones whose thread still runs
     are kept, so that a leaked actor thread stays observable instead of disappearing from
     the list. Dropping the Lua state also stops every actor, even when its script never
@@ -58,6 +60,18 @@ struct ActorChildren {
 }
 
 impl ActorChildren {
+    fn reap(&self) {
+        self.running.borrow_mut().retain(|child| child.is_alive());
+        self.retired.borrow_mut().retain(|child| child.is_alive());
+    }
+
+    fn register(&self, child: Arc<ActorLink>) {
+        self.reap();
+        if child.is_alive() {
+            self.running.borrow_mut().push(child);
+        }
+    }
+
     fn stop_all(&self) {
         let children = self.running.take();
         for child in &children {
@@ -120,6 +134,12 @@ pub fn shutdown(lua: &Lua) {
     }
 }
 
+pub(crate) fn reap_children(lua: &Lua) {
+    if let Some(children) = lua.app_data_ref::<ActorChildren>() {
+        children.reap();
+    }
+}
+
 /**
     Returns how many actors ever started from the given Lua state still have an OS
     thread running their body, including actors that were already shut down.
@@ -167,9 +187,7 @@ fn actor_spawn(
     }
     lua.app_data_ref::<ActorChildren>()
         .expect("children were registered above")
-        .running
-        .borrow_mut()
-        .push(Arc::clone(&link));
+        .register(Arc::clone(&link));
     lua.create_userdata(handles::ActorHandle::new(link))
 }
 
@@ -249,6 +267,89 @@ mod tests {
         dropped.running.borrow_mut().push(Arc::clone(&link));
         drop(dropped);
         assert!(!link.is_alive(), "dropping the owner must join its actors");
+    }
+
+    #[test]
+    fn joining_reaps_registry_ownership_but_keeps_user_handle_results() {
+        let lua = Lua::new();
+        let scheduler = mlua_luau_scheduler::Scheduler::new(lua.clone());
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let launch_observed = Rc::clone(&observed);
+        lua.set_app_data(ActorLauncher::new(move |_, _, link| {
+            launch_observed.borrow_mut().push(Arc::downgrade(&link));
+            spawn_actor_thread(link, |_| {
+                ActorOutcome::Completed(vec![Transfer::String(b"result".to_vec())])
+            })
+            .map_err(LuaError::external)
+        }));
+        lua.globals()
+            .set("actor", module(lua.clone()).unwrap())
+            .unwrap();
+        let id = scheduler
+            .push_thread_back(
+                lua.load(
+                    r#"
+            for _ = 1, 12 do
+                const handle = actor.spawn("worker", { args = { string.rep("x", 65536) } })
+                const ok, result = handle:join()
+                assert(ok and result == "result")
+                retained = handle
+            end
+            const ok, result = retained:join()
+            assert(ok and result == "result")
+        "#,
+                ),
+                (),
+            )
+            .unwrap();
+        async_io::block_on(scheduler.run());
+        assert!(scheduler.get_thread_result(id).unwrap().is_ok());
+        assert!(
+            lua.app_data_ref::<ActorChildren>()
+                .unwrap()
+                .running
+                .borrow()
+                .is_empty()
+        );
+        lua.gc_collect().unwrap();
+        assert!(
+            observed
+                .borrow()
+                .iter()
+                .take(11)
+                .all(|link| link.upgrade().is_none())
+        );
+        assert!(observed.borrow().last().unwrap().upgrade().is_some());
+        lua.globals().set("retained", LuaValue::Nil).unwrap();
+        lua.gc_collect().unwrap();
+        assert!(
+            observed
+                .borrow()
+                .iter()
+                .all(|link| link.upgrade().is_none())
+        );
+    }
+
+    #[test]
+    fn registration_reaps_finished_children_without_losing_live_children() {
+        let children = ActorChildren::default();
+        let live = Arc::new(ActorLink::new(Transfer::Nil));
+        spawn_actor_thread(Arc::clone(&live), wait_until_terminated).unwrap();
+        children.register(Arc::clone(&live));
+        let done = Arc::new(ActorLink::new(Transfer::Buffer(vec![0; 65536])));
+        spawn_actor_thread(Arc::clone(&done), |_| ActorOutcome::Completed(Vec::new())).unwrap();
+        children.running.borrow_mut().push(Arc::clone(&done));
+        done.take_thread().unwrap().join().unwrap();
+        let released = Arc::downgrade(&done);
+        drop(done);
+        let next = Arc::new(ActorLink::new(Transfer::Nil));
+        spawn_actor_thread(Arc::clone(&next), wait_until_terminated).unwrap();
+        children.register(Arc::clone(&next));
+        assert!(released.upgrade().is_none());
+        assert_eq!(children.running.borrow().len(), 2);
+        assert_eq!(children.alive_count(), 2);
+        children.stop_all();
+        assert!(!live.is_alive() && !next.is_alive());
     }
 
     #[test]
