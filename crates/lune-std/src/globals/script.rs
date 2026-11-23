@@ -170,8 +170,8 @@ pub fn register_script_file(lua: &Lua, script_path: &str, file: &Path) -> LuaRes
     files.raw_set(script_path, file.display().to_string())
 }
 
-/// Get the file a script path refers to, which is the path itself unless it was registered
-fn script_file(lua: &Lua, script_path: &Path) -> PathBuf {
+/// Get the file a script path refers to, which is the path itself unless it was registered.
+pub fn script_file(lua: &Lua, script_path: &Path) -> PathBuf {
     lua.named_registry_value::<LuaTable>(SCRIPT_FILES_KEY)
         .ok()
         .and_then(|files| {

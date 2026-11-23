@@ -18,7 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   method implementations. Instances never cross between actors, so each actor only
   reaches the Roblox documents and instances it created. Owners and actors exchange
   messages by topic with `send` and `receive`, and actors can bind callbacks with
-  `actor.bindToMessage`.
+  `actor.bindToMessage`. Relative worker paths use the caller's actual source file,
+  including `init.luau` and project-remapped entrypoints. Standalone executables load
+  embedded workers without source files. Use repeatable `lune build --include` paths or
+  quoted globs for workers referenced only through `actor.spawn`, including nested and
+  computed worker paths. Included workers bring their `require` dependencies with them;
+  a missing embedded worker fails instead of loading a host file.
 - `join` returns `true` and the actor's returned values, or `false` and one error message
   string that includes the traceback and, when several threads errored, every error in
   order. Actors never print their errors or panics themselves, so parallel actors cannot
@@ -65,6 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Relative `require` paths in `init.luau` and project-remapped entrypoints now resolve
+  beside the actual source file instead of beside its shortened module identity.
 - Creating Instances from several threads at once no longer panics with "Failed to find
   dom to create instance in". New orphaned instances are now inserted into the shared
   scratch document under the same lock that looks it up.

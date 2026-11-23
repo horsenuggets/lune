@@ -188,8 +188,14 @@ actor.SharedTable = {} :: SharedTableLibrary
 
 	Starts a script in a new actor, running on its own OS thread with its own Luau VM.
 
-	Paths starting with `./` or `../` are relative to the calling script, and other paths
-	are relative to the current working directory.
+	Paths starting with `./` or `../` are relative to the calling script's actual source
+	file, and other paths are relative to the current working directory.
+
+	Standalone executables load only embedded worker sources, with other paths relative
+	to the bundle root. Include workers using `lune build Main.luau --include Worker.luau`
+	or a quoted glob. Their `require` dependencies are included automatically, but workers
+	started only through `actor.spawn`, including nested workers, must be included
+	explicitly. A missing embedded worker fails instead of loading a host file.
 
 	@param path The path to the script to run
 	@param options Options for the new actor

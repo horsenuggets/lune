@@ -847,7 +847,7 @@ fn resolve_coverage_target(lua: &Lua, value: LuaValue) -> LuaResult<LuaFunction>
     }
 }
 
-fn strip_shebang(mut contents: Vec<u8>) -> Vec<u8> {
+pub(super) fn strip_shebang(mut contents: Vec<u8>) -> Vec<u8> {
     if contents.starts_with(b"#!")
         && let Some(first_newline_idx) = contents
             .iter()

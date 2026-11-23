@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -9,7 +10,7 @@ use mlua::prelude::*;
 use mlua_luau_scheduler::LuaSchedulerExt;
 use serde::Deserialize;
 
-use crate::globals::script::{ScriptReference, pop_script_path, push_script_path};
+use crate::globals::script::{ScriptReference, pop_script_path, push_script_path, script_file};
 use crate::require::RequireResolver;
 use lune_utils::path::{
     LuauModulePath, clean_path_and_make_absolute,
@@ -150,8 +151,22 @@ fn get_bundled_source(lua: &Lua, path: &Path) -> Option<Vec<u8>> {
 /// This handles .luau/.lua extensions and init.luau patterns.
 fn resolve_bundled_module(lua: &Lua, module_path: &Path) -> Option<PathBuf> {
     let bundled = lua.app_data_ref::<BundledFiles>()?;
-    // Normalize to bundle key format, stripping Windows drive prefixes
+    resolve_bundled_file(&bundled, module_path)
+}
+
+/// Resolves a source filename in a standalone bundle without accessing the host filesystem.
+#[must_use]
+pub fn resolve_bundled_file<S: BuildHasher>(
+    bundled: &HashMap<String, Vec<u8>, S>,
+    module_path: &Path,
+) -> Option<PathBuf> {
+    // Bundle-relative paths start at the virtual root, never the host working directory.
     let base = normalize_to_bundle_key(&module_path.display().to_string());
+    let base = if base.starts_with('/') {
+        base
+    } else {
+        format!("/{base}")
+    };
 
     // Try exact path first
     if bundled.contains_key(&base) {
@@ -684,7 +699,8 @@ pub fn create(lua: Lua) -> LuaResult<LuaValue> {
                 .ok()
                 .flatten()
                 .map(PathBuf::from)
-                .or_else(|| get_caller_path(&lua));
+                .or_else(|| get_caller_path(&lua))
+                .map(|path| script_file(&lua, &path));
 
             // Clear the stored caller path
             let _: Option<()> = lua
