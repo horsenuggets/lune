@@ -320,17 +320,28 @@ impl SharedTable {
         Copies this table, and with `deep` every table nested inside it, one table at a
         time instead of recursively, so arbitrarily deep chains cannot overflow the stack.
         Shared tables can never contain themselves, so the copy always terminates.
+
+        A table reached through several paths is copied once and shared the same way in
+        the result, so the work grows with the number of distinct tables, not paths.
     */
     fn copy(&self, deep: bool, frozen: bool) -> LuaResult<Self> {
         let root = Self::with_entries(HashMap::new(), frozen);
+        let mut copies: HashMap<*const SharedInner, Self> = HashMap::new();
+        copies.insert(Arc::as_ptr(&self.inner), root.clone());
         let mut pending = vec![(self.clone(), root.clone())];
         while let Some((source, destination)) = pending.pop() {
             let mut entries = HashMap::new();
             for (key, value) in source.snapshot() {
                 let value = match value {
                     SharedValue::Table(nested) if deep => {
-                        let copy = Self::with_entries(HashMap::new(), frozen);
-                        pending.push((nested, copy.clone()));
+                        let copy = copies
+                            .entry(Arc::as_ptr(&nested.inner))
+                            .or_insert_with(|| {
+                                let copy = Self::with_entries(HashMap::new(), frozen);
+                                pending.push((nested, copy.clone()));
+                                copy
+                            })
+                            .clone();
                         SharedValue::Table(copy)
                     }
                     SharedValue::Table(nested) if frozen && !nested.inner.frozen => {
@@ -529,7 +540,7 @@ pub(crate) fn library(lua: Lua) -> LuaResult<LuaTable> {
 #[cfg(test)]
 #[allow(clippy::float_cmp)] // Counters hold exact integers, so exact comparisons are intended
 mod tests {
-    use std::thread;
+    use std::{thread, time::Duration};
 
     use super::*;
 
@@ -731,5 +742,69 @@ mod tests {
         })
         .join()
         .expect("deep chains must not overflow the stack");
+    }
+
+    #[test]
+    fn deep_clones_copy_each_shared_table_once_and_keep_its_sharing() {
+        // Every level references the next level twice, so the graph has 2^40 paths but
+        // only 41 tables. Copying once per path would never finish in Rust, where
+        // terminating an actor cannot stop it.
+        const LEVELS: usize = 40;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let first = SharedKey::String(b"First".to_vec());
+            let second = SharedKey::String(b"Second".to_vec());
+            let mut level = SharedTable::with_entries(HashMap::new(), false);
+            level
+                .set(first.clone(), Some(SharedValue::Number(1.0)))
+                .unwrap();
+            for _ in 0..LEVELS {
+                let parent = SharedTable::with_entries(HashMap::new(), false);
+                for key in [&first, &second] {
+                    parent
+                        .set(key.clone(), Some(SharedValue::Table(level.clone())))
+                        .unwrap();
+                }
+                level = parent;
+            }
+            let copy = level.copy(true, false).unwrap();
+            let mut source = level;
+            let mut cursor = copy;
+            for _ in 0..LEVELS {
+                let (Some(SharedValue::Table(a)), Some(SharedValue::Table(b))) =
+                    cursor.read(|state| {
+                        (
+                            state.entries.get(&first).cloned(),
+                            state.entries.get(&second).cloned(),
+                        )
+                    })
+                else {
+                    panic!("every copied level must reference the next level twice");
+                };
+                assert!(
+                    a.is_same(&b),
+                    "shared references must stay shared in the copy"
+                );
+                let Some(SharedValue::Table(next_source)) =
+                    source.read(|state| state.entries.get(&first).cloned())
+                else {
+                    panic!("every source level must reference the next level");
+                };
+                assert!(
+                    !a.is_same(&next_source),
+                    "a deep copy must not reuse source tables"
+                );
+                cursor = a;
+                source = next_source;
+            }
+            let leaf = cursor.read(|state| state.entries.get(&first).cloned());
+            sender
+                .send(matches!(leaf, Some(SharedValue::Number(n)) if n == 1.0))
+                .unwrap();
+        });
+        let finished = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a deeply shared graph must copy quickly");
+        assert!(finished, "the copy must keep the leaf value");
     }
 }
