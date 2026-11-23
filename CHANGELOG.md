@@ -70,6 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Failed `luau.load` calls now restore the process JIT setting before returning the error,
+  so later chunks do not inherit the failed load's codegen choice.
 - Ancestor searches no longer expose the synthetic document root. Previously an actor
   could obtain the shared scratch root and reach orphaned instances created by another
   VM. Real ancestors, including folders named `ROOT` and DataModels, remain discoverable.
