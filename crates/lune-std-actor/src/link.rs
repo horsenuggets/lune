@@ -37,13 +37,16 @@ impl ActorOutcome {
         Decides the outcome of an actor whose runtime finished running its script.
 
         Termination takes priority, then explicit exit codes, then errors from any of the
-        actor's threads. Otherwise the script's returned values are copied for the owner.
+        actor's threads, joined in the order they happened. A script that ended without
+        returning or erroring also fails, so an actor can never silently pass. Otherwise
+        the script's returned values are copied for the owner.
     */
     #[must_use]
     pub fn from_run(
         link: &ActorLink,
         code: Option<u8>,
-        first_error: Option<String>,
+        errors: &[String],
+        finished: bool,
         values: &LuaMultiValue,
     ) -> Self {
         if link.is_terminated() {
@@ -54,8 +57,13 @@ impl ActorOutcome {
             Some(code) => return Self::Failed(format!("The actor exited with code {code}.")),
             None => {}
         }
-        if let Some(error) = first_error {
-            return Self::Failed(error);
+        if !errors.is_empty() {
+            return Self::Failed(errors.join("\n\n"));
+        }
+        if !finished {
+            return Self::Failed(
+                "The actor's script ended without returning a result or an error.".to_string(),
+            );
         }
         match Transfer::from_lua_multi(values) {
             Ok(values) => Self::Completed(values),
@@ -303,6 +311,47 @@ mod tests {
     }
 
     #[test]
+    fn reports_panics_in_luau_called_rust_as_failures() {
+        // Runs a script on an actor thread through a real scheduler, the way a runtime
+        // does, where Luau calls a Rust function that panics inside a detached task.
+        let link = link();
+        spawn_actor_thread(Arc::clone(&link), |link| {
+            let lua = Lua::new();
+            let scheduler = mlua_luau_scheduler::Scheduler::new(lua.clone());
+            link.attach(&lua, scheduler.exit_handle()).unwrap();
+            let errors = Arc::new(Mutex::new(Vec::new()));
+            let errors_inner = Arc::clone(&errors);
+            scheduler.set_error_callback(move |error| {
+                errors_inner.lock().unwrap().push(error.to_string());
+            });
+            lua.globals()
+                .set(
+                    "explode",
+                    lua.create_function(|_, ()| -> LuaResult<()> { panic!("controlled panic") })
+                        .unwrap(),
+                )
+                .unwrap();
+            let id = scheduler
+                .push_thread_back(lua.load("explode() return 1"), ())
+                .unwrap();
+            block_on(scheduler.run());
+            let result = scheduler.get_thread_result(id);
+            let finished = result.is_some();
+            let values = result.and_then(Result::ok).unwrap_or_default();
+            let errors = errors.lock().unwrap().clone();
+            ActorOutcome::from_run(&link, scheduler.get_exit_code(), &errors, finished, &values)
+        })
+        .unwrap();
+        match block_on(link.wait()) {
+            ActorOutcome::Failed(message) => {
+                assert!(message.contains("controlled panic"), "{message}");
+            }
+            ActorOutcome::Completed(_) => panic!("a panic in Luau-called Rust must fail"),
+        }
+        link.take_thread().unwrap().join().unwrap();
+    }
+
+    #[test]
     fn termination_interrupts_running_luau_code() {
         let link = link();
         let lua = Lua::new();
@@ -333,33 +382,39 @@ mod tests {
         let lua = Lua::new();
         let values = LuaMultiValue::from_vec(vec![LuaValue::Number(1.0)]);
         let fresh = link();
+        let none: &[String] = &[];
         assert!(matches!(
-            ActorOutcome::from_run(&fresh, None, None, &values),
+            ActorOutcome::from_run(&fresh, None, none, true, &values),
             ActorOutcome::Completed(_)
         ));
         assert!(matches!(
-            ActorOutcome::from_run(&fresh, Some(0), None, &values),
+            ActorOutcome::from_run(&fresh, Some(0), none, false, &values),
             ActorOutcome::Completed(v) if v.is_empty()
         ));
         assert!(matches!(
-            ActorOutcome::from_run(&fresh, Some(3), Some("error".into()), &values),
+            ActorOutcome::from_run(&fresh, Some(3), &["error".into()], true, &values),
             ActorOutcome::Failed(m) if m.contains("code 3")
         ));
         assert!(matches!(
-            ActorOutcome::from_run(&fresh, None, Some("first".into()), &values),
-            ActorOutcome::Failed(m) if m == "first"
+            ActorOutcome::from_run(&fresh, None, &["first".into(), "second".into()], true, &values),
+            ActorOutcome::Failed(m) if m == "first\n\nsecond"
+        ));
+        // A script that vanished without a result or an error must never pass.
+        assert!(matches!(
+            ActorOutcome::from_run(&fresh, None, none, false, &values),
+            ActorOutcome::Failed(m) if m.contains("without returning")
         ));
         let function = LuaMultiValue::from_vec(vec![LuaValue::Function(
             lua.create_function(|_, ()| Ok(())).unwrap(),
         )]);
         assert!(matches!(
-            ActorOutcome::from_run(&fresh, None, None, &function),
+            ActorOutcome::from_run(&fresh, None, none, true, &function),
             ActorOutcome::Failed(m) if m.contains("cannot be sent")
         ));
         let terminated = link();
         terminated.terminate();
         assert!(matches!(
-            ActorOutcome::from_run(&terminated, Some(0), None, &values),
+            ActorOutcome::from_run(&terminated, Some(0), none, true, &values),
             ActorOutcome::Failed(m) if m == TERMINATED_MESSAGE
         ));
     }

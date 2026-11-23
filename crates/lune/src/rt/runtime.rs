@@ -35,8 +35,10 @@ pub struct RuntimeReturnValues {
     pub errored: bool,
     /// The final values returned by the main thread.
     pub values: LuaMultiValue,
-    /// The formatted message of the first error thrown from any thread, if any.
-    pub(crate) first_error: Option<String>,
+    /// The formatted messages of every error thrown from any thread, in order.
+    pub(crate) errors: Vec<String>,
+    /// Whether the main thread finished, with either values or an error.
+    pub(crate) finished: bool,
 }
 
 impl RuntimeReturnValues {
@@ -580,25 +582,24 @@ impl Runtime {
         // Add error callback to format errors nicely + store status
         let got_any_error = Arc::new(AtomicBool::new(false));
         let got_any_inner = Arc::clone(&got_any_error);
-        let first_error = Arc::new(Mutex::new(None::<String>));
-        let first_error_inner = Arc::clone(&first_error);
+        let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let errors_inner = Arc::clone(&errors);
+        // Actors never print their errors. Their owner receives them through join, so
+        // that parallel actors don't interleave duplicate reports on one stderr.
         #[cfg(feature = "std-actor")]
-        let actor_link = self.actor.clone();
+        let quiet = self.actor.is_some();
+        #[cfg(not(feature = "std-actor"))]
+        let quiet = false;
         self.sched.set_error_callback(move |e| {
             got_any_inner.store(true, Ordering::SeqCst);
             let message = RuntimeError::from(e).to_string();
-            // The owner already knows it terminated this actor, and join reports it.
-            #[cfg(feature = "std-actor")]
-            let quiet = actor_link.as_ref().is_some_and(|link| link.is_terminated());
-            #[cfg(not(feature = "std-actor"))]
-            let quiet = false;
             if !quiet {
                 eprintln!("{message}");
             }
-            first_error_inner
+            errors_inner
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .get_or_insert(message);
+                .push(message);
         });
 
         self.prepare_execution()?;
@@ -663,9 +664,9 @@ impl Runtime {
         #[cfg(feature = "std-actor")]
         lune_std_actor::shutdown(&self.lua);
 
-        let main_thread_values = self
-            .sched
-            .get_thread_result(main_thread_id)
+        let main_thread_result = self.sched.get_thread_result(main_thread_id);
+        let finished = main_thread_result.is_some();
+        let main_thread_values = main_thread_result
             .unwrap_or_else(|| Ok(LuaMultiValue::new())) // Ignore missing result (interruption), we just want to extract values
             .unwrap_or_default(); // Ignore any errors from the script, we just want to extract values
 
@@ -673,10 +674,8 @@ impl Runtime {
             code: self.sched.get_exit_code(),
             errored: got_any_error.load(Ordering::SeqCst),
             values: main_thread_values,
-            first_error: first_error
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take(),
+            errors: std::mem::take(&mut *errors.lock().unwrap_or_else(PoisonError::into_inner)),
+            finished,
         })
     }
 }

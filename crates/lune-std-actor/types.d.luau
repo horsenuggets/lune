@@ -41,6 +41,16 @@
 	Tables are copied deeply and keep their frozen state, while cycles, functions,
 	threads and other userdata like Instances are rejected with an error.
 
+	### Errors
+
+	`join` returns `true` followed by the values the actor's script returned, or `false`
+	followed by a single error message string. That message contains the traceback, and
+	when several of the actor's threads errored, every error in order. Actors never print
+	their own errors, so their owner only learns about them through `join`.
+
+	A panic inside native code that the actor called, an exit with a non-zero code, being
+	terminated and a script that ends without returning all make `join` return `false`.
+
 	### Lifetime
 
 	`join` waits for an actor to finish and stops sending it messages, which also ends any
@@ -55,7 +65,7 @@ const actor = {}
 	@interface Actor
 	.send (self: Actor, topic: string, value: any) -> () -- Copies a value to the actor under a topic
 	.receive (self: Actor, topic: string) -> any -- Yields until the actor sends a value under a topic
-	.join (self: Actor) -> (boolean, ...any) -- Yields until the actor finishes, returning its values or error
+	.join (self: Actor) -> (boolean, ...any) -- Yields until the actor finishes, returning `true` and its values, or `false` and one error message
 	.terminate (self: Actor) -> () -- Stops the actor as soon as possible
 ]=]
 export type Actor = {

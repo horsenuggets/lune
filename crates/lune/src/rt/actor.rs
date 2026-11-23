@@ -65,7 +65,8 @@ fn run_actor(config: WorkerConfig, path: PathBuf, link: Arc<ActorLink>) -> Actor
             Ok(values) => ActorOutcome::from_run(
                 &link,
                 values.code,
-                values.first_error.clone(),
+                &values.errors,
+                values.finished,
                 &values.values,
             ),
             Err(error) => ActorOutcome::Failed(error.to_string()),
