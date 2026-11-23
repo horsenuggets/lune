@@ -8,6 +8,98 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.11.1-horse.17.0` - November 23rd, 2026
+
+### Added
+
+- Added the `@lune/actor` library for running scripts in parallel, similar to Roblox's
+  Parallel Luau. `actor.spawn(path, { args = { ... } })` runs a script on its own OS
+  thread in its own Luau VM, with separate `require` caches, globals, coverage data and
+  method implementations. Instances never cross between actors, so each actor only
+  reaches the Roblox documents and instances it created. Owners and actors exchange
+  messages by topic with `send` and `receive`, and actors can bind callbacks with
+  `actor.bindToMessage`. Relative worker paths use the caller's actual source file,
+  including `init.luau` and project-remapped entrypoints. Standalone executables load
+  embedded workers without source files. Use repeatable `lune build --include` paths or
+  quoted globs for workers referenced only through `actor.spawn`, including nested and
+  computed worker paths. Included workers bring their `require` dependencies with them;
+  a missing embedded worker fails instead of loading a host file.
+- `join` returns `true` and the actor's returned values, or `false` and one error message
+  string that includes the traceback and, when several threads errored, every error in
+  order. Actors never print their errors or panics themselves, so parallel actors cannot
+  interleave duplicate reports. Panics inside native code, including in background tasks,
+  non-zero exit codes, termination and scripts that end without returning all make `join`
+  return `false`. An explicit `process.exit(0)` makes `join` return `true` with no values,
+  even after errors in other threads, matching how an explicit exit code decides the
+  result of an ordinary Lune script.
+- Messages copy `nil`, booleans, numbers, vectors, strings, buffers and plain tables,
+  keeping frozen tables frozen. Functions, threads, Instances and other userdata,
+  cyclic tables and tables with metatables are rejected with clear errors.
+- Added `actor.SharedTable`, which every actor can read and update at the same time
+  without copying, with atomic `increment` and `update` plus `clone`, `cloneAndFreeze`,
+  `clear`, `size` and `isFrozen`. Storing a shared table where it would contain itself is
+  rejected, and cloning and releasing deeply nested shared tables cannot overflow the
+  stack. A deep clone copies each shared table once and keeps tables that were shared
+  between several places shared in the copy.
+- `terminate` stops busy, protected, idle and still-starting actors, `process.exit` inside
+  an actor ends only that actor, and actors still running when their owner's script
+  finishes or calls `process.exit` are terminated and joined. Actor threads get the same
+  8 MiB stack as the main thread on Linux and macOS. `stdio.prompt` is unavailable inside
+  actors.
+- Schedulers now provide a thread-safe exit handle, so other threads can stop them even
+  while they are idle.
+
+### Changed
+
+- **Breaking**. `LuaSpawnExt::spawn` and `spawn_blocking` in `mlua-luau-scheduler` now
+  return a `SpawnedTask` instead of an `async_executor::Task`, so that panics of detached
+  and dropped tasks are reported. It can still be awaited, detached with `detach` and
+  polled once with `poll_once`. Code that names `async_executor::Task` as the return type,
+  or calls `cancel`, `is_finished` or `fallible` on it, no longer compiles. Name
+  `SpawnedTask` instead, and drop the handle to cancel the task. `mlua-luau-scheduler` is
+  now `0.4.0`.
+- **Breaking**. `lune-roblox` is now `0.5.0`. Its `DocumentError` enum gained a
+  `DestroyedInstance` variant, so exhaustive matches on it need a new arm, and
+  `Instance::try_set_parent` with `ReparentError` is new.
+- Setting `Parent` to a destroyed instance, to the instance itself or to one of its own
+  descendants now raises an ordinary error and leaves every instance where it was.
+  Previously a destroyed parent panicked halfway through the move, and a circular parent
+  silently corrupted the tree. `serializePlace` and `serializeModel` now raise an error for
+  destroyed instances instead of panicking, and `ClearAllChildren` on a destroyed
+  `DataModel` does nothing, like on any other destroyed instance.
+
+### Fixed
+
+- Relative `require` paths in `init.luau` and project-remapped entrypoints now resolve
+  beside the actual source file instead of beside its shortened module identity.
+- Creating Instances from several threads at once no longer panics with "Failed to find
+  dom to create instance in". New orphaned instances are now inserted into the shared
+  scratch document under the same lock that looks it up.
+- A panic in Rust code called by a scheduled Luau thread is now reported as an error of
+  that thread. Previously the thread silently disappeared without a result or an error,
+  so a script could exit successfully after a crash.
+- A panic in a background task that was detached, or whose handle was dropped while it
+  ran, is now reported as an error, so the script exits with code 1. Previously the panic
+  was silently discarded. Awaited tasks still resume their panic in the awaiting code, and
+  it is reported once. One case remains: a `spawn_blocking` function keeps running after
+  its handle is dropped, and a panic it raises afterward is still lost, though the code
+  that dropped the handle was no longer waiting for its result.
+- `fetch` and `net.request` now fail when a response body ends before the length its
+  `Content-Length` header declares, and `fetch` also fails when its connection driver
+  panics. Previously a driver panic while the body was streaming ended the body early,
+  and the truncated body was returned as if it were complete.
+- Deep `SharedTable.clone` and `cloneAndFreeze` operations block table-valued writes
+  until copying finishes, so concurrent edge reversals cannot create a cyclic copy. Deep
+  clones also keep every source table alive until they finish. Previously another actor
+  could free an already copied table during the clone, and a new table at the same address
+  was then matched to the wrong copy.
+- A panic on one thread while the process-wide instance registry was locked no longer
+  breaks instances on every other thread, which previously failed with a `PoisonError`.
+  Class-specific members such as `DataModel:GetService` now reject a destroyed instance
+  with an ordinary "Instance has been destroyed" error instead of panicking.
+- Bundled files of standalone executables are shared between runs instead of being
+  copied into each one.
+
 ## `0.11.1-horse.16.10` - November 22nd, 2026
 
 ### Fixed

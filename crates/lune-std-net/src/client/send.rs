@@ -70,6 +70,6 @@ pub async fn send(mut request: Request, lua: Lua) -> LuaResult<Response> {
             continue;
         }
 
-        break Response::from_incoming(incoming, request.decompress).await;
+        break Response::from_incoming(incoming, &request.method(), request.decompress).await;
     }
 }

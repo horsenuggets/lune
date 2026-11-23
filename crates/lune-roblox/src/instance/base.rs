@@ -237,7 +237,7 @@ fn tag_target(this: &Instance, mut args: LuaMultiValue) -> LuaResult<(Instance, 
     Ok((*this, args))
 }
 
-fn ensure_not_destroyed(inst: &Instance) -> LuaResult<()> {
+pub(crate) fn ensure_not_destroyed(inst: &Instance) -> LuaResult<()> {
     if inst.is_destroyed() {
         Err(LuaError::RuntimeError(
             "Instance has been destroyed".to_string(),
@@ -409,7 +409,9 @@ fn instance_property_set(
             let parent_inst = Parent::from_lua(prop_value, lua)?.map(|p| *p);
 
             let old_dom_id = this.dom_id;
-            let moved = this.set_parent(parent_inst);
+            let moved = this.try_set_parent(parent_inst).map_err(|error| {
+                LuaError::RuntimeError(format!("Failed to set Parent - {error}"))
+            })?;
 
             // A cross-dom transfer moves this instance (and its descendants)
             // into the parent's dom. Re-key any cached userdata for the moved

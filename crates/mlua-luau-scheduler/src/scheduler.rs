@@ -1,7 +1,9 @@
 #![allow(clippy::module_name_repetitions)]
 
 use std::{
+    any::Any,
     cell::Cell,
+    panic::AssertUnwindSafe,
     rc::Rc,
     sync::{Arc, Weak as WeakArc},
     thread::panicking,
@@ -16,11 +18,13 @@ use tracing::{Instrument, debug, instrument, trace, trace_span};
 use crate::{
     error_callback::ThreadErrorCallback,
     exit::Exit,
-    queue::{DeferredThreadQueue, FuturesQueue, SpawnedThreadQueue},
+    exit_handle::ExitHandle,
+    queue::{DeferredThreadQueue, FuturesQueue, LocalBoxFuture, SpawnedThreadQueue},
+    spawned::{PanicSink, background_panic_message},
     status::Status,
     threads::{ThreadId, ThreadMap},
     traits::IntoLuaThread,
-    util::run_until_yield,
+    util::{panic_message, run_until_yield},
 };
 
 const ERR_METADATA_ALREADY_ATTACHED: &str = "\
@@ -50,6 +54,7 @@ pub struct Scheduler {
     thread_map: ThreadMap,
     status: Rc<Cell<Status>>,
     exit: Exit,
+    exit_handle: ExitHandle,
 }
 
 impl Scheduler {
@@ -107,6 +112,7 @@ impl Scheduler {
             thread_map: result_map,
             status,
             exit,
+            exit_handle: ExitHandle::new(),
         }
     }
 
@@ -167,7 +173,18 @@ impl Scheduler {
     */
     #[must_use]
     pub fn get_exit_code(&self) -> Option<u8> {
-        self.exit.get()
+        self.exit.get().or_else(|| self.exit_handle.code())
+    }
+
+    /**
+        Returns a thread-safe handle that can stop this scheduler from another OS thread.
+
+        Requesting an exit through the handle wakes the scheduler even when it is idle,
+        and [`Scheduler::get_exit_code`] reports the requested code afterwards.
+    */
+    #[must_use]
+    pub fn exit_handle(&self) -> ExitHandle {
+        self.exit_handle.clone()
     }
 
     /**
@@ -292,6 +309,7 @@ impl Scheduler {
         let local_exec = LocalExecutor::new();
         let main_exec = Arc::new(Executor::new());
         let fut_queue = FuturesQueue::new();
+        let (panic_sink, panic_rx) = PanicSink::new();
 
         /*
             Store the main executor and queue in Lua, so that they may be used with LuaSchedulerExt.
@@ -307,7 +325,12 @@ impl Scheduler {
             self.lua.app_data_ref::<FuturesQueue>().is_none(),
             "{ERR_METADATA_ALREADY_ATTACHED}"
         );
+        assert!(
+            self.lua.app_data_ref::<PanicSink>().is_none(),
+            "{ERR_METADATA_ALREADY_ATTACHED}"
+        );
 
+        self.lua.set_app_data(panic_sink);
         self.lua.set_app_data(Arc::downgrade(&main_exec));
         self.lua.set_app_data(fut_queue.clone());
 
@@ -369,11 +392,39 @@ impl Scheduler {
                 }
             };
 
+            // Panics of detached tasks would otherwise be discarded by the executors, so
+            // they are reported as errors, failing the run instead of letting it pass.
+            let report_panics = || {
+                while let Ok(message) = panic_rx.try_recv() {
+                    self.error_callback.call(&LuaError::runtime(message));
+                }
+            };
+            let process_future = |fut: LocalBoxFuture<'static>| {
+                let fut = async move {
+                    let result: Result<(), Box<dyn Any + Send>> =
+                        AssertUnwindSafe(fut).catch_unwind().await;
+                    if let Err(payload) = result {
+                        self.error_callback
+                            .call(&LuaError::runtime(background_panic_message(panic_message(
+                                payload.as_ref(),
+                            ))));
+                    }
+                };
+                local_exec.spawn(fut).detach();
+            };
+
             loop {
-                let fut_exit = self.exit.listen(); // 1
+                let fut_exit = self.exit.listen().or(self.exit_handle.listen()); // 1
                 let fut_spawn = self.queue_spawn.wait_for_item(); // 2
                 let fut_defer = self.queue_defer.wait_for_item(); // 3
                 let fut_futs = fut_queue.wait_for_item(); // 4
+                let fut_panics = async {
+                    // The channel never closes while the loop runs, since the sender
+                    // lives in the Lua state's app data until the run finishes.
+                    let _ = panic_rx.recv().await.map(|message| {
+                        self.error_callback.call(&LuaError::runtime(message));
+                    });
+                }; // 6
 
                 // 5
                 let mut num_processed = 0;
@@ -387,16 +438,18 @@ impl Scheduler {
                     }
                 };
 
-                // 1 + 2 + 3 + 4 + 5
+                // 1 + 2 + 3 + 4 + 5 + 6
                 fut_exit
                     .or(fut_spawn)
                     .or(fut_defer)
                     .or(fut_futs)
                     .or(fut_tick.instrument(span_tick.or_current()))
+                    .or(fut_panics)
                     .await;
+                report_panics();
 
                 // Check if we should exit
-                if self.exit.get().is_some() {
+                if self.get_exit_code().is_some() {
                     debug!("exit signal received");
                     break;
                 }
@@ -422,7 +475,7 @@ impl Scheduler {
                 {
                     let _span = trace_span!("Scheduler::drain_futures").entered();
                     for fut in fut_queue.take_items() {
-                        local_exec.spawn(fut).detach();
+                        process_future(fut);
                         num_futures += 1;
                     }
                 }
@@ -443,6 +496,7 @@ impl Scheduler {
                     break;
                 }
             }
+            report_panics();
         };
 
         // Run the executor inside a span until all lua threads complete
@@ -456,6 +510,9 @@ impl Scheduler {
             .expect(ERR_METADATA_REMOVED);
         self.lua
             .remove_app_data::<FuturesQueue>()
+            .expect(ERR_METADATA_REMOVED);
+        self.lua
+            .remove_app_data::<PanicSink>()
             .expect(ERR_METADATA_REMOVED);
     }
 }

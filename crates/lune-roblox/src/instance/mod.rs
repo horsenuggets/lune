@@ -48,6 +48,8 @@ pub mod registry;
 
 use dom_registry::DomId;
 
+pub use dom_registry::ReparentError;
+
 const PROPERTY_NAME_ATTRIBUTES: &str = "Attributes";
 const PROPERTY_NAME_TAGS: &str = "Tags";
 
@@ -115,7 +117,13 @@ impl Instance {
     */
     #[must_use]
     pub fn new_orphaned(class_name: impl AsRef<str>) -> Self {
-        Self::new_in_dom(dom_registry::default_dom(), class_name)
+        let class_name = class_name.as_ref();
+        let (dom_id, dom_ref) = dom_registry::insert_orphan(class_name);
+        Self {
+            dom_id,
+            dom_ref,
+            class_name: ustr(class_name),
+        }
     }
 
     /**
@@ -169,6 +177,25 @@ impl Instance {
     #[doc(hidden)]
     pub fn with_dom<R>(&self, f: impl FnOnce(&WeakDom) -> R) -> R {
         dom_registry::with(self.dom_id, f).expect("Failed to find dom for instance")
+    }
+
+    /**
+        Runs a closure with this instance's live record and the dom it lives in.
+
+        Returns `None` when the instance is destroyed. Destroying the last instance
+        of a document drops the whole document, so a destroyed instance may have
+        neither a referent nor a document left, and both read the same way. Reads
+        must never panic on a destroyed instance, because properties like `Parent`
+        stay readable after `Destroy`.
+
+        The same re-entrancy rules as [`Instance::with_dom`] apply to `f`.
+    */
+    fn read<R>(&self, f: impl FnOnce(&WeakDom, &DomInstance) -> R) -> Option<R> {
+        dom_registry::with(self.dom_id, |dom| {
+            dom.get_by_ref(self.dom_ref)
+                .map(|instance| f(dom, instance))
+        })
+        .flatten()
     }
 
     /**
@@ -264,13 +291,13 @@ impl Instance {
         if self.is_destroyed() {
             false
         } else {
-            self.with_dom_mut(|dom| dom.destroy(self.dom_ref));
+            dom_registry::with_mut(self.dom_id, |dom| dom.destroy(self.dom_ref));
             dom_registry::drop_if_empty(self.dom_id);
             true
         }
     }
 
-    fn is_destroyed(&self) -> bool {
+    pub(crate) fn is_destroyed(&self) -> bool {
         // NOTE: This property can not be cached since instance references
         // other than this one may have destroyed this one, and we don't
         // keep track of all current instance reference structs
@@ -287,7 +314,9 @@ impl Instance {
           on the Roblox Developer Hub
     */
     pub fn clear_all_children(&mut self) {
-        self.with_dom_mut(|dom| {
+        // A destroyed instance has no children left. When it was the root of its
+        // document, that whole document is gone too, so there is nothing to clear.
+        dom_registry::with_mut(self.dom_id, |dom| {
             if let Some(instance) = dom.get_by_ref(self.dom_ref) {
                 let child_refs = instance.children().to_vec();
                 for child_ref in child_refs {
@@ -363,8 +392,8 @@ impl Instance {
     */
     #[must_use]
     pub fn get_parent(&self) -> Option<Instance> {
-        self.with_dom(|dom| {
-            let parent_ref = dom.get_by_ref(self.dom_ref)?.parent();
+        self.read(|dom, instance| {
+            let parent_ref = instance.parent();
             if parent_ref == dom.root_ref() {
                 None
             } else {
@@ -372,6 +401,7 @@ impl Instance {
                     .map(|parent| Self::from_dom_instance(self.dom_id, parent_ref, parent))
             }
         })
+        .flatten()
     }
 
     /**
@@ -388,9 +418,29 @@ impl Instance {
         ### See Also
         * [`Parent`](https://create.roblox.com/docs/reference/engine/classes/Instance#Parent)
           on the Roblox Developer Hub
+
+        # Panics
+
+        Panics, before moving anything, in the cases where
+        [`Instance::try_set_parent`] returns an error.
     */
     #[allow(clippy::must_use_candidate)]
     pub fn set_parent(&self, parent: Option<Instance>) -> Vec<DomRef> {
+        self.try_set_parent(parent)
+            .unwrap_or_else(|error| panic!("Failed to set Parent - {error}"))
+    }
+
+    /**
+        Sets the parent of the instance, like [`Instance::set_parent`], but returns
+        an error instead of panicking when the reparent is impossible.
+
+        # Errors
+
+        Returns an error, and moves nothing, if this instance or the new parent has
+        been destroyed, if the new parent is this instance or one of its
+        descendants, or if this instance is the root of its document.
+    */
+    pub fn try_set_parent(&self, parent: Option<Instance>) -> Result<Vec<DomRef>, ReparentError> {
         let parent = parent.map(|p| (p.dom_id, p.dom_ref));
         dom_registry::reparent(self.dom_id, self.dom_ref, parent)
     }
@@ -399,13 +449,8 @@ impl Instance {
         Gets a property for the instance, if it exists.
     */
     pub fn get_property(&self, name: impl AsRef<str>) -> Option<DomValue> {
-        self.with_dom(|dom| {
-            dom.get_by_ref(self.dom_ref)
-                .expect("Failed to find instance in document")
-                .properties
-                .get(&ustr(name.as_ref()))
-                .cloned()
-        })
+        self.read(|_, instance| instance.properties.get(&ustr(name.as_ref())).cloned())
+            .flatten()
     }
 
     /**
@@ -443,10 +488,7 @@ impl Instance {
           on the Roblox Developer Hub
     */
     pub fn get_attribute(&self, name: impl AsRef<str>) -> Option<DomValue> {
-        self.with_dom(|dom| {
-            let inst = dom
-                .get_by_ref(self.dom_ref)
-                .expect("Failed to find instance in document");
+        self.read(|_, inst| {
             if let Some(DomValue::Attributes(attributes)) =
                 inst.properties.get(&ustr(PROPERTY_NAME_ATTRIBUTES))
             {
@@ -455,6 +497,7 @@ impl Instance {
                 None
             }
         })
+        .flatten()
     }
 
     /**
@@ -466,10 +509,7 @@ impl Instance {
     */
     #[must_use]
     pub fn get_attributes(&self) -> BTreeMap<String, DomValue> {
-        self.with_dom(|dom| {
-            let inst = dom
-                .get_by_ref(self.dom_ref)
-                .expect("Failed to find instance in document");
+        self.read(|_, inst| {
             if let Some(DomValue::Attributes(attributes)) =
                 inst.properties.get(&ustr(PROPERTY_NAME_ATTRIBUTES))
             {
@@ -478,6 +518,7 @@ impl Instance {
                 BTreeMap::new()
             }
         })
+        .unwrap_or_default()
     }
 
     /**
@@ -569,16 +610,14 @@ impl Instance {
     */
     #[must_use]
     pub fn get_tags(&self) -> Vec<String> {
-        self.with_dom(|dom| {
-            let inst = dom
-                .get_by_ref(self.dom_ref)
-                .expect("Failed to find instance in document");
+        self.read(|_, inst| {
             if let Some(DomValue::Tags(tags)) = inst.properties.get(&ustr(PROPERTY_NAME_TAGS)) {
                 tags.iter().map(ToString::to_string).collect()
             } else {
                 Vec::new()
             }
         })
+        .unwrap_or_default()
     }
 
     /**
@@ -589,10 +628,7 @@ impl Instance {
           on the Roblox Developer Hub
     */
     pub fn has_tag(&self, name: impl AsRef<str>) -> bool {
-        self.with_dom(|dom| {
-            let inst = dom
-                .get_by_ref(self.dom_ref)
-                .expect("Failed to find instance in document");
+        self.read(|_, inst| {
             if let Some(DomValue::Tags(tags)) = inst.properties.get(&ustr(PROPERTY_NAME_TAGS)) {
                 let name = name.as_ref();
                 tags.iter().any(|tag| tag == name)
@@ -600,6 +636,7 @@ impl Instance {
                 false
             }
         })
+        .unwrap_or(false)
     }
 
     /**
@@ -636,10 +673,7 @@ impl Instance {
     */
     #[must_use]
     pub fn get_children(&self) -> Vec<Instance> {
-        self.with_dom(|dom| {
-            let instance = dom
-                .get_by_ref(self.dom_ref)
-                .expect("Failed to find instance in document");
+        self.read(|dom, instance| {
             instance
                 .children()
                 .iter()
@@ -649,6 +683,7 @@ impl Instance {
                 })
                 .collect()
         })
+        .unwrap_or_default()
     }
 
     /**
@@ -663,13 +698,9 @@ impl Instance {
     */
     #[must_use]
     pub fn get_descendants(&self) -> Vec<Instance> {
-        self.with_dom(|dom| {
+        self.read(|dom, instance| {
             let mut descendants = Vec::new();
-            let mut queue = VecDeque::from_iter(
-                dom.get_by_ref(self.dom_ref)
-                    .expect("Failed to find instance in document")
-                    .children(),
-            );
+            let mut queue = VecDeque::from_iter(instance.children());
 
             while let Some(queue_ref) = queue.pop_front() {
                 if let Some(queue_inst) = dom.get_by_ref(*queue_ref) {
@@ -682,6 +713,7 @@ impl Instance {
 
             descendants
         })
+        .unwrap_or_default()
     }
 
     /**
@@ -694,13 +726,9 @@ impl Instance {
     */
     #[must_use]
     pub fn get_descendants_preorder(&self) -> Vec<Instance> {
-        self.with_dom(|dom| {
+        self.read(|dom, instance| {
             let mut descendants = Vec::new();
-            let mut queue = VecDeque::from_iter(
-                dom.get_by_ref(self.dom_ref)
-                    .expect("Failed to find instance in document")
-                    .children(),
-            );
+            let mut queue = VecDeque::from_iter(instance.children());
 
             while let Some(queue_ref) = queue.pop_front() {
                 if let Some(queue_inst) = dom.get_by_ref(*queue_ref) {
@@ -713,6 +741,7 @@ impl Instance {
 
             descendants
         })
+        .unwrap_or_default()
     }
 
     /**
@@ -729,7 +758,7 @@ impl Instance {
     */
     #[must_use]
     pub fn get_full_name(&self) -> String {
-        self.with_dom(|dom| {
+        dom_registry::with(self.dom_id, |dom| {
             let dom_root = dom.root_ref();
 
             let mut parts = Vec::new();
@@ -747,6 +776,7 @@ impl Instance {
             parts.reverse();
             parts.join(".")
         })
+        .unwrap_or_default()
     }
 
     /**
@@ -761,13 +791,8 @@ impl Instance {
     where
         F: Fn(&DomInstance) -> bool,
     {
-        self.with_dom(|dom| {
-            let children = dom
-                .get_by_ref(self.dom_ref)
-                .expect("Failed to find instance in document")
-                .children();
-
-            children.iter().find_map(|child_ref| {
+        self.read(|dom, instance| {
+            instance.children().iter().find_map(|child_ref| {
                 let child_inst = dom.get_by_ref(*child_ref)?;
                 if predicate(child_inst) {
                     Some(Self::from_dom_instance(self.dom_id, *child_ref, child_inst))
@@ -776,6 +801,7 @@ impl Instance {
                 }
             })
         })
+        .flatten()
     }
 
     /**
@@ -790,11 +816,8 @@ impl Instance {
     where
         F: Fn(&DomInstance) -> bool,
     {
-        self.with_dom(|dom| {
-            let mut ancestor_ref = dom
-                .get_by_ref(self.dom_ref)
-                .expect("Failed to find instance in document")
-                .parent();
+        self.read(|dom, instance| {
+            let mut ancestor_ref = instance.parent();
 
             while let Some(ancestor) = dom.get_by_ref(ancestor_ref) {
                 if predicate(ancestor) {
@@ -805,6 +828,7 @@ impl Instance {
 
             None
         })
+        .flatten()
     }
 
     /**
@@ -818,12 +842,8 @@ impl Instance {
     where
         F: Fn(&DomInstance) -> bool,
     {
-        self.with_dom(|dom| {
-            let mut queue = VecDeque::from_iter(
-                dom.get_by_ref(self.dom_ref)
-                    .expect("Failed to find instance in document")
-                    .children(),
-            );
+        self.read(|dom, instance| {
+            let mut queue = VecDeque::from_iter(instance.children());
 
             while let Some(queue_ref) = queue.pop_front() {
                 if let Some(queue_item) = dom.get_by_ref(*queue_ref) {
@@ -836,6 +856,7 @@ impl Instance {
 
             None
         })
+        .flatten()
     }
 }
 
@@ -1024,5 +1045,63 @@ impl PartialEq for Instance {
 impl From<Instance> for DomRef {
     fn from(value: Instance) -> Self {
         value.dom_ref
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /**
+        Destroying the last child of a document drops the whole document, so this
+        returns a destroyed instance with a destroyed child, and no document left.
+    */
+    fn destroyed_with_dropped_document() -> (Instance, Instance) {
+        let part = DomInstanceBuilder::new("Part");
+        let part_ref = part.referent();
+        let folder = DomInstanceBuilder::new("Folder").with_child(part);
+        let folder_ref = folder.referent();
+        let dom_id = dom_registry::register(WeakDom::new(
+            DomInstanceBuilder::new("ROOT").with_child(folder),
+        ));
+
+        let mut folder = Instance::new(dom_id, folder_ref);
+        let part = Instance::new(dom_id, part_ref);
+        assert!(folder.destroy(), "The folder must destroy");
+        assert!(
+            dom_registry::with(dom_id, |_| ()).is_none(),
+            "Destroying the last child must drop the document"
+        );
+        (folder, part)
+    }
+
+    #[test]
+    fn reads_on_dropped_documents_match_destroyed_instances() {
+        let (mut folder, part) = destroyed_with_dropped_document();
+
+        for instance in [folder, part] {
+            assert!(instance.is_destroyed());
+            assert_eq!(instance.get_parent(), None);
+            assert_eq!(instance.get_property("Name"), None);
+            assert_eq!(instance.get_attribute("Missing"), None);
+            assert!(instance.get_attributes().is_empty());
+            assert!(instance.get_tags().is_empty());
+            assert!(!instance.has_tag("Missing"));
+            assert!(instance.get_children().is_empty());
+            assert!(instance.get_descendants().is_empty());
+            assert!(instance.get_descendants_preorder().is_empty());
+            assert_eq!(instance.get_full_name(), "");
+            assert_eq!(instance.find_child(|_| true), None);
+            assert_eq!(instance.find_ancestor(|_| true), None);
+            assert_eq!(instance.find_descendant(|_| true), None);
+        }
+
+        // The class is cached, so it stays readable after the document is gone.
+        assert_eq!(folder.get_class_name(), "Folder");
+        assert_eq!(part.get_class_name(), "Part");
+
+        // Destroying and clearing again are no-ops rather than panics.
+        assert!(!folder.destroy());
+        folder.clear_all_children();
     }
 }

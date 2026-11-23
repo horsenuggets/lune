@@ -5,6 +5,7 @@ members = [
     "crates/lune",
     "crates/lune-roblox",
     "crates/lune-std",
+    "crates/lune-std-actor",
     "crates/lune-std-datetime",
     "crates/lune-std-fs",
     "crates/lune-std-js",

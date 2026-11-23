@@ -11,7 +11,7 @@ use hyper::{
 use mlua::prelude::*;
 
 use crate::{
-    body::{ReadableBody, handle_incoming_body},
+    body::{ReadableBody, declared_body_length, handle_incoming_body},
     shared::{
         headers::{hash_map_to_table, header_map_to_table},
         lua::{lua_table_to_header_map, lua_value_to_method},
@@ -109,7 +109,9 @@ impl Request {
     ) -> LuaResult<Self> {
         let (parts, body) = incoming.into_parts();
 
-        let (body, decompress) = handle_incoming_body(&parts.headers, body, decompress).await?;
+        let expected = declared_body_length(&parts.headers);
+        let (body, decompress) =
+            handle_incoming_body(&parts.headers, body, decompress, expected).await?;
 
         Ok(Self {
             inner: HyperRequest::from_parts(parts, ReadableBody::from(body)),

@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "lune"
-version = "0.11.1-horse.16.10"
+version = "0.11.1-horse.17.0"
 dependencies = [
  "anyhow",
  "async-fs",
@@ -1907,6 +1907,7 @@ dependencies = [
  "futures-lite",
  "glob",
  "lune-std",
+ "lune-std-actor",
  "lune-std-js",
  "lune-std-net",
  "lune-utils",
@@ -1927,7 +1928,7 @@ dependencies = [
 
 [[package]]
 name = "lune-roblox"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "glam",
  "libc",
@@ -1950,6 +1951,7 @@ dependencies = [
  "async-fs",
  "console",
  "dunce",
+ "lune-std-actor",
  "lune-std-datetime",
  "lune-std-fs",
  "lune-std-js",
@@ -1966,6 +1968,18 @@ dependencies = [
  "mlua-luau-scheduler",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "lune-std-actor"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "async-io",
+ "futures-lite",
+ "lune-utils",
+ "mlua",
+ "mlua-luau-scheduler",
 ]
 
 [[package]]
@@ -2261,8 +2275,9 @@ dependencies = [
 
 [[package]]
 name = "mlua-luau-scheduler"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
+ "async-channel",
  "async-executor",
  "async-fs",
  "async-io",

@@ -5,7 +5,7 @@ use std::{
     cell::Cell, future::Future, process::ExitCode, rc::Weak as WeakRc, sync::Weak as WeakArc,
 };
 
-use async_executor::{Executor, Task};
+use async_executor::Executor;
 use mlua::prelude::*;
 use tracing::trace;
 
@@ -13,6 +13,7 @@ use crate::{
     exit::Exit,
     queue::{DeferredThreadQueue, FuturesQueue, SpawnedThreadQueue},
     scheduler::Scheduler,
+    spawned::{PanicSink, SpawnedTask},
     threads::{ThreadId, ThreadMap},
 };
 
@@ -154,7 +155,11 @@ pub trait LuaSchedulerExt {
 */
 pub trait LuaSpawnExt {
     /**
-        Spawns the given future on the current executor and returns its [`Task`].
+        Spawns the given future on the current executor and returns its [`SpawnedTask`].
+
+        Awaiting the task resumes any panic of the future in the awaiting code. A panic
+        of a task that is detached, or dropped without being awaited, is reported through
+        the scheduler's error callback instead, so it fails the run.
 
         # Panics
 
@@ -189,7 +194,7 @@ pub trait LuaSpawnExt {
         }
         ```
     */
-    fn spawn<F, T>(&self, fut: F) -> Task<T>
+    fn spawn<F, T>(&self, fut: F) -> SpawnedTask<T>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static;
@@ -199,6 +204,7 @@ pub trait LuaSpawnExt {
 
         Note that this future will run detached and always to completion,
         preventing the [`Scheduler`] was spawned on from completing until done.
+        A panic of the future is reported through the scheduler's error callback.
 
         # Panics
 
@@ -238,9 +244,13 @@ pub trait LuaSpawnExt {
         F: Future<Output = ()> + 'static;
 
     /**
-        Spawns the given blocking function and returns its [`Task`].
+        Spawns the given blocking function and returns its [`SpawnedTask`].
 
         This function will run on a separate thread pool and not block the current executor.
+        Panics are handled like those of [`LuaSpawnExt::spawn`], with one exception.
+        Dropping the handle cancels the task but cannot stop the function itself, so a panic
+        it raises after the handle was dropped is lost. The code that dropped the handle has
+        already stopped waiting for its result.
 
         # Panics
 
@@ -275,7 +285,7 @@ pub trait LuaSpawnExt {
         }
         ```
     */
-    fn spawn_blocking<F, T>(&self, f: F) -> Task<T>
+    fn spawn_blocking<F, T>(&self, f: F) -> SpawnedTask<T>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static;
@@ -334,7 +344,7 @@ impl LuaSchedulerExt for Lua {
 }
 
 impl LuaSpawnExt for Lua {
-    fn spawn<F, T>(&self, fut: F) -> Task<T>
+    fn spawn<F, T>(&self, fut: F) -> SpawnedTask<T>
     where
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
@@ -344,8 +354,12 @@ impl LuaSpawnExt for Lua {
             .expect("tasks can only be spawned within an active scheduler")
             .upgrade()
             .expect("executor was dropped");
+        let sink = self
+            .app_data_ref::<PanicSink>()
+            .expect("tasks can only be spawned within an active scheduler")
+            .clone();
         trace!("spawning future on executor");
-        exec.spawn(fut)
+        SpawnedTask::spawn(&exec, fut, sink)
     }
 
     fn spawn_local<F>(&self, fut: F)
@@ -359,17 +373,12 @@ impl LuaSpawnExt for Lua {
         queue.push_item(fut);
     }
 
-    fn spawn_blocking<F, T>(&self, f: F) -> Task<T>
+    fn spawn_blocking<F, T>(&self, f: F) -> SpawnedTask<T>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
-        let exec = self
-            .app_data_ref::<WeakArc<Executor>>()
-            .expect("tasks can only be spawned within an active scheduler")
-            .upgrade()
-            .expect("executor was dropped");
         trace!("spawning blocking task on executor");
-        exec.spawn(blocking::unblock(f))
+        self.spawn(blocking::unblock(f))
     }
 }

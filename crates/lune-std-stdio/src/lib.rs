@@ -14,6 +14,7 @@ use futures_lite::{io::BufReader, prelude::*};
 
 use lune_utils::{
     TableBuilder,
+    actor::is_actor_worker,
     fmt::{ValueFormatConfig, pretty_format_multi_value},
 };
 
@@ -104,6 +105,12 @@ async fn stdio_read_to_end(lua: Lua, (): ()) -> LuaResult<LuaString> {
 }
 
 async fn stdio_prompt(lua: Lua, options: PromptOptions) -> LuaResult<PromptResult> {
+    // Actors run concurrently with the main runtime and would fight over the terminal.
+    if is_actor_worker(&lua) {
+        return Err(LuaError::runtime(
+            "stdio.prompt is unavailable inside an actor, since actors cannot share the terminal.",
+        ));
+    }
     lua.spawn_blocking(move || prompt(options))
         .await
         .into_lua_err()

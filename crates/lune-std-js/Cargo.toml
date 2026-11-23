@@ -17,7 +17,7 @@ async-io = "2.4"
 futures = { version = "0.3", default-features = false, features = ["std"] }
 futures-lite = "2.6"
 mlua = { version = "0.12.2", features = ["luau", "async"] }
-mlua-luau-scheduler = { version = "0.3.0", path = "../mlua-luau-scheduler" }
+mlua-luau-scheduler = { version = "0.4.0", path = "../mlua-luau-scheduler" }
 # Keep the transitive browser-targeting dependency on the repository's Rust 1.92 toolchain.
 oxc-browserslist = "=3.0.8"
 oxc_allocator = "=0.125.0"

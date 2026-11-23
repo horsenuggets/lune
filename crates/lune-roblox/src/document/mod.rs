@@ -276,11 +276,14 @@ impl Document {
 
         # Errors
 
-        Errors if the instance is not a `DataModel`.
+        Errors if the instance is not a `DataModel`, or if it has been destroyed.
     */
     pub fn from_data_model_instance(i: Instance) -> DocumentResult<Self> {
         if i.get_class_name() != "DataModel" {
             return Err(DocumentError::FromDataModelInvalidArgs);
+        }
+        if i.is_destroyed() {
+            return Err(DocumentError::DestroyedInstance);
         }
 
         let mut dom = WeakDom::new(DomInstanceBuilder::new("ROOT"));
@@ -305,12 +308,15 @@ impl Document {
 
         # Errors
 
-        Errors if any of the instances is a `DataModel`.
+        Errors if any of the instances is a `DataModel`, or has been destroyed.
     */
     pub fn from_instance_array(v: Vec<Instance>) -> DocumentResult<Self> {
         for i in &v {
             if i.get_class_name() == "DataModel" {
                 return Err(DocumentError::FromInstanceArrayInvalidArgs);
+            }
+            if i.is_destroyed() {
+                return Err(DocumentError::DestroyedInstance);
             }
         }
 
