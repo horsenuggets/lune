@@ -25,7 +25,7 @@ pub(crate) struct WorkerConfig {
     pub(crate) args: ProcessArgs,
     pub(crate) env: ProcessEnv,
     pub(crate) jit: ProcessJitEnablement,
-    pub(crate) bundled_files: BundledFiles,
+    pub(crate) bundled_files: Arc<BundledFiles>,
     pub(crate) bundled_aliases: BundledAliases,
     #[cfg(feature = "std-js")]
     pub(crate) bundled_js_modules: Option<BundledJsModules>,

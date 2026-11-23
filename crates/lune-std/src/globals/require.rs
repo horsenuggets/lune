@@ -21,8 +21,9 @@ type RequireResult = LuaResult<LuaMultiValue>;
 type RequireResultSender = Sender<RequireResult>;
 type RequireResultReceiver = Receiver<RequireResult>;
 
-/// Type for bundled files from standalone executables
-type BundledFiles = HashMap<String, Vec<u8>>;
+/// Type for bundled files from standalone executables, shared between every runtime of a
+/// process (including actors) instead of copied into each one
+type BundledFiles = std::sync::Arc<HashMap<String, Vec<u8>>>;
 
 /// Type for bundled aliases from standalone executables
 type BundledAliases = HashMap<String, String>;

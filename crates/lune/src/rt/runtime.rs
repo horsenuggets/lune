@@ -83,7 +83,8 @@ pub struct Runtime {
     args: ProcessArgs,
     env: ProcessEnv,
     jit: ProcessJitEnablement,
-    bundled_files: BundledFiles,
+    // Shared rather than copied into every run and every actor this runtime starts
+    bundled_files: Arc<BundledFiles>,
     bundled_aliases: BundledAliases,
     #[cfg(feature = "std-js")]
     bundled_js_modules: Option<BundledJsModules>,
@@ -173,7 +174,7 @@ impl Runtime {
             args,
             env,
             jit,
-            bundled_files: HashMap::new(),
+            bundled_files: Arc::default(),
             bundled_aliases: HashMap::new(),
             #[cfg(feature = "std-js")]
             bundled_js_modules: None,
@@ -235,7 +236,7 @@ impl Runtime {
     */
     #[must_use]
     pub fn with_bundled_files(mut self, files: BundledFiles) -> Self {
-        self.bundled_files = files;
+        self.bundled_files = Arc::new(files);
         self
     }
 
