@@ -1,3 +1,5 @@
+#[cfg(feature = "std-actor")]
+mod actor;
 mod js;
 mod result;
 mod runtime;

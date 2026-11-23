@@ -20,6 +20,7 @@ path = "src/lib.rs"
 [features]
 default = ["std", "cli"]
 
+std-actor = ["dep:lune-std", "dep:lune-std-actor", "lune-std/actor"]
 std-datetime = ["dep:lune-std", "lune-std/datetime"]
 std-fs = ["dep:lune-std", "lune-std/fs"]
 std-js = ["dep:lune-std", "dep:lune-std-js", "lune-std/js"]
@@ -33,6 +34,7 @@ std-stdio = ["dep:lune-std", "lune-std/stdio"]
 std-task = ["dep:lune-std", "lune-std/task"]
 
 std = [
+    "std-actor",
     "std-datetime",
     "std-fs",
     "std-js",
@@ -74,6 +76,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 lune-std = { optional = true, version = "0.4.1", path = "../lune-std" }
+lune-std-actor = { optional = true, version = "0.1.0", path = "../lune-std-actor" }
 lune-std-js = { optional = true, version = "0.4.0", path = "../lune-std-js" }
 lune-std-net = { optional = true, version = "0.4.0", path = "../lune-std-net" }
 lune-utils = { version = "0.4.0", path = "../lune-utils" }

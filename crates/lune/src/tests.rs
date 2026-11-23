@@ -98,6 +98,62 @@ create_tests! {
     global_script: "globals/script",
 }
 
+#[cfg(all(feature = "std-actor", feature = "std-process", feature = "std-task"))]
+create_tests! {
+    actor_bind: "actor/bind",
+    actor_errors: "actor/errors",
+    actor_messages: "actor/messages",
+    actor_shared_table: "actor/shared_table",
+    actor_spawn: "actor/spawn",
+    actor_terminate: "actor/terminate",
+}
+
+#[cfg(all(feature = "std-actor", feature = "std-roblox", feature = "std-stdio"))]
+create_tests! {
+    actor_isolation: "actor/isolation",
+    actor_rejections: "actor/rejections",
+}
+
+// Actor coverage runs serially like the other coverage tests, so that no test changes
+// LUNE_COVERAGE while the actor's runtime reads it.
+#[cfg(feature = "std-actor")]
+#[test]
+#[serial_test::serial]
+fn actor_coverage() -> Result<ExitCode> {
+    run_test_with_jit("actor/coverage", false)
+}
+
+#[cfg(all(feature = "std-actor", feature = "std-process", feature = "std-task"))]
+#[test]
+fn actor_owner_exit_stops_actors() -> Result<()> {
+    async_io::block_on(async {
+        let workspace_dir = clean_path(PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../"
+        )));
+        set_current_dir(&workspace_dir)?;
+
+        // The script starts an idle and a busy actor, then returns without joining them
+        let started = std::time::Instant::now();
+        let mut rt = Runtime::new()?;
+        let values = rt
+            .run_file(workspace_dir.join("tests/actor/workers/abandoned.luau"))
+            .await?;
+
+        assert!(values.success(), "the owner should finish successfully");
+        assert_eq!(
+            rt.running_actor_count(),
+            0,
+            "no actor thread should outlive its owner"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "stopping abandoned actors should not wait for them to finish"
+        );
+        Ok(())
+    })
+}
+
 // Coverage tests run serially to prevent LUNE_COVERAGE env var contamination.
 // JIT must be disabled because coverage instrumentation is incompatible with
 // native code generation. Coverage is enabled by default; the disabled test
