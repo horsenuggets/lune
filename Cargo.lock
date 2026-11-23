@@ -2263,6 +2263,7 @@ dependencies = [
 name = "mlua-luau-scheduler"
 version = "0.3.0"
 dependencies = [
+ "async-channel",
  "async-executor",
  "async-fs",
  "async-io",

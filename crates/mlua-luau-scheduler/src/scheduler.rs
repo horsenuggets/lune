@@ -16,6 +16,7 @@ use tracing::{Instrument, debug, instrument, trace, trace_span};
 use crate::{
     error_callback::ThreadErrorCallback,
     exit::Exit,
+    exit_handle::ExitHandle,
     queue::{DeferredThreadQueue, FuturesQueue, SpawnedThreadQueue},
     status::Status,
     threads::{ThreadId, ThreadMap},
@@ -50,6 +51,7 @@ pub struct Scheduler {
     thread_map: ThreadMap,
     status: Rc<Cell<Status>>,
     exit: Exit,
+    exit_handle: ExitHandle,
 }
 
 impl Scheduler {
@@ -107,6 +109,7 @@ impl Scheduler {
             thread_map: result_map,
             status,
             exit,
+            exit_handle: ExitHandle::new(),
         }
     }
 
@@ -167,7 +170,18 @@ impl Scheduler {
     */
     #[must_use]
     pub fn get_exit_code(&self) -> Option<u8> {
-        self.exit.get()
+        self.exit.get().or_else(|| self.exit_handle.code())
+    }
+
+    /**
+        Returns a thread-safe handle that can stop this scheduler from another OS thread.
+
+        Requesting an exit through the handle wakes the scheduler even when it is idle,
+        and [`Scheduler::get_exit_code`] reports the requested code afterwards.
+    */
+    #[must_use]
+    pub fn exit_handle(&self) -> ExitHandle {
+        self.exit_handle.clone()
     }
 
     /**
@@ -370,7 +384,7 @@ impl Scheduler {
             };
 
             loop {
-                let fut_exit = self.exit.listen(); // 1
+                let fut_exit = self.exit.listen().or(self.exit_handle.listen()); // 1
                 let fut_spawn = self.queue_spawn.wait_for_item(); // 2
                 let fut_defer = self.queue_defer.wait_for_item(); // 3
                 let fut_futs = fut_queue.wait_for_item(); // 4
@@ -396,7 +410,7 @@ impl Scheduler {
                     .await;
 
                 // Check if we should exit
-                if self.exit.get().is_some() {
+                if self.get_exit_code().is_some() {
                     debug!("exit signal received");
                     break;
                 }
