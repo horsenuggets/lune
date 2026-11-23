@@ -67,6 +67,10 @@ pub struct BuildCommand {
     #[clap(short, long)]
     pub output: Option<PathBuf>,
 
+    /// Additional Luau source paths or globs to embed, including their dependencies.
+    #[clap(long, value_name = "path-or-glob")]
+    pub include: Vec<String>,
+
     /// Additional JavaScript module paths or globs to embed for computed dynamic imports.
     #[clap(long = "js-include", value_name = "path-or-glob")]
     pub js_include: Vec<String>,
@@ -149,7 +153,7 @@ impl BuildCommand {
         println!("Bundling dependencies for {}", style(&display_path).green());
         let mut bundler = Bundler::new(&entry_file).context("failed to initialize bundler")?;
         let bundle_result = bundler
-            .bundle(&entry_file, &self.js_include)
+            .bundle(&entry_file, &self.include, &self.js_include)
             .context("failed to bundle dependencies")?;
         println!(
             "Bundled {}, {}, and {}",
@@ -215,6 +219,24 @@ mod tests {
     use super::*;
     use crate::cli::build::target::{BuildTargetArch, BuildTargetOS};
     use std::path::Path;
+
+    #[test]
+    fn parses_repeated_luau_includes_separately_from_javascript_includes() {
+        let command = BuildCommand::try_parse_from([
+            "build",
+            "Main.luau",
+            "--include",
+            "Workers/*.luau",
+            "--js-include",
+            "Modules/*.js",
+            "--include",
+            "OtherWorker.luau",
+        ])
+        .unwrap();
+        assert_eq!(command.input, Path::new("Main.luau"));
+        assert_eq!(command.include, ["Workers/*.luau", "OtherWorker.luau"]);
+        assert_eq!(command.js_include, ["Modules/*.js"]);
+    }
 
     #[test]
     fn test_output_path_handling() {

@@ -98,6 +98,138 @@ create_tests! {
     global_script: "globals/script",
 }
 
+#[cfg(all(feature = "std-actor", feature = "std-process", feature = "std-task"))]
+create_tests! {
+    actor_bind: "actor/bind",
+    actor_errors: "actor/errors",
+    actor_messages: "actor/messages",
+    actor_shared_table: "actor/shared_table",
+    actor_spawn: "actor/spawn",
+    actor_terminate: "actor/terminate",
+}
+
+#[cfg(all(feature = "std-actor", feature = "std-roblox", feature = "std-stdio"))]
+create_tests! {
+    actor_isolation: "actor/isolation",
+    actor_rejections: "actor/rejections",
+}
+
+#[cfg(all(feature = "std-actor", feature = "std-roblox"))]
+create_tests! {
+    actor_destroyed_instance: "actor/destroyed_instance",
+}
+
+// Actor coverage runs serially like the other coverage tests, so that no test changes
+// LUNE_COVERAGE while the actor's runtime reads it.
+#[cfg(feature = "std-actor")]
+#[test]
+#[serial_test::serial]
+fn actor_coverage() -> Result<ExitCode> {
+    run_test_with_jit("actor/coverage", false)
+}
+
+/**
+    Runs an owner script that leaves an idle and a busy actor running, and checks that no
+    actor thread outlives it. The count observes every actor the owner ever started,
+    including ones it already shut down, so a leaked thread cannot hide from it.
+*/
+#[cfg(all(feature = "std-actor", feature = "std-process", feature = "std-task"))]
+fn assert_owner_stops_actors(script: &str) -> Result<()> {
+    async_io::block_on(async {
+        let workspace_dir = clean_path(PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../"
+        )));
+        set_current_dir(&workspace_dir)?;
+
+        let started = std::time::Instant::now();
+        let mut rt = Runtime::new()?;
+        let values = rt
+            .run_file(workspace_dir.join("tests/actor/workers").join(script))
+            .await?;
+
+        assert!(values.success(), "the owner should finish successfully");
+        assert_eq!(
+            rt.running_actor_count(),
+            0,
+            "no actor thread should outlive its owner"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "stopping abandoned actors should not wait for them to finish"
+        );
+        Ok(())
+    })
+}
+
+#[cfg(all(feature = "std-actor", feature = "std-process", feature = "std-task"))]
+#[test]
+fn actor_owner_return_stops_actors() -> Result<()> {
+    assert_owner_stops_actors("abandoned.luau")
+}
+
+#[cfg(all(feature = "std-actor", feature = "std-process", feature = "std-task"))]
+#[test]
+fn actor_owner_process_exit_stops_actors() -> Result<()> {
+    assert_owner_stops_actors("exiting_owner.luau")
+}
+
+/**
+    Runs a script whose own thread finishes normally while a detached Rust task it
+    started panics. The panic must fail the run, so its exit code is never 0.
+
+    Custom libraries cannot be required from `run_custom` input, so the starter is
+    passed through `_G` like the process fixture. The `reached` flag proves that the
+    panicking task really ran, so the test cannot pass by failing earlier.
+*/
+#[cfg(feature = "std-task")]
+#[test]
+fn detached_task_panic_fails_the_run() -> Result<()> {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use mlua_luau_scheduler::LuaSpawnExt;
+
+    let reached = Arc::new(AtomicBool::new(false));
+    let task_reached = Arc::clone(&reached);
+    async_io::block_on(async {
+        let mut runtime = Runtime::new()?.with_lib("@test/detached-panic", move |lua| {
+            let start = lua.create_function(move |lua, ()| {
+                let task_reached = Arc::clone(&task_reached);
+                lua.spawn(async move {
+                    task_reached.store(true, Ordering::SeqCst);
+                    panic!("controlled detached panic")
+                })
+                .detach();
+                Ok(())
+            })?;
+            lua.globals()
+                .get::<mlua::Table>("_G")?
+                .set("StartDetachedPanic", start.clone())?;
+            Ok(mlua::Value::Function(start))
+        })?;
+        let result = runtime
+            .run_custom(
+                "detached-panic",
+                r#"
+                    _G.StartDetachedPanic()
+                    require("@lune/task").wait(0.05)
+                    return true
+                "#,
+            )
+            .await?;
+        assert!(
+            reached.load(Ordering::SeqCst),
+            "the detached task must have started before the run finished"
+        );
+        assert!(!result.success(), "a detached panic must not exit with 0");
+        assert_eq!(result.status(), 1);
+        Ok(())
+    })
+}
+
 // Coverage tests run serially to prevent LUNE_COVERAGE env var contamination.
 // JIT must be disabled because coverage instrumentation is incompatible with
 // native code generation. Coverage is enabled by default; the disabled test
@@ -769,6 +901,7 @@ create_tests! {
 
     roblox_instance_attributes: "roblox/instance/attributes",
     roblox_instance_coercion: "roblox/instance/coercion",
+    roblox_instance_destroyed: "roblox/instance/destroyed",
     roblox_instance_identity: "roblox/instance/identity",
     roblox_instance_new: "roblox/instance/new",
     roblox_instance_properties: "roblox/instance/properties",

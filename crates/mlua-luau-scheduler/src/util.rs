@@ -1,6 +1,18 @@
-use futures_lite::StreamExt;
+use std::{any::Any, panic::AssertUnwindSafe};
+
+use futures_lite::{FutureExt, StreamExt};
 use mlua::prelude::*;
 use tracing::instrument;
+
+pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> &str {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        message
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message
+    } else {
+        "an unknown panic payload"
+    }
+}
 
 /**
     Runs a Lua thread until it manually yields (using coroutine.yield), errors, or completes.
@@ -8,6 +20,9 @@ use tracing::instrument;
     May return `None` if the thread was cancelled.
 
     Otherwise returns the values yielded by the thread, or the error that caused it to stop.
+    A panic in Rust code that the thread called becomes an error of that thread, since the
+    executor that runs it discards panics of detached tasks, which would otherwise make the
+    thread silently disappear without a result or an error.
 */
 #[instrument(level = "trace", name = "Scheduler::run_until_yield", skip_all)]
 pub(crate) async fn run_until_yield(
@@ -27,7 +42,13 @@ pub(crate) async fn run_until_yield(
         Even though we are converting into a stream, and then immediately running it,
         the future may still be cancelled before it is polled, which gives us None.
     */
-    stream.next().await
+    match AssertUnwindSafe(stream.next()).catch_unwind().await {
+        Ok(result) => result,
+        Err(payload) => Some(Err(LuaError::runtime(format!(
+            "Rust code called by this thread panicked with {}.",
+            panic_message(payload.as_ref())
+        )))),
+    }
 }
 
 /**

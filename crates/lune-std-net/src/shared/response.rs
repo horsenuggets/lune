@@ -1,5 +1,5 @@
 use hyper::{
-    HeaderMap, Response as HyperResponse, StatusCode,
+    HeaderMap, Method, Response as HyperResponse, StatusCode,
     body::Incoming,
     header::{CONTENT_TYPE, HeaderValue},
 };
@@ -7,7 +7,7 @@ use hyper::{
 use mlua::prelude::*;
 
 use crate::{
-    body::{ReadableBody, handle_incoming_body},
+    body::{ReadableBody, expected_response_body_length, handle_incoming_body},
     shared::{headers::header_map_to_table, lua::lua_table_to_header_map},
 };
 
@@ -19,15 +19,21 @@ pub struct Response {
 
 impl Response {
     /**
-        Creates a new response from a raw incoming response.
+        Creates a new response from a raw incoming response to a request using the given method.
+
+        The method decides whether the response may carry a body at all, since a response
+        to a `HEAD` request declares a length but never sends the body itself.
     */
     pub async fn from_incoming(
         incoming: HyperResponse<Incoming>,
+        method: &Method,
         decompress: bool,
     ) -> LuaResult<Self> {
         let (parts, body) = incoming.into_parts();
 
-        let (body, decompressed) = handle_incoming_body(&parts.headers, body, decompress).await?;
+        let expected = expected_response_body_length(method, parts.status, &parts.headers);
+        let (body, decompressed) =
+            handle_incoming_body(&parts.headers, body, decompress, expected).await?;
 
         Ok(Self {
             inner: HyperResponse::from_parts(parts, ReadableBody::from(body)),

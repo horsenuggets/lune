@@ -8,6 +8,7 @@ use mlua::prelude::*;
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[rustfmt::skip]
 pub enum LuneStandardLibrary {
+    #[cfg(feature = "actor")]    Actor,
     #[cfg(feature = "datetime")] DateTime,
     #[cfg(feature = "fs")]       Fs,
     #[cfg(feature = "js")]       Js,
@@ -27,6 +28,7 @@ impl LuneStandardLibrary {
     */
     #[rustfmt::skip]
     pub const ALL: &'static [Self] = &[
+        #[cfg(feature = "actor")]    Self::Actor,
         #[cfg(feature = "datetime")] Self::DateTime,
         #[cfg(feature = "fs")]       Self::Fs,
         #[cfg(feature = "js")]       Self::Js,
@@ -48,6 +50,7 @@ impl LuneStandardLibrary {
     #[allow(unreachable_patterns)]
     pub fn name(&self) -> &'static str {
         match self {
+            #[cfg(feature = "actor")]    Self::Actor    => "actor",
             #[cfg(feature = "datetime")] Self::DateTime => "datetime",
             #[cfg(feature = "fs")]       Self::Fs       => "fs",
             #[cfg(feature = "js")]       Self::Js       => "js",
@@ -72,6 +75,7 @@ impl LuneStandardLibrary {
     #[allow(unreachable_patterns)]
     pub fn typedefs(&self) -> String {
     	match self {
+            #[cfg(feature = "actor")]    Self::Actor    => lune_std_actor::typedefs(),
             #[cfg(feature = "datetime")] Self::DateTime => lune_std_datetime::typedefs(),
             #[cfg(feature = "fs")]       Self::Fs       => lune_std_fs::typedefs(),
             #[cfg(feature = "js")]       Self::Js       => lune_std_js::typedefs(),
@@ -100,6 +104,7 @@ impl LuneStandardLibrary {
     pub fn module(&self, lua: Lua) -> LuaResult<LuaTable> {
         let mod_lua = lua.clone();
         let res: LuaResult<LuaTable> = match self {
+            #[cfg(feature = "actor")]    Self::Actor    => lune_std_actor::module(mod_lua),
             #[cfg(feature = "datetime")] Self::DateTime => lune_std_datetime::module(mod_lua),
             #[cfg(feature = "fs")]       Self::Fs       => lune_std_fs::module(mod_lua),
             #[cfg(feature = "js")]       Self::Js       => lune_std_js::module(mod_lua),
@@ -130,6 +135,7 @@ impl FromStr for LuneStandardLibrary {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let low = s.trim().to_ascii_lowercase();
         Ok(match low.as_str() {
+            #[cfg(feature = "actor")]    "actor"    => Self::Actor,
             #[cfg(feature = "datetime")] "datetime" => Self::DateTime,
             #[cfg(feature = "fs")]       "fs"       => Self::Fs,
             #[cfg(feature = "js")]       "js"       => Self::Js,

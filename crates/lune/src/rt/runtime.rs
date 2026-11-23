@@ -5,7 +5,7 @@ use std::{
     ffi::OsString,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -35,6 +35,10 @@ pub struct RuntimeReturnValues {
     pub errored: bool,
     /// The final values returned by the main thread.
     pub values: LuaMultiValue,
+    /// The formatted messages of every error thrown from any thread, in order.
+    pub(crate) errors: Vec<String>,
+    /// Whether the main thread finished, with either values or an error.
+    pub(crate) finished: bool,
 }
 
 impl RuntimeReturnValues {
@@ -81,13 +85,16 @@ pub struct Runtime {
     args: ProcessArgs,
     env: ProcessEnv,
     jit: ProcessJitEnablement,
-    bundled_files: BundledFiles,
+    // Shared rather than copied into every run and every actor this runtime starts
+    bundled_files: Arc<BundledFiles>,
     bundled_aliases: BundledAliases,
     #[cfg(feature = "std-js")]
     bundled_js_modules: Option<BundledJsModules>,
     #[cfg(feature = "std-js")]
     bundled_js_roots: BundledJsRoots,
     executable_path: ExecutablePath,
+    #[cfg(feature = "std-actor")]
+    actor: Option<Arc<lune_std_actor::ActorLink>>,
 }
 
 impl Runtime {
@@ -116,6 +123,7 @@ impl Runtime {
 
         // Inject all the globals that are enabled
         #[cfg(any(
+            feature = "std-actor",
             feature = "std-datetime",
             feature = "std-fs",
             feature = "std-js",
@@ -139,6 +147,7 @@ impl Runtime {
         // _G table needs to be injected again after sandboxing,
         // otherwise it will be read-only and completely unusable
         #[cfg(any(
+            feature = "std-actor",
             feature = "std-datetime",
             feature = "std-fs",
             feature = "std-js",
@@ -167,13 +176,15 @@ impl Runtime {
             args,
             env,
             jit,
-            bundled_files: HashMap::new(),
+            bundled_files: Arc::default(),
             bundled_aliases: HashMap::new(),
             #[cfg(feature = "std-js")]
             bundled_js_modules: None,
             #[cfg(feature = "std-js")]
             bundled_js_roots: BundledJsRoots::default(),
             executable_path: None,
+            #[cfg(feature = "std-actor")]
+            actor: None,
         })
     }
 
@@ -227,7 +238,7 @@ impl Runtime {
     */
     #[must_use]
     pub fn with_bundled_files(mut self, files: BundledFiles) -> Self {
-        self.bundled_files = files;
+        self.bundled_files = Arc::new(files);
         self
     }
 
@@ -439,6 +450,7 @@ impl Runtime {
         // The module path drops the extension and init segments, and can be remapped by a
         // default.project.json, so remember which file it resolved to for the project global
         #[cfg(any(
+            feature = "std-actor",
             feature = "std-datetime",
             feature = "std-fs",
             feature = "std-js",
@@ -498,6 +510,7 @@ impl Runtime {
 
         // Inject the executable global now that app_data is set
         #[cfg(any(
+            feature = "std-actor",
             feature = "std-datetime",
             feature = "std-fs",
             feature = "std-js",
@@ -515,9 +528,21 @@ impl Runtime {
             self.lua.globals().set("executable", executable_value)?;
         }
 
+        // Actors start new runtimes with this runtime's configuration, and a runtime that
+        // runs as an actor must be marked before the actor library is created
+        #[cfg(feature = "std-actor")]
+        {
+            self.lua
+                .set_app_data(super::actor::launcher(self.worker_config()));
+            if let Some(link) = &self.actor {
+                lune_std_actor::install_worker(&self.lua, Arc::clone(link));
+            }
+        }
+
         // Inject all the standard libraries that are enabled - this needs to be done after
         // storing the args/env, since some standard libraries use those during initialization
         #[cfg(any(
+            feature = "std-actor",
             feature = "std-datetime",
             feature = "std-fs",
             feature = "std-js",
@@ -546,9 +571,24 @@ impl Runtime {
         // Add error callback to format errors nicely + store status
         let got_any_error = Arc::new(AtomicBool::new(false));
         let got_any_inner = Arc::clone(&got_any_error);
+        let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let errors_inner = Arc::clone(&errors);
+        // Actors never print their errors. Their owner receives them through join, so
+        // that parallel actors don't interleave duplicate reports on one stderr.
+        #[cfg(feature = "std-actor")]
+        let quiet = self.actor.is_some();
+        #[cfg(not(feature = "std-actor"))]
+        let quiet = false;
         self.sched.set_error_callback(move |e| {
             got_any_inner.store(true, Ordering::SeqCst);
-            eprintln!("{}", RuntimeError::from(e));
+            let message = RuntimeError::from(e).to_string();
+            if !quiet {
+                eprintln!("{message}");
+            }
+            errors_inner
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(message);
         });
 
         self.prepare_execution()?;
@@ -558,6 +598,7 @@ impl Runtime {
 
         // Set the current script path for the script global
         #[cfg(any(
+            feature = "std-actor",
             feature = "std-datetime",
             feature = "std-fs",
             feature = "std-js",
@@ -608,9 +649,13 @@ impl Runtime {
         let main_thread_id = self.sched.push_thread_back(main_func, ())?;
         self.sched.run().await;
 
-        let main_thread_values = self
-            .sched
-            .get_thread_result(main_thread_id)
+        // No actor may outlive the script that started it
+        #[cfg(feature = "std-actor")]
+        lune_std_actor::shutdown(&self.lua);
+
+        let main_thread_result = self.sched.get_thread_result(main_thread_id);
+        let finished = main_thread_result.is_some();
+        let main_thread_values = main_thread_result
             .unwrap_or_else(|| Ok(LuaMultiValue::new())) // Ignore missing result (interruption), we just want to extract values
             .unwrap_or_default(); // Ignore any errors from the script, we just want to extract values
 
@@ -618,7 +663,66 @@ impl Runtime {
             code: self.sched.get_exit_code(),
             errored: got_any_error.load(Ordering::SeqCst),
             values: main_thread_values,
+            errors: std::mem::take(&mut *errors.lock().unwrap_or_else(PoisonError::into_inner)),
+            finished,
         })
+    }
+}
+
+#[cfg(feature = "std-actor")]
+impl Runtime {
+    /**
+        The configuration that actors started by this runtime inherit.
+    */
+    pub(super) fn worker_config(&self) -> super::actor::WorkerConfig {
+        super::actor::WorkerConfig {
+            args: self.args.clone(),
+            env: self.env.clone(),
+            jit: self.jit,
+            bundled_files: self.bundled_files.clone(),
+            bundled_aliases: self.bundled_aliases.clone(),
+            #[cfg(feature = "std-js")]
+            bundled_js_modules: self.bundled_js_modules.clone(),
+            #[cfg(feature = "std-js")]
+            bundled_js_roots: self.bundled_js_roots.clone(),
+            executable_path: self.executable_path.clone(),
+        }
+    }
+
+    /**
+        Creates the runtime of an actor, inheriting its owner's configuration.
+
+        Terminating the actor stops this runtime's scheduler, even while it is idle, and
+        makes any running Luau code error at its next interrupt check.
+    */
+    pub(super) fn new_actor(
+        config: super::actor::WorkerConfig,
+        link: Arc<lune_std_actor::ActorLink>,
+    ) -> LuaResult<Self> {
+        let mut rt = Self::new()?;
+        rt.args = config.args;
+        rt.env = config.env;
+        rt.jit = config.jit;
+        rt.bundled_files = config.bundled_files;
+        rt.bundled_aliases = config.bundled_aliases;
+        #[cfg(feature = "std-js")]
+        {
+            rt.bundled_js_modules = config.bundled_js_modules;
+            rt.bundled_js_roots = config.bundled_js_roots;
+        }
+        rt.executable_path = config.executable_path;
+
+        link.attach(&rt.lua, rt.sched.exit_handle())?;
+        rt.actor = Some(link);
+        Ok(rt)
+    }
+
+    /**
+        Returns how many actors started by this runtime may still have a running thread.
+    */
+    #[cfg(test)]
+    pub(crate) fn running_actor_count(&self) -> usize {
+        lune_std_actor::running_actor_count(&self.lua)
     }
 }
 
@@ -743,7 +847,7 @@ fn resolve_coverage_target(lua: &Lua, value: LuaValue) -> LuaResult<LuaFunction>
     }
 }
 
-fn strip_shebang(mut contents: Vec<u8>) -> Vec<u8> {
+pub(super) fn strip_shebang(mut contents: Vec<u8>) -> Vec<u8> {
     if contents.starts_with(b"#!")
         && let Some(first_newline_idx) = contents
             .iter()

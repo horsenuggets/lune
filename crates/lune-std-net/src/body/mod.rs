@@ -6,6 +6,8 @@ mod inner;
 mod readable;
 
 pub use self::cursor::ReadableBodyCursor;
-pub use self::incoming::handle_incoming_body;
+pub use self::incoming::{
+    declared_body_length, expected_response_body_length, handle_incoming_body,
+};
 pub use self::inner::ReadableBodyInner;
 pub use self::readable::ReadableBody;
