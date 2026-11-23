@@ -49,6 +49,10 @@ name = "callbacks"
 test = true
 
 [[example]]
+name = "detached_panic"
+test = true
+
+[[example]]
 name = "exit_code"
 test = true
 

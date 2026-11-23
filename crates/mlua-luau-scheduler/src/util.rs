@@ -4,7 +4,7 @@ use futures_lite::{FutureExt, StreamExt};
 use mlua::prelude::*;
 use tracing::instrument;
 
-fn panic_message(payload: &(dyn Any + Send)) -> &str {
+pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> &str {
     if let Some(message) = payload.downcast_ref::<&str>() {
         message
     } else if let Some(message) = payload.downcast_ref::<String>() {

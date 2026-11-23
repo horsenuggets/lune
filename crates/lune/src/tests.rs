@@ -169,6 +169,41 @@ fn actor_owner_process_exit_stops_actors() -> Result<()> {
     assert_owner_stops_actors("exiting_owner.luau")
 }
 
+/**
+    Runs a script whose own thread finishes normally while a detached Rust task it
+    started panics. The panic must fail the run, so its exit code is never 0.
+*/
+#[cfg(feature = "std-task")]
+#[test]
+fn detached_task_panic_fails_the_run() -> Result<()> {
+    use mlua_luau_scheduler::LuaSpawnExt;
+
+    async_io::block_on(async {
+        let mut runtime = Runtime::new()?.with_lib("@test/detached-panic", |lua| {
+            let start = lua.create_function(|lua, ()| {
+                lua.spawn(async { panic!("controlled detached panic") })
+                    .detach();
+                Ok(())
+            })?;
+            Ok(mlua::Value::Function(start))
+        })?;
+        let result = runtime
+            .run_custom(
+                "detached-panic",
+                r#"
+                    local startDetachedPanic = require("@test/detached-panic")
+                    startDetachedPanic()
+                    require("@lune/task").wait(0.05)
+                    return true
+                "#,
+            )
+            .await?;
+        assert!(!result.success(), "a detached panic must not exit with 0");
+        assert_eq!(result.status(), 1);
+        Ok(())
+    })
+}
+
 // Coverage tests run serially to prevent LUNE_COVERAGE env var contamination.
 // JIT must be disabled because coverage instrumentation is incompatible with
 // native code generation. Coverage is enabled by default; the disabled test

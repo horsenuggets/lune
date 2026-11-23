@@ -288,6 +288,7 @@ where
 #[allow(clippy::float_cmp)] // Returned values are exact integers, so exact comparisons are intended
 mod tests {
     use async_io::block_on;
+    use mlua_luau_scheduler::LuaSpawnExt;
 
     use super::*;
 
@@ -309,12 +310,13 @@ mod tests {
         link.take_thread().unwrap().join().unwrap();
     }
 
-    #[test]
-    fn reports_panics_in_luau_called_rust_as_failures() {
-        // Runs a script on an actor thread through a real scheduler, the way a runtime
-        // does, where Luau calls a Rust function that panics inside a detached task.
+    /**
+        Runs a script on an actor thread through a real scheduler, the way a runtime does,
+        with `install` adding the Rust functions the script calls, and returns the outcome.
+    */
+    fn run_actor_script(script: &'static str, install: fn(&Lua) -> LuaResult<()>) -> ActorOutcome {
         let link = link();
-        spawn_actor_thread(Arc::clone(&link), |link| {
+        spawn_actor_thread(Arc::clone(&link), move |link| {
             let lua = Lua::new();
             let scheduler = mlua_luau_scheduler::Scheduler::new(lua.clone());
             link.attach(&lua, scheduler.exit_handle()).unwrap();
@@ -323,16 +325,8 @@ mod tests {
             scheduler.set_error_callback(move |error| {
                 errors_inner.lock().unwrap().push(error.to_string());
             });
-            lua.globals()
-                .set(
-                    "explode",
-                    lua.create_function(|_, ()| -> LuaResult<()> { panic!("controlled panic") })
-                        .unwrap(),
-                )
-                .unwrap();
-            let id = scheduler
-                .push_thread_back(lua.load("explode() return 1"), ())
-                .unwrap();
+            install(&lua).unwrap();
+            let id = scheduler.push_thread_back(lua.load(script), ()).unwrap();
             block_on(scheduler.run());
             let result = scheduler.get_thread_result(id);
             let finished = result.is_some();
@@ -341,13 +335,54 @@ mod tests {
             ActorOutcome::from_run(&link, scheduler.get_exit_code(), &errors, finished, &values)
         })
         .unwrap();
-        match block_on(link.wait()) {
+        let outcome = block_on(link.wait());
+        link.take_thread().unwrap().join().unwrap();
+        outcome
+    }
+
+    #[test]
+    fn reports_panics_in_luau_called_rust_as_failures() {
+        let outcome = run_actor_script("explode() return 1", |lua| {
+            lua.globals().set(
+                "explode",
+                lua.create_function(|_, ()| -> LuaResult<()> { panic!("controlled panic") })?,
+            )
+        });
+        match outcome {
             ActorOutcome::Failed(message) => {
                 assert!(message.contains("controlled panic"), "{message}");
             }
             ActorOutcome::Completed(_) => panic!("a panic in Luau-called Rust must fail"),
         }
-        link.take_thread().unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn reports_panics_of_detached_tasks_as_failures() {
+        // The script's own thread keeps running and returns, while a background task it
+        // started panics. The actor must still fail instead of joining as a success.
+        let outcome = run_actor_script("startDetached() pause() return 1", |lua| {
+            lua.globals().set(
+                "startDetached",
+                lua.create_function(|lua, ()| {
+                    lua.spawn(async { panic!("controlled detached panic") })
+                        .detach();
+                    Ok(())
+                })?,
+            )?;
+            lua.globals().set(
+                "pause",
+                lua.create_async_function(|_, ()| async {
+                    async_io::Timer::after(std::time::Duration::from_millis(50)).await;
+                    Ok(())
+                })?,
+            )
+        });
+        match outcome {
+            ActorOutcome::Failed(message) => {
+                assert!(message.contains("controlled detached panic"), "{message}");
+            }
+            ActorOutcome::Completed(_) => panic!("a panic of a detached task must fail"),
+        }
     }
 
     #[test]
