@@ -177,32 +177,53 @@ fn actor_owner_process_exit_stops_actors() -> Result<()> {
 /**
     Runs a script whose own thread finishes normally while a detached Rust task it
     started panics. The panic must fail the run, so its exit code is never 0.
+
+    Custom libraries cannot be required from `run_custom` input, so the starter is
+    passed through `_G` like the process fixture. The `reached` flag proves that the
+    panicking task really ran, so the test cannot pass by failing earlier.
 */
 #[cfg(feature = "std-task")]
 #[test]
 fn detached_task_panic_fails_the_run() -> Result<()> {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
     use mlua_luau_scheduler::LuaSpawnExt;
 
+    let reached = Arc::new(AtomicBool::new(false));
+    let task_reached = Arc::clone(&reached);
     async_io::block_on(async {
-        let mut runtime = Runtime::new()?.with_lib("@test/detached-panic", |lua| {
-            let start = lua.create_function(|lua, ()| {
-                lua.spawn(async { panic!("controlled detached panic") })
-                    .detach();
+        let mut runtime = Runtime::new()?.with_lib("@test/detached-panic", move |lua| {
+            let start = lua.create_function(move |lua, ()| {
+                let task_reached = Arc::clone(&task_reached);
+                lua.spawn(async move {
+                    task_reached.store(true, Ordering::SeqCst);
+                    panic!("controlled detached panic")
+                })
+                .detach();
                 Ok(())
             })?;
+            lua.globals()
+                .get::<mlua::Table>("_G")?
+                .set("StartDetachedPanic", start.clone())?;
             Ok(mlua::Value::Function(start))
         })?;
         let result = runtime
             .run_custom(
                 "detached-panic",
                 r#"
-                    local startDetachedPanic = require("@test/detached-panic")
-                    startDetachedPanic()
+                    _G.StartDetachedPanic()
                     require("@lune/task").wait(0.05)
                     return true
                 "#,
             )
             .await?;
+        assert!(
+            reached.load(Ordering::SeqCst),
+            "the detached task must have started before the run finished"
+        );
         assert!(!result.success(), "a detached panic must not exit with 0");
         assert_eq!(result.status(), 1);
         Ok(())
@@ -880,6 +901,7 @@ create_tests! {
 
     roblox_instance_attributes: "roblox/instance/attributes",
     roblox_instance_coercion: "roblox/instance/coercion",
+    roblox_instance_destroyed: "roblox/instance/destroyed",
     roblox_instance_identity: "roblox/instance/identity",
     roblox_instance_new: "roblox/instance/new",
     roblox_instance_properties: "roblox/instance/properties",
@@ -901,7 +923,6 @@ create_tests! {
     roblox_instance_methods_destroy: "roblox/instance/methods/Destroy",
     roblox_instance_methods_find_first_ancestor: "roblox/instance/methods/FindFirstAncestor",
     roblox_instance_methods_find_first_ancestor_of_class: "roblox/instance/methods/FindFirstAncestorOfClass",
-    roblox_instance_destroyed: "roblox/instance/destroyed",
     roblox_instance_methods_find_first_ancestor_which_is_a: "roblox/instance/methods/FindFirstAncestorWhichIsA",
     roblox_instance_methods_find_first_child: "roblox/instance/methods/FindFirstChild",
     roblox_instance_methods_find_first_child_of_class: "roblox/instance/methods/FindFirstChildOfClass",
