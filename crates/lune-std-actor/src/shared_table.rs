@@ -2,7 +2,8 @@ use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
     ffi::c_void,
-    sync::{Arc, PoisonError, RwLock},
+    fmt,
+    sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock},
 };
 
 use mlua::prelude::*;
@@ -11,6 +12,7 @@ use lune_utils::TableBuilder;
 
 use crate::transfer::MAX_DEPTH;
 
+const CYCLE_ERROR: &str = "Storing this SharedTable would make it contain itself.";
 const FROZEN_ERROR: &str = "Attempt to modify a frozen SharedTable.";
 const KEY_ERROR: &str = "SharedTable keys must be strings or finite numbers.";
 const VALUE_ERROR: &str =
@@ -95,16 +97,82 @@ fn option_to_lua(value: Option<&SharedValue>, lua: &Lua) -> LuaResult<LuaValue> 
     }
 }
 
-#[derive(Debug, Default)]
+/**
+    Serializes every write that stores a shared table inside another one.
+
+    A cycle can only appear when a write stores a table value, so holding this lock while
+    checking reachability and writing means that two actors storing each other's tables at
+    the same moment can never form a cycle together. Writes of other values never take it.
+*/
+static STRUCTURE: Mutex<()> = Mutex::new(());
+
+fn structure() -> MutexGuard<'static, ()> {
+    STRUCTURE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[derive(Default)]
 struct SharedState {
     entries: HashMap<SharedKey, SharedValue>,
     version: u64,
 }
 
-#[derive(Debug)]
 struct SharedInner {
     frozen: bool,
     state: RwLock<SharedState>,
+}
+
+// Formatting never descends into nested tables, which could be arbitrarily deep.
+impl fmt::Debug for SharedInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let entries = self
+            .state
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .len();
+        f.debug_struct("SharedTable")
+            .field("entries", &entries)
+            .field("frozen", &self.frozen)
+            .finish()
+    }
+}
+
+impl fmt::Debug for SharedState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedState")
+            .field("entries", &self.entries.len())
+            .field("version", &self.version)
+            .finish()
+    }
+}
+
+/*
+    Dropping a table releases its nested tables one at a time instead of recursively, so
+    tearing down an arbitrarily deep chain of shared tables can never overflow the stack.
+    A nested table that other handles still use stays alive and is released by them.
+*/
+impl Drop for SharedInner {
+    fn drop(&mut self) {
+        let mut pending = Vec::new();
+        drain_tables(self, &mut pending);
+        while let Some(SharedTable { inner }) = pending.pop() {
+            if let Ok(mut nested) = Arc::try_unwrap(inner) {
+                drain_tables(&mut nested, &mut pending);
+            }
+        }
+    }
+}
+
+fn drain_tables(inner: &mut SharedInner, pending: &mut Vec<SharedTable>) {
+    let state = inner
+        .state
+        .get_mut()
+        .unwrap_or_else(PoisonError::into_inner);
+    for (_, value) in state.entries.drain() {
+        if let SharedValue::Table(table) = value {
+            pending.push(table);
+        }
+    }
 }
 
 /**
@@ -185,7 +253,49 @@ impl SharedTable {
         f(&mut state)
     }
 
+    /// Whether `target` is this table, or is nested anywhere inside it.
+    fn reaches(&self, target: &Self) -> bool {
+        let mut visited = HashSet::new();
+        let mut pending = vec![self.clone()];
+        while let Some(table) = pending.pop() {
+            if table.is_same(target) {
+                return true;
+            }
+            if !visited.insert(Arc::as_ptr(&table.inner)) {
+                continue;
+            }
+            table.read(|state| {
+                for value in state.entries.values() {
+                    if let SharedValue::Table(nested) = value {
+                        pending.push(nested.clone());
+                    }
+                }
+            });
+        }
+        false
+    }
+
+    /**
+        Takes the structure lock for a write that stores `value`, after checking that
+        storing it cannot make this table contain itself. Writes of anything other than a
+        table cannot create a cycle, so they take no lock.
+    */
+    fn guard_store(
+        &self,
+        value: Option<&SharedValue>,
+    ) -> LuaResult<Option<MutexGuard<'static, ()>>> {
+        let Some(SharedValue::Table(nested)) = value else {
+            return Ok(None);
+        };
+        let guard = structure();
+        if nested.reaches(self) {
+            return Err(LuaError::runtime(CYCLE_ERROR));
+        }
+        Ok(Some(guard))
+    }
+
     fn set(&self, key: SharedKey, value: Option<SharedValue>) -> LuaResult<()> {
+        let _guard = self.guard_store(value.as_ref())?;
         self.write(|state| {
             match value {
                 Some(value) => state.entries.insert(key, value),
@@ -206,23 +316,41 @@ impl SharedTable {
         })
     }
 
+    /**
+        Copies this table, and with `deep` every table nested inside it, one table at a
+        time instead of recursively, so arbitrarily deep chains cannot overflow the stack.
+        Shared tables can never contain themselves, so the copy always terminates.
+    */
     fn copy(&self, deep: bool, frozen: bool) -> LuaResult<Self> {
-        let mut entries = HashMap::new();
-        for (key, value) in self.snapshot() {
-            let value = match value {
-                SharedValue::Table(nested) if deep => {
-                    SharedValue::Table(nested.copy(true, frozen)?)
-                }
-                SharedValue::Table(nested) if frozen && !nested.inner.frozen => {
-                    return Err(LuaError::runtime(
-                        "SharedTable.cloneAndFreeze needs nested SharedTables to be frozen unless deep is true.",
-                    ));
-                }
-                other => other,
-            };
-            entries.insert(key, value);
+        let root = Self::with_entries(HashMap::new(), frozen);
+        let mut pending = vec![(self.clone(), root.clone())];
+        while let Some((source, destination)) = pending.pop() {
+            let mut entries = HashMap::new();
+            for (key, value) in source.snapshot() {
+                let value = match value {
+                    SharedValue::Table(nested) if deep => {
+                        let copy = Self::with_entries(HashMap::new(), frozen);
+                        pending.push((nested, copy.clone()));
+                        SharedValue::Table(copy)
+                    }
+                    SharedValue::Table(nested) if frozen && !nested.inner.frozen => {
+                        return Err(LuaError::runtime(
+                            "SharedTable.cloneAndFreeze needs nested SharedTables to be frozen unless deep is true.",
+                        ));
+                    }
+                    other => other,
+                };
+                entries.insert(key, value);
+            }
+            // The copy is not shared with anyone yet, so even a frozen copy is filled here.
+            destination
+                .inner
+                .state
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entries = entries;
         }
-        Ok(Self::with_entries(entries, frozen))
+        Ok(root)
     }
 
     /// Whether both handles refer to the same shared table.
@@ -360,6 +488,7 @@ fn shared_update(
             table.read(|state| (state.version, state.entries.get(&key).cloned()));
         let next: LuaValue = callback.call(option_to_lua(current.as_ref(), lua)?)?;
         let next = SharedValue::from_lua(&next, &mut HashSet::new())?;
+        let _guard = table.guard_store(next.as_ref())?;
         let applied = table.write(|state| {
             if state.version != version {
                 return Ok(false);
@@ -489,5 +618,118 @@ mod tests {
         let value = |name: &str| table.read(|state| state.entries.get(&key(name)).cloned());
         assert!(matches!(value("Count"), Some(SharedValue::Number(n)) if n == 8000.0));
         assert!(matches!(value("Updated"), Some(SharedValue::Number(n)) if n == 8000.0));
+    }
+
+    #[test]
+    fn rejects_every_way_of_making_a_table_contain_itself() {
+        let lua = library_lua();
+        for source in [
+            "local st = SharedTable.new() st.Self = st",
+            "local a, b = SharedTable.new(), SharedTable.new() a.B = b b.A = a",
+            "local a = SharedTable.new() local b = SharedTable.new({ C = SharedTable.new() }) a.B = b b.C.A = a",
+            "local a = SharedTable.new() a.Plain = { Back = a }",
+            "local a = SharedTable.new() SharedTable.update(a, 'Self', function() return a end)",
+        ] {
+            let message = lua.load(source).exec().unwrap_err().to_string();
+            assert!(
+                message.contains("contain itself"),
+                "{source} gave {message}"
+            );
+        }
+        // Sharing one table under several keys or parents is still allowed.
+        let ok: bool = lua
+            .load(
+                r"
+                    local shared = SharedTable.new({ Value = 1 })
+                    local a, b = SharedTable.new(), SharedTable.new()
+                    a.First, a.Second, b.Same = shared, shared, shared
+                    local copy = SharedTable.clone(a, true)
+                    return copy.First.Value == 1 and copy.First ~= shared and b.Same == shared
+                ",
+            )
+            .eval()
+            .unwrap();
+        assert!(ok);
+    }
+
+    #[test]
+    fn concurrent_cross_stores_never_form_a_cycle() {
+        // Two actors store each other's tables at the same moment. At most one of the
+        // two writes may succeed, otherwise each table would contain the other.
+        let key = SharedKey::String(b"Other".to_vec());
+        for _ in 0..300 {
+            let a = SharedTable::with_entries(HashMap::new(), false);
+            let b = SharedTable::with_entries(HashMap::new(), false);
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let stores: Vec<_> = [(a.clone(), b.clone()), (b.clone(), a.clone())]
+                .into_iter()
+                .map(|(parent, child)| {
+                    let barrier = Arc::clone(&barrier);
+                    let key = key.clone();
+                    thread::spawn(move || {
+                        barrier.wait();
+                        parent.set(key, Some(SharedValue::Table(child))).is_ok()
+                    })
+                })
+                .collect();
+            let succeeded = stores
+                .into_iter()
+                .map(|store| store.join().unwrap())
+                .filter(|ok| *ok)
+                .count();
+            assert_eq!(succeeded, 1, "exactly one cross store may succeed");
+            assert!(!a.reaches(&b) || !b.reaches(&a));
+            // Break the edge so the pair is released like any other tables.
+            a.set(key.clone(), None).unwrap();
+            b.set(key.clone(), None).unwrap();
+        }
+    }
+
+    #[test]
+    fn deep_chains_clone_format_and_drop_without_overflowing() {
+        // A default test thread has a small stack, so recursion over this chain would
+        // overflow and abort the process.
+        thread::spawn(|| {
+            let key = SharedKey::String(b"Child".to_vec());
+            let root = SharedTable::with_entries(HashMap::new(), false);
+            let mut current = root.clone();
+            for _ in 0..200_000 {
+                let child = SharedTable::with_entries(HashMap::new(), false);
+                current
+                    .set(key.clone(), Some(SharedValue::Table(child.clone())))
+                    .unwrap();
+                current = child;
+            }
+            current
+                .set(key.clone(), Some(SharedValue::Number(7.0)))
+                .unwrap();
+            drop(current);
+            let copy = root.copy(true, false).unwrap();
+            assert!(!copy.is_same(&root));
+            assert!(format!("{copy:?}").contains("entries"));
+            // Walk the copy to its end to prove that every level was copied.
+            let mut depth = 0;
+            let mut cursor = copy.clone();
+            loop {
+                let next = cursor.read(|state| state.entries.get(&key).cloned());
+                match next {
+                    Some(SharedValue::Table(nested)) => {
+                        cursor = nested;
+                        depth += 1;
+                    }
+                    Some(SharedValue::Number(n)) => {
+                        assert_eq!(n, 7.0);
+                        break;
+                    }
+                    other => panic!("unexpected value {other:?}"),
+                }
+            }
+            assert_eq!(depth, 200_000);
+            drop(cursor);
+            drop(copy);
+            drop(root);
+        })
+        .join()
+        .expect("deep chains must not overflow the stack");
     }
 }
