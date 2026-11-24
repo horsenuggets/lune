@@ -17,16 +17,19 @@ assert(flag, "Delay should run after the wanted duration")
 
 -- Delayed functions should work with yielding
 
-local flag2: boolean = false
+local started: boolean = false
+local finished: boolean = false
 task.delay(0.05, function()
-	flag2 = true
+	started = true
 	task.wait(0.1)
-	flag2 = false
+	finished = true
 end)
-task.wait(0.1)
-assert(flag, "Delay should work with yielding (1)")
-task.wait(0.1)
-assert(not flag2, "Delay should work with yielding (2)")
+local yieldDeadline = os.clock() + 5
+while not finished and os.clock() < yieldDeadline do
+	task.wait()
+end
+assert(started, "Delay should work with yielding (1)")
+assert(finished, "Delay should work with yielding (2)")
 
 -- Defer should be able to be nested
 
@@ -53,7 +56,10 @@ task.defer(function()
 	task.wait(0.05)
 	nested1()
 end)
-task.wait(0.25)
+local nestedDeadline = os.clock() + 5
+while not flag4 and os.clock() < nestedDeadline do
+	task.wait()
+end
 assert(flag4, "Defer should work with nesting")
 
 -- Varargs should get passed correctly

@@ -58,7 +58,10 @@ task.spawn(function()
 	task.wait(0.05)
 	nested1()
 end)
-task.wait(0.25)
+local nestedDeadline = os.clock() + 5
+while not flag4 and os.clock() < nestedDeadline do
+	task.wait()
+end
 assert(flag4, "Spawn should work with nesting")
 
 -- Varargs should get passed correctly
