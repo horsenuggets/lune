@@ -157,9 +157,10 @@ async fn read_unix(lua: Lua, to_end: bool) -> LuaResult<LuaString> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take()
         .ok_or_else(|| LuaError::runtime("Standard input read was cancelled."))?;
-    let string = lua.create_string(completed.1.into_lua_err()?)?;
+    // Both successful input and errors are now delivered to the resumed caller.
+    // Only abandoned results should restore bytes for a subsequent read.
     completed.0.commit();
-    Ok(string)
+    lua.create_string(completed.1.into_lua_err()?)
 }
 
 #[cfg(unix)]
