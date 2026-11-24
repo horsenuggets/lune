@@ -1,3 +1,4 @@
+#![allow(clippy::cargo_common_metadata)]
 #![cfg(all(unix, feature = "cli", feature = "std-stdio", feature = "std-task"))]
 
 use std::{
