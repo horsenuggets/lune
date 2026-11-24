@@ -100,19 +100,40 @@ async fn stdio_ewrite(_: Lua, s: LuaString) -> LuaResult<()> {
 
 #[cfg(unix)]
 async fn read_unix(lua: Lua, to_end: bool) -> LuaResult<LuaString> {
-    use std::sync::{Mutex, atomic::Ordering};
+    use std::{
+        cell::RefCell,
+        rc::Rc,
+        sync::{Mutex, atomic::Ordering},
+        task::Poll,
+    };
 
-    let input = INPUT_GATE.lock_arc().await;
     let cancellation = terminal::ReadCancellation::default();
     let cancelled = cancellation.token();
+    let acquisition = Rc::new(RefCell::new(Some(Box::pin(INPUT_GATE.lock_arc()))));
+    let waiting = Rc::clone(&acquisition);
     let delivery = Arc::new(Mutex::new(None));
     let abandoned = Arc::clone(&delivery);
     cancellation.monitor(&lua, move || {
+        // A closed coroutine can also retain its pending mutex waiter. Drop that
+        // waiter independently so it cannot strand subsequent input operations.
+        waiting.borrow_mut().take();
         abandoned
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
     });
+    let input = std::future::poll_fn(|context| {
+        let mut acquisition = acquisition.borrow_mut();
+        let Some(waiting) = acquisition.as_mut() else {
+            return Poll::Ready(Err(LuaError::runtime("Standard input read was cancelled.")));
+        };
+        let result = waiting.as_mut().poll(context);
+        if result.is_ready() {
+            acquisition.take();
+        }
+        result.map(Ok)
+    })
+    .await?;
     let worker_delivery = Arc::clone(&delivery);
     lua.spawn_blocking(move || {
         let mut transaction = terminal::input_transaction(Arc::clone(&cancelled));
