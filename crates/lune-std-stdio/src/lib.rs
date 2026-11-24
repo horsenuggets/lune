@@ -32,6 +32,9 @@ const FORMAT_CONFIG: ValueFormatConfig = ValueFormatConfig::new()
     .with_colors_enabled(false);
 
 static INPUT_GATE: LazyLock<Arc<AsyncMutex<()>>> = LazyLock::new(|| Arc::new(AsyncMutex::new(())));
+#[cfg(unix)]
+static REDIRECTED_INPUT_GATE: LazyLock<Arc<AsyncMutex<()>>> =
+    LazyLock::new(|| Arc::new(AsyncMutex::new(())));
 
 #[cfg(not(unix))]
 static STDIN: LazyLock<Arc<AsyncMutex<futures_lite::io::BufReader<Unblock<std::io::Stdin>>>>> =
@@ -102,14 +105,20 @@ async fn stdio_ewrite(_: Lua, s: LuaString) -> LuaResult<()> {
 async fn read_unix(lua: Lua, to_end: bool) -> LuaResult<LuaString> {
     use std::{
         cell::RefCell,
+        io::IsTerminal,
         rc::Rc,
         sync::{Mutex, atomic::Ordering},
         task::Poll,
     };
 
+    let gate: &'static Arc<AsyncMutex<()>> = if std::io::stdin().is_terminal() {
+        &INPUT_GATE
+    } else {
+        &REDIRECTED_INPUT_GATE
+    };
     let cancellation = terminal::ReadCancellation::default();
     let cancelled = cancellation.token();
-    let acquisition = Rc::new(RefCell::new(Some(Box::pin(INPUT_GATE.lock_arc()))));
+    let acquisition = Rc::new(RefCell::new(Some(Box::pin(gate.lock_arc()))));
     let waiting = Rc::clone(&acquisition);
     let delivery = Arc::new(Mutex::new(None));
     let abandoned = Arc::clone(&delivery);

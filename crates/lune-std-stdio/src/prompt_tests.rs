@@ -117,6 +117,149 @@ fn prompt_typeahead_worker() {
     println!("Prompt typeahead completed.");
 }
 
+#[test]
+fn redirected_stdin_prompt_worker() {
+    use mlua_luau_scheduler::{Functions, Scheduler};
+
+    let Ok(case) = std::env::var("LUNE_REDIRECTED_PROMPT_CHILD") else {
+        return;
+    };
+
+    let lua = Lua::new();
+    let scheduler = Scheduler::new(lua.clone());
+    let functions = Functions::new(lua.clone()).unwrap();
+    lua.globals().set("spawn", functions.spawn).unwrap();
+    lua.globals().set("cancel", functions.cancel).unwrap();
+    lua.globals()
+        .set("concurrent", case == "concurrent")
+        .unwrap();
+    lua.globals()
+        .set("stdio", crate::module(lua.clone()).unwrap())
+        .unwrap();
+    scheduler
+        .push_thread_front(
+            lua.load(
+                r#"
+assert(stdio.readLine() == "header\n")
+local owner
+if concurrent then
+    owner = spawn(function()
+        stdio.readToEnd()
+    end)
+end
+assert(not stdio.prompt("confirm", "Proceed?", false))
+if owner then
+    cancel(owner)
+end
+assert(stdio.readLine() == "y\n")
+done = true
+"#,
+            ),
+            (),
+        )
+        .unwrap();
+    futures_lite::future::block_on(scheduler.run());
+    assert!(lua.globals().get::<bool>("done").unwrap());
+    println!("Redirected prompt completed.");
+    // Keep the controlling session alive until the parent observes completion.
+    assert_eq!(
+        crate::terminal::prompt_terminal().read_key().unwrap(),
+        console::Key::Char('x')
+    );
+}
+
+#[test]
+fn redirected_stdin_cannot_supply_interactive_prompt_answers() {
+    run_redirected_prompt(false);
+}
+
+#[test]
+fn an_active_pipe_read_does_not_block_controlling_terminal_prompts() {
+    run_redirected_prompt(true);
+}
+
+fn run_redirected_prompt(concurrent: bool) {
+    use std::os::unix::process::CommandExt;
+
+    let pty = openpty(None, None).unwrap();
+    let mut master = File::from(pty.master);
+    let slave = File::from(pty.slave);
+    fcntl(&master, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).unwrap();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "prompt::tests::redirected_stdin_prompt_worker",
+            "--nocapture",
+            "--color",
+            "never",
+        ])
+        .env(
+            "LUNE_REDIRECTED_PROMPT_CHILD",
+            if concurrent {
+                "concurrent"
+            } else {
+                "sequential"
+            },
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stderr(Stdio::from(slave));
+    // Stdin deliberately remains a pipe. Console must use the controlling terminal.
+    unsafe {
+        command.pre_exec(|| {
+            nix::unistd::setsid()?;
+            if nix::libc::ioctl(2, nix::libc::TIOCSCTTY as _, 0) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = ChildGuard(command.spawn().unwrap());
+    drop(command);
+    child
+        .0
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"header\ny\n")
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut output = Vec::new();
+    let mut answered = false;
+    let mut acknowledged = false;
+    let status = loop {
+        let mut buffer = [0; 4096];
+        match master.read(&mut buffer) {
+            Ok(count) => output.extend_from_slice(&buffer[..count]),
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock
+                    || error.raw_os_error() == Some(nix::libc::EIO) => {}
+            Err(error) => panic!("Reading redirected prompt failed. {error}"),
+        }
+        let text = String::from_utf8_lossy(&output);
+        if !answered && text.contains("Proceed?") {
+            master.write_all(b"n").unwrap();
+            answered = true;
+        }
+        if !acknowledged && text.contains("Redirected prompt completed.") {
+            master.write_all(b"x").unwrap();
+            acknowledged = true;
+        }
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "The redirected prompt timed out."
+        );
+        thread::sleep(Duration::from_millis(2));
+    };
+    let output = String::from_utf8_lossy(&output);
+    assert!(answered && acknowledged && status.success(), "{output}");
+    assert!(output.contains("Redirected prompt completed."), "{output}");
+}
+
 struct ChildGuard(std::process::Child);
 
 impl Drop for ChildGuard {

@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cancel Unix stdin reads without requiring EOF, restore consumed input in order, and
   release cancelled input-gate waiters independently of retained coroutine futures.
   Restore terminal mode and rendition before delivering deferred termination signals.
+- Keep redirected stdin buffering and ownership separate from controlling-terminal
+  prompts. Consume delivered read errors so invalid UTF-8 does not replay indefinitely.
 
 ## `0.11.1-horse.17.4` - November 24th, 2026
 

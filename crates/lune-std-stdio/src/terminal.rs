@@ -1,7 +1,7 @@
 #[cfg(unix)]
 use std::{
     collections::VecDeque,
-    io::{self, Read},
+    io::{self, IsTerminal, Read},
     sync::{
         Arc, LazyLock, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -13,6 +13,9 @@ use crate::terminal_replies::ReplyFilter;
 
 #[cfg(unix)]
 static PENDING_INPUT: LazyLock<Arc<Mutex<VecDeque<u8>>>> =
+    LazyLock::new(|| Arc::new(Mutex::default()));
+#[cfg(unix)]
+static REDIRECTED_INPUT: LazyLock<Arc<Mutex<VecDeque<u8>>>> =
     LazyLock::new(|| Arc::new(Mutex::default()));
 #[cfg(unix)]
 static REPLIES: LazyLock<Arc<ReplyFilter>> = LazyLock::new(|| Arc::new(ReplyFilter::default()));
@@ -40,11 +43,21 @@ pub(crate) struct Input<R> {
 
 #[cfg(unix)]
 impl<R> Input<R> {
-    pub(crate) fn new(inner: R) -> Self {
+    pub(crate) fn new(inner: R, terminal: bool) -> Self {
         Self {
             inner,
-            pending: Arc::clone(&PENDING_INPUT),
-            replies: Arc::clone(&REPLIES),
+            // Prompts use the controlling terminal when stdin is redirected. Pipe
+            // read-ahead must never become interactive answers or terminal replies.
+            pending: Arc::clone(if terminal {
+                &PENDING_INPUT
+            } else {
+                &REDIRECTED_INPUT
+            }),
+            replies: if terminal {
+                Arc::clone(&REPLIES)
+            } else {
+                Arc::default()
+            },
         }
     }
 }
@@ -239,9 +252,12 @@ fn read_line_from(input: &mut impl Read) -> io::Result<String> {
 #[cfg(unix)]
 pub(crate) fn input_transaction(cancelled: Arc<AtomicBool>) -> ReadTransaction<StdinSource> {
     ReadTransaction {
-        input: Input::new(StdinSource {
-            cancelled: Arc::clone(&cancelled),
-        }),
+        input: Input::new(
+            StdinSource {
+                cancelled: Arc::clone(&cancelled),
+            },
+            std::io::stdin().is_terminal(),
+        ),
         consumed: Vec::new(),
         cancelled,
     }
@@ -1004,6 +1020,19 @@ mod tests {
             consumed: Vec::new(),
             cancelled,
         }
+    }
+
+    #[test]
+    fn redirected_read_ahead_is_separate_from_terminal_input_and_replies() {
+        let terminal = Input::new(io::empty(), true);
+        let redirected = Input::new(io::empty(), false);
+        let following = Input::new(io::empty(), false);
+        assert!(Arc::ptr_eq(&terminal.pending, &PENDING_INPUT));
+        assert!(Arc::ptr_eq(&redirected.pending, &REDIRECTED_INPUT));
+        assert!(Arc::ptr_eq(&redirected.pending, &following.pending));
+        assert!(!Arc::ptr_eq(&terminal.pending, &redirected.pending));
+        assert!(Arc::ptr_eq(&terminal.replies, &REPLIES));
+        assert!(!Arc::ptr_eq(&redirected.replies, &REPLIES));
     }
 
     #[test]
