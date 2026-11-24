@@ -1,5 +1,6 @@
 use async_process::Child;
 use futures_lite::prelude::*;
+use futures_util::try_join;
 
 use mlua::prelude::*;
 
@@ -19,13 +20,17 @@ pub async fn exec(
     stdout: ProcessSpawnOptionsStdioKind,
     stderr: ProcessSpawnOptionsStdioKind,
 ) -> LuaResult<LuaTable> {
-    // Write to stdin before anything else - if we got it
-    if let Some(stdin) = stdin {
-        let mut child_stdin = child.stdin.take().unwrap();
-        child_stdin.write_all(&stdin).await.into_lua_err()?;
-    }
-
-    let res = wait_for_child(child, stdout, stderr).await?;
+    let child_stdin = child.stdin.take();
+    let write_stdin = async move {
+        if let Some(stdin) = stdin {
+            let mut child_stdin =
+                child_stdin.expect("Child stdin must be piped when input is supplied");
+            child_stdin.write_all(&stdin).await.into_lua_err()?;
+            child_stdin.close().await.into_lua_err()?;
+        }
+        Ok::<(), LuaError>(())
+    };
+    let ((), res) = try_join!(write_stdin, wait_for_child(child, stdout, stderr))?;
 
     /*
         NOTE: If an exit code was not given by the child process,
