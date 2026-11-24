@@ -652,18 +652,24 @@ impl Runtime {
         // Run it on our scheduler until it and any other spawned threads complete
         let main_thread_id = self.sched.push_thread_back(main_func, ())?;
         self.sched.run().await;
+        // Remove completed values before any cleanup await can fail or be canceled.
+        let main_thread_result = self.sched.get_thread_result(main_thread_id);
 
         // No actor may outlive the script that started it
         #[cfg(feature = "std-actor")]
         lune_std_actor::shutdown(&self.lua);
 
         #[cfg(feature = "std-process")]
-        owned_processes
-            .shutdown()
-            .await
-            .map_err(LuaError::external)?;
+        {
+            let result = owned_processes.shutdown().await;
+            #[cfg(test)]
+            let result = self
+                .lua
+                .remove_app_data::<tests::CleanupFailure>()
+                .map_or(result, |failure| Err(std::io::Error::other(failure.0)));
+            result.map_err(LuaError::external)?;
+        }
 
-        let main_thread_result = self.sched.get_thread_result(main_thread_id);
         let finished = main_thread_result.is_some();
         let main_thread_values = main_thread_result
             .unwrap_or_else(|| Ok(LuaMultiValue::new())) // Ignore missing result (interruption), we just want to extract values
@@ -871,4 +877,46 @@ pub(super) fn strip_shebang(mut contents: Vec<u8>) -> Vec<u8> {
         contents.drain(..first_newline_idx);
     }
     contents
+}
+
+#[cfg(all(test, feature = "std-process"))]
+mod tests {
+    use super::*;
+    use mlua_luau_scheduler::ThreadId;
+
+    pub(super) struct CleanupFailure(pub(super) &'static str);
+
+    #[test]
+    fn cleanup_error_releases_completed_main_thread_result() -> anyhow::Result<()> {
+        async_io::block_on(async {
+            let mut runtime = Runtime::new()?;
+            runtime
+                .lua
+                .set_app_data(CleanupFailure("controlled cleanup failure"));
+            let error = runtime
+                .run_custom(
+                    "cleanup-error-result",
+                    r#"
+                    _G.CompletedMain = coroutine.running()
+                    return { Payload = string.rep("x", 1024 * 1024) }
+                    "#,
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("controlled cleanup failure"));
+            let globals = runtime.lua.globals().get::<LuaTable>("_G")?;
+            let thread = globals.get::<LuaThread>("CompletedMain")?;
+            assert!(
+                runtime
+                    .sched
+                    .get_thread_result(ThreadId::from(&thread))
+                    .is_none()
+            );
+            let result = runtime
+                .run_custom("after-cleanup-error", "return true")
+                .await?;
+            assert!(result.success() && result.finished);
+            Ok(())
+        })
+    }
 }
