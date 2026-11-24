@@ -1,11 +1,13 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 #[cfg(unix)]
 use std::{
     collections::VecDeque,
     io::{self, IsTerminal, Read},
-    sync::{
-        Arc, LazyLock, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{LazyLock, Mutex},
 };
 
 #[cfg(unix)]
@@ -115,12 +117,10 @@ impl<R: Read> Read for Input<R> {
     }
 }
 
-#[cfg(unix)]
 #[derive(Default)]
-pub(crate) struct ReadCancellation(Arc<AtomicBool>);
+pub(crate) struct InputCancellation(Arc<AtomicBool>);
 
-#[cfg(unix)]
-impl ReadCancellation {
+impl InputCancellation {
     pub(crate) fn token(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.0)
     }
@@ -144,8 +144,7 @@ impl ReadCancellation {
     }
 }
 
-#[cfg(unix)]
-impl Drop for ReadCancellation {
+impl Drop for InputCancellation {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Release);
     }
@@ -1039,7 +1038,7 @@ mod tests {
     fn cancelled_reads_release_ownership_without_eof_and_restore_input() {
         for to_end in [false, true] {
             for bytes in [b"".as_slice(), b"partial", b"first\nsecond\n"] {
-                let cancellation = ReadCancellation::default();
+                let cancellation = InputCancellation::default();
                 let (reader, writer) = nix::unistd::pipe().unwrap();
                 let replacement = reader.try_clone().unwrap();
                 let (consumed, received) = mpsc::channel();
@@ -1129,7 +1128,7 @@ mod tests {
                     let gate = Arc::clone(&worker_gate);
                     async move {
                         lua.globals().set("started", true)?;
-                        let cancellation = ReadCancellation::default();
+                        let cancellation = InputCancellation::default();
                         let cancelled = cancellation.token();
                         cancellation.monitor(&lua, move || {
                             abandoned.lock().unwrap().take();
@@ -1165,7 +1164,7 @@ mod tests {
 
     #[test]
     fn cancelled_reads_leave_queued_input_untouched() {
-        let cancellation = ReadCancellation::default();
+        let cancellation = InputCancellation::default();
         let mut transaction = transaction(io::Cursor::new(b"later"), cancellation.token());
         transaction.input.pending.lock().unwrap().extend(b"first");
         drop(cancellation);

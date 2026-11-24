@@ -101,14 +101,43 @@ async fn stdio_ewrite(_: Lua, s: LuaString) -> LuaResult<()> {
     Ok(())
 }
 
+async fn acquire_input(
+    cancellation: &terminal::InputCancellation,
+    gate: &'static Arc<AsyncMutex<()>>,
+    lua: &Lua,
+    on_cancel: impl FnOnce() + 'static,
+) -> LuaResult<async_lock::MutexGuardArc<()>> {
+    use std::{cell::RefCell, rc::Rc, task::Poll};
+
+    let acquisition = Rc::new(RefCell::new(Some(Box::pin(gate.lock_arc()))));
+    let waiting = Rc::clone(&acquisition);
+    cancellation.monitor(lua, move || {
+        // A closed coroutine can retain its mutex waiter. Drop it independently,
+        // but leave any already-running worker's input ownership untouched.
+        waiting.borrow_mut().take();
+        on_cancel();
+    });
+    std::future::poll_fn(|context| {
+        let mut acquisition = acquisition.borrow_mut();
+        let Some(waiting) = acquisition.as_mut() else {
+            return Poll::Ready(Err(LuaError::runtime(
+                "Standard input operation was cancelled.",
+            )));
+        };
+        let result = waiting.as_mut().poll(context);
+        if result.is_ready() {
+            acquisition.take();
+        }
+        result.map(Ok)
+    })
+    .await
+}
+
 #[cfg(unix)]
 async fn read_unix(lua: Lua, to_end: bool) -> LuaResult<LuaString> {
     use std::{
-        cell::RefCell,
         io::IsTerminal,
-        rc::Rc,
         sync::{Mutex, atomic::Ordering},
-        task::Poll,
     };
 
     let gate: &'static Arc<AsyncMutex<()>> = if std::io::stdin().is_terminal() {
@@ -116,31 +145,15 @@ async fn read_unix(lua: Lua, to_end: bool) -> LuaResult<LuaString> {
     } else {
         &REDIRECTED_INPUT_GATE
     };
-    let cancellation = terminal::ReadCancellation::default();
+    let cancellation = terminal::InputCancellation::default();
     let cancelled = cancellation.token();
-    let acquisition = Rc::new(RefCell::new(Some(Box::pin(gate.lock_arc()))));
-    let waiting = Rc::clone(&acquisition);
     let delivery = Arc::new(Mutex::new(None));
     let abandoned = Arc::clone(&delivery);
-    cancellation.monitor(&lua, move || {
-        // A closed coroutine can also retain its pending mutex waiter. Drop that
-        // waiter independently so it cannot strand subsequent input operations.
-        waiting.borrow_mut().take();
+    let input = acquire_input(&cancellation, gate, &lua, move || {
         abandoned
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-    });
-    let input = std::future::poll_fn(|context| {
-        let mut acquisition = acquisition.borrow_mut();
-        let Some(waiting) = acquisition.as_mut() else {
-            return Poll::Ready(Err(LuaError::runtime("Standard input read was cancelled.")));
-        };
-        let result = waiting.as_mut().poll(context);
-        if result.is_ready() {
-            acquisition.take();
-        }
-        result.map(Ok)
     })
     .await?;
     let worker_delivery = Arc::clone(&delivery);
@@ -179,7 +192,6 @@ async fn stdio_read_line(lua: Lua, (): ()) -> LuaResult<LuaString> {
 
 #[cfg(not(unix))]
 async fn stdio_read_line(lua: Lua, (): ()) -> LuaResult<LuaString> {
-    let _input = INPUT_GATE.lock_arc().await;
     let mut string = String::new();
     STDIN.lock_arc().await.read_line(&mut string).await?;
     lua.create_string(&string)
@@ -192,7 +204,6 @@ async fn stdio_read_to_end(lua: Lua, (): ()) -> LuaResult<LuaString> {
 
 #[cfg(not(unix))]
 async fn stdio_read_to_end(lua: Lua, (): ()) -> LuaResult<LuaString> {
-    let _input = INPUT_GATE.lock_arc().await;
     let mut buffer = Vec::new();
     STDIN.lock_arc().await.read_to_end(&mut buffer).await?;
     lua.create_string(&buffer)
@@ -205,10 +216,15 @@ async fn stdio_prompt(lua: Lua, options: PromptOptions) -> LuaResult<PromptResul
             "stdio.prompt is unavailable inside an actor, since actors cannot share the terminal.",
         ));
     }
-    let input = INPUT_GATE.lock_arc().await;
+    let cancellation = terminal::InputCancellation::default();
+    let cancelled = cancellation.token();
+    let input = acquire_input(&cancellation, &INPUT_GATE, &lua, || {}).await?;
     lua.spawn_blocking(move || {
         // Keep ownership in the worker even if its awaiting Luau task is cancelled.
         let _input = input;
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(LuaError::runtime("Standard input prompt was cancelled."));
+        }
         prompt(options)
     })
     .await

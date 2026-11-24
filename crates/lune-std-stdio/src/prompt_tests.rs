@@ -118,6 +118,110 @@ fn prompt_typeahead_worker() {
 }
 
 #[test]
+fn queued_prompt_cancellation_worker() {
+    use mlua_luau_scheduler::{Functions, Scheduler};
+
+    if std::env::var_os("LUNE_QUEUED_PROMPT_CHILD").is_none() {
+        return;
+    }
+    let lua = Lua::new();
+    let scheduler = Scheduler::new(lua.clone());
+    let functions = Functions::new(lua.clone()).unwrap();
+    lua.globals().set("spawn", functions.spawn).unwrap();
+    lua.globals().set("cancel", functions.cancel).unwrap();
+    lua.globals()
+        .set("stdio", crate::module(lua.clone()).unwrap())
+        .unwrap();
+    scheduler
+        .push_thread_front(
+            lua.load(
+                r#"
+unexpected = false
+spawn(function()
+    assert(stdio.readLine() == "first\n")
+    firstDone = true
+end)
+const queued = spawn(function()
+    stdio.prompt("confirm", "Cancelled prompt", false)
+    unexpected = true
+end)
+cancel(queued)
+stdio.write("Ready for input.\n")
+assert(stdio.readLine() == "second\n")
+done = true
+"#,
+            ),
+            (),
+        )
+        .unwrap();
+    futures_lite::future::block_on(scheduler.run());
+    assert!(lua.globals().get::<bool>("firstDone").unwrap());
+    assert!(lua.globals().get::<bool>("done").unwrap());
+    assert!(!lua.globals().get::<bool>("unexpected").unwrap());
+    println!("Queued prompt cancellation completed.");
+}
+
+#[test]
+fn cancelling_a_queued_prompt_does_not_strand_terminal_ownership() {
+    let pty = openpty(None, None).unwrap();
+    let mut master = File::from(pty.master);
+    let slave = File::from(pty.slave);
+    fcntl(&master, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).unwrap();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "prompt::tests::queued_prompt_cancellation_worker",
+            "--nocapture",
+            "--color",
+            "never",
+        ])
+        .env("LUNE_QUEUED_PROMPT_CHILD", "1")
+        .stdin(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stderr(Stdio::from(slave.try_clone().unwrap()));
+    let mut child = ChildGuard(command.spawn().unwrap());
+    drop(command);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut output = Vec::new();
+    let mut sent = false;
+    let status = loop {
+        let mut buffer = [0; 4096];
+        match master.read(&mut buffer) {
+            Ok(count) => output.extend_from_slice(&buffer[..count]),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("Reading queued prompt fixture failed. {error}"),
+        }
+        if !sent && String::from_utf8_lossy(&output).contains("Ready for input.") {
+            master.write_all(b"first\nsecond\n").unwrap();
+            sent = true;
+        }
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Queued prompt cancellation timed out."
+        );
+        thread::sleep(Duration::from_millis(2));
+    };
+    let mut buffer = [0; 4096];
+    while let Ok(count) = master.read(&mut buffer) {
+        if count == 0 {
+            break;
+        }
+        output.extend_from_slice(&buffer[..count]);
+    }
+    let output = String::from_utf8_lossy(&output);
+    assert!(sent && status.success(), "{output}");
+    assert!(
+        output.contains("Queued prompt cancellation completed."),
+        "{output}"
+    );
+    assert!(!output.contains("Cancelled prompt"), "{output}");
+}
+
+#[test]
 fn redirected_stdin_prompt_worker() {
     use mlua_luau_scheduler::{Functions, Scheduler};
 
