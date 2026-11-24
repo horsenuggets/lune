@@ -1140,11 +1140,11 @@ mod tests {
             assert_eq!(instance.get_property("Name"), None);
             assert_eq!(instance.get_attribute("Missing"), None);
             assert!(instance.get_attributes().is_empty());
-            assert!(instance.get_tags().is_empty());
+            assert_eq!(instance.get_tags(), [] as [String; 0]);
             assert!(!instance.has_tag("Missing"));
-            assert!(instance.get_children().is_empty());
-            assert!(instance.get_descendants().is_empty());
-            assert!(instance.get_descendants_preorder().is_empty());
+            assert_eq!(instance.get_children(), [] as [Instance; 0]);
+            assert_eq!(instance.get_descendants(), [] as [Instance; 0]);
+            assert_eq!(instance.get_descendants_preorder(), [] as [Instance; 0]);
             assert_eq!(instance.get_full_name(), "");
             assert_eq!(instance.find_child(|_| true), None);
             assert_eq!(instance.find_ancestor(|_| true), None);

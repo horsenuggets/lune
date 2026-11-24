@@ -1,11 +1,13 @@
 #![allow(clippy::missing_panics_doc)]
 
+#[cfg(any(feature = "std-actor", all(test, feature = "std-process")))]
+use std::sync::{Mutex, PoisonError};
 use std::{
     collections::HashMap,
     ffi::OsString,
     path::PathBuf,
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -20,7 +22,9 @@ use lune_utils::{
 use mlua::prelude::*;
 use mlua_luau_scheduler::{Functions, Scheduler};
 
-use super::{BundledJsModules, BundledJsRoots, RuntimeError, RuntimeResult};
+#[cfg(feature = "std-js")]
+use super::{BundledJsModules, BundledJsRoots};
+use super::{RuntimeError, RuntimeResult};
 
 /**
     Values returned by running a Lune runtime until completion.
@@ -36,8 +40,10 @@ pub struct RuntimeReturnValues {
     /// The final values returned by the main thread.
     pub values: LuaMultiValue,
     /// The formatted messages of every error thrown from any thread, in order.
+    #[cfg(any(feature = "std-actor", all(test, feature = "std-process")))]
     pub(crate) errors: Vec<String>,
     /// Whether the main thread finished, with either values or an error.
+    #[cfg(any(feature = "std-actor", all(test, feature = "std-process")))]
     pub(crate) finished: bool,
 }
 
@@ -373,7 +379,13 @@ impl Runtime {
         chunk_contents: impl AsRef<[u8]>,
     ) -> RuntimeResult<RuntimeReturnValues> {
         let chunk_name = format!("={}", chunk_name.as_ref());
-        self.run_inner(chunk_name, chunk_contents, None).await
+        self.run_inner(
+            chunk_name,
+            chunk_contents,
+            #[cfg(feature = "std-js")]
+            None,
+        )
+        .await
     }
 
     /**
@@ -394,7 +406,13 @@ impl Runtime {
         source: impl AsRef<[u8]>,
     ) -> RuntimeResult<RuntimeReturnValues> {
         let module_name = format!("{FILE_CHUNK_PREFIX}{}", module_path.as_ref());
-        self.run_inner(module_name, source, None).await
+        self.run_inner(
+            module_name,
+            source,
+            #[cfg(feature = "std-js")]
+            None,
+        )
+        .await
     }
 
     /**
@@ -469,12 +487,19 @@ impl Runtime {
 
         // The module path drops the "init" segment, so keep the resolved file's own
         // directory for JavaScript module roots.
+        #[cfg(feature = "std-js")]
         let js_base = module_path
             .target()
             .as_file()
             .and_then(std::path::Path::parent)
             .map(std::path::Path::to_path_buf);
-        self.run_inner(module_name, module_contents, js_base).await
+        self.run_inner(
+            module_name,
+            module_contents,
+            #[cfg(feature = "std-js")]
+            js_base,
+        )
+        .await
     }
 
     fn prepare_execution(&self) -> LuaResult<()> {
@@ -566,12 +591,14 @@ impl Runtime {
         &mut self,
         chunk_name: impl AsRef<str>,
         chunk_contents: impl AsRef<[u8]>,
-        js_base: Option<PathBuf>,
+        #[cfg(feature = "std-js")] js_base: Option<PathBuf>,
     ) -> RuntimeResult<RuntimeReturnValues> {
         // Add error callback to format errors nicely + store status
         let got_any_error = Arc::new(AtomicBool::new(false));
         let got_any_inner = Arc::clone(&got_any_error);
+        #[cfg(any(feature = "std-actor", all(test, feature = "std-process")))]
         let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        #[cfg(any(feature = "std-actor", all(test, feature = "std-process")))]
         let errors_inner = Arc::clone(&errors);
         // Actors never print their errors. Their owner receives them through join, so
         // that parallel actors don't interleave duplicate reports on one stderr.
@@ -585,6 +612,7 @@ impl Runtime {
             if !quiet {
                 eprintln!("{message}");
             }
+            #[cfg(any(feature = "std-actor", all(test, feature = "std-process")))]
             errors_inner
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -670,6 +698,7 @@ impl Runtime {
             result.map_err(LuaError::external)?;
         }
 
+        #[cfg(any(feature = "std-actor", all(test, feature = "std-process")))]
         let finished = main_thread_result.is_some();
         let main_thread_values = main_thread_result
             .unwrap_or_else(|| Ok(LuaMultiValue::new())) // Ignore missing result (interruption), we just want to extract values
@@ -679,7 +708,9 @@ impl Runtime {
             code: self.sched.get_exit_code(),
             errored: got_any_error.load(Ordering::SeqCst),
             values: main_thread_values,
+            #[cfg(any(feature = "std-actor", all(test, feature = "std-process")))]
             errors: std::mem::take(&mut *errors.lock().unwrap_or_else(PoisonError::into_inner)),
+            #[cfg(any(feature = "std-actor", all(test, feature = "std-process")))]
             finished,
         })
     }
@@ -736,7 +767,7 @@ impl Runtime {
     /**
         Returns how many actors started by this runtime may still have a running thread.
     */
-    #[cfg(test)]
+    #[cfg(all(test, feature = "std-process", feature = "std-task"))]
     pub(crate) fn running_actor_count(&self) -> usize {
         lune_std_actor::running_actor_count(&self.lua)
     }
@@ -747,9 +778,8 @@ struct CoverageEnabled(bool);
 
 fn configure_coverage(lua: &Lua) -> LuaResult<()> {
     // Enable code coverage by default. Set LUNE_COVERAGE=0 to disable.
-    let coverage_enabled = std::env::var("LUNE_COVERAGE")
-        .map(|v| v != "0" && v != "false")
-        .unwrap_or(true);
+    let coverage_enabled =
+        std::env::var("LUNE_COVERAGE").map_or(true, |v| v != "0" && v != "false");
     if coverage_enabled {
         lua.set_compiler(
             mlua::prelude::LuaCompiler::default()
@@ -915,7 +945,7 @@ mod tests {
             let result = runtime
                 .run_custom("after-cleanup-error", "return true")
                 .await?;
-            assert!(result.success() && result.finished);
+            assert!(result.success() && result.finished, "{:?}", result.errors);
             Ok(())
         })
     }

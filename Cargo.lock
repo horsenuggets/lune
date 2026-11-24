@@ -516,9 +516,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.9.0"
+version = "1.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "877bf67ac8e52449eb2f9e98a344ea163beb70dd1f9eebe3cc5357dcfeaee4df"
+checksum = "02f0e023adb368345ce0ca6cdfc0f24a06554468d0e8503e14a0841de79bfa69"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1884,16 +1884,15 @@ dependencies = [
 
 [[package]]
 name = "luau0-src"
-version = "0.22.0+luau740"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ea012e8a8aaff2f7b6c788fad41a60630003b6a0932bcf045f7d14952c9bd31"
+version = "0.22.1+luau742"
+source = "git+https://github.com/horsenuggets/luau?rev=366410e9034b9d074fcafad83d8a039eaaa8f62d#366410e9034b9d074fcafad83d8a039eaaa8f62d"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "lune"
-version = "0.11.1-horse.17.2"
+version = "0.11.1-horse.17.3"
 dependencies = [
  "anyhow",
  "async-fs",
@@ -2016,7 +2015,6 @@ name = "lune-std-js"
 version = "0.4.0"
 dependencies = [
  "async-io",
- "futures",
  "futures-lite",
  "lune-utils",
  "mlua",
@@ -2083,7 +2081,6 @@ dependencies = [
  "async-process",
  "blocking",
  "bstr",
- "bytes",
  "directories",
  "errno",
  "futures-lite",

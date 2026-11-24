@@ -8,7 +8,7 @@ use mlua::prelude::*;
 
 type ListWriter = dyn Fn(&mut fmt::Formatter<'_>, bool, &str) -> fmt::Result;
 
-#[must_use]
+#[must_use = "Use the returned writer to format list elements."]
 pub fn make_list_writer() -> Box<ListWriter> {
     let first = RefCell::new(true);
     Box::new(move |f, flag, literal| {

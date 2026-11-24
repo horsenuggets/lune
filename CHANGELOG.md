@@ -8,6 +8,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.11.1-horse.17.3` - November 24th, 2026
+
+### Changed
+
+- Build the embedded VM from an exact reviewed, published revision of the maintained
+  Luau 742 sources instead of the registry's Luau 740 sources. Retain one native source
+  identity through the existing `mlua-sys` interface.
+
+### Fixed
+
+- Collect coverage only at actual bytecode instruction boundaries, preventing AUX data
+  from creating phantom executable lines or hit counts. Preserve negative markers,
+  nested prototype metadata and exact counts, including raw actor round trips.
+
 ## `0.11.1-horse.17.2` - November 24th, 2026
 
 ### Added

@@ -283,8 +283,7 @@ impl Drop for OwnedProcessScope {
 pub fn owned_process_scope(lua: &Lua) -> OwnedProcessScope {
     let registry = lua
         .app_data_ref::<Registry>()
-        .map(|registry| registry.clone())
-        .unwrap_or_default();
+        .map_or_else(Registry::default, |registry| registry.clone());
     lua.set_app_data(registry.clone());
     OwnedProcessScope(registry)
 }

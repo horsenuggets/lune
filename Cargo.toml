@@ -71,6 +71,8 @@ needless_pass_by_value = { level = "allow", priority = 1 }
 wildcard_imports = { level = "allow", priority = 1 }
 
 [patch.crates-io]
+# Build reviewed Luau 742 sources with instruction-boundary coverage collection.
+luau0-src = { git = "https://github.com/horsenuggets/luau", rev = "366410e9034b9d074fcafad83d8a039eaaa8f62d" }
 # Shares identical property maps between parsed documents while keeping published
 # rbx_binary, rbx_xml and rbx_types, so every crate uses one rbx_types identity.
 rbx_dom_weak = { git = "https://github.com/horsenuggets/rbx-dom.git", branch = "main" }

@@ -1,5 +1,5 @@
-#![cfg(all(feature = "cli", feature = "std-js"))]
 #![allow(clippy::cargo_common_metadata)]
+#![cfg(all(feature = "cli", feature = "std-js"))]
 
 use std::{
     fs,
