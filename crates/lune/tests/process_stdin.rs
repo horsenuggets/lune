@@ -8,8 +8,10 @@
 
 use std::{
     fs,
-    io::{ErrorKind, Write},
-    process::{Command, Output, Stdio},
+    io::{ErrorKind, Read, Write},
+    process::{Child, Command, Output, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 const ECHO_CHILD: &str = r#"
@@ -22,6 +24,47 @@ const SENTINEL_CHILD: &str = r#"
     const process = require("@lune/process")
     fs.writeFile(process.args[1], "Child was launched.")
 "#;
+
+fn bounded_output(mut child: Child) -> Output {
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    thread::scope(|scope| {
+        let stdout = scope.spawn(move || {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).unwrap();
+            bytes
+        });
+        let stderr = scope.spawn(move || {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).unwrap();
+            bytes
+        });
+        let started = Instant::now();
+        let mut timed_out = false;
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if started.elapsed() >= Duration::from_secs(30) {
+                timed_out = true;
+                child.kill().unwrap();
+                break child.wait().unwrap();
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let output = Output {
+            status,
+            stdout: stdout.join().unwrap(),
+            stderr: stderr.join().unwrap(),
+        };
+        assert!(
+            !timed_out,
+            "Child process timed out. {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    })
+}
 
 fn run_parent(source: &str, child_source: &str, input: &[u8]) -> Output {
     let temporary = tempfile::tempdir().unwrap();
@@ -57,7 +100,7 @@ fn run_parent(source: &str, child_source: &str, input: &[u8]) -> Output {
     if let Err(error) = parent.stdin.take().unwrap().write_all(input) {
         assert_eq!(error.kind(), ErrorKind::BrokenPipe, "{error}");
     }
-    let output = parent.wait_with_output().unwrap();
+    let output = bounded_output(parent);
     assert!(
         output.status.success(),
         "Parent failed for {source}.\n{}\n{}",
@@ -74,12 +117,17 @@ fn sentinel_fixture_records_child_execution() {
     let script = temporary.path().join("Child.luau");
     let sentinel = temporary.path().join("Sentinel.txt");
     fs::write(&script, SENTINEL_CHILD).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_lune"))
-        .arg("run")
-        .arg(&script)
-        .arg(&sentinel)
-        .output()
-        .unwrap();
+    let output = bounded_output(
+        Command::new(env!("CARGO_BIN_EXE_lune"))
+            .arg("run")
+            .arg(&script)
+            .arg(&sentinel)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     assert!(
         output.status.success(),
         "Sentinel fixture failed. {}",
@@ -166,6 +214,30 @@ fn exec_preserves_buffered_stdin_and_literal_strings() {
             assert!(output.stderr.is_empty());
         }
     }
+}
+
+#[test]
+fn exec_drains_output_while_sending_large_buffered_input() {
+    let output = run_parent(
+        r#"
+            const payload = string.rep("I", 16 * 1024 * 1024)
+            const result = process.exec(process.args[1], args, {
+                stdio = { stdin = payload },
+            })
+            assert(result.ok, result.stderr)
+            assert(result.stdout == string.rep("O", 256 * 1024), "Child output was truncated.")
+            assert(result.stderr == string.rep("E", 256 * 1024), "Child stderr was truncated.")
+        "#,
+        r#"
+            const stdio = require("@lune/stdio")
+            stdio.write(string.rep("O", 256 * 1024))
+            stdio.ewrite(string.rep("E", 256 * 1024))
+            assert(stdio.readToEnd() == string.rep("I", 16 * 1024 * 1024), "Child input was truncated.")
+        "#,
+        INPUT,
+    );
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
 }
 
 #[test]
