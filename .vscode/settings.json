@@ -68,10 +68,10 @@
     ],
     "rust-analyzer.check.command": "clippy",
     "editor.formatOnSave": true,
-    "stylua.searchParentDirectories": true,
+    "styluau.searchParentDirectories": true,
     "prettier.tabWidth": 2,
     "[luau][lua]": {
-        "editor.defaultFormatter": "JohnnyMorganz.stylua"
+        "editor.defaultFormatter": "horsenuggets.styluau"
     },
     "[json][jsonc][markdown][yaml]": {
         "editor.defaultFormatter": "esbenp.prettier-vscode"

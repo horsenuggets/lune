@@ -4,8 +4,8 @@
         "esbenp.prettier-vscode",
         "hashicorp.hcl",
         "hashicorp.terraform",
+        "horsenuggets.styluau",
         "jkillian.custom-local-formatters",
-        "JohnnyMorganz.stylua",
         "rust-lang.rust-analyzer"
     ]
 }
