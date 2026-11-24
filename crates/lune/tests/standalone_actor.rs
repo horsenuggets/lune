@@ -1,5 +1,5 @@
-#![cfg(all(feature = "cli", feature = "std-actor"))]
 #![allow(clippy::cargo_common_metadata)]
+#![cfg(all(feature = "cli", feature = "std-actor"))]
 
 use std::{fs, process::Command};
 

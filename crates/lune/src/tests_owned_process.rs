@@ -130,7 +130,7 @@ fn stdin_fixture() -> Result<()> {
     io::stdout().flush()?;
     let mut trailing = Vec::new();
     io::stdin().read_to_end(&mut trailing)?;
-    assert!(trailing.is_empty());
+    assert_eq!(trailing, [] as [u8; 0]);
     io::stdout().write_all(&received)?;
     io::stderr().write_all(b"Owned stdin EOF received.")?;
     Ok(())

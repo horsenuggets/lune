@@ -48,7 +48,7 @@ std = [
     "std-task",
 ]
 
-cli = ["dep:clap", "dep:full_moon", "dep:glob", "dep:rustyline", "dep:zip", "dep:lune-std-js", "dep:lune-std-net"]
+cli = ["dep:clap", "dep:full_moon", "dep:glob", "dep:rustyline", "dep:sha2", "dep:zip", "dep:lune-std-js", "dep:lune-std-net"]
 
 [lints]
 workspace = true
@@ -71,7 +71,7 @@ async-fs = "2.1"
 blocking = "1.6"
 futures-lite = "2.6"
 
-sha2 = "0.10"
+sha2 = { optional = true, version = "0.10" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

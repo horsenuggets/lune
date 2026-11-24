@@ -53,6 +53,7 @@ impl Metadata {
     /**
         Creates a patched standalone binary from the given script contents.
     */
+    #[cfg(feature = "cli")]
     pub async fn create_env_patched_bin(
         base_exe_path: PathBuf,
         script_contents: impl Into<Vec<u8>>,
@@ -105,6 +106,7 @@ impl Metadata {
 
         Format: [`json_data`][json_size: u64][MAGIC: 8 bytes]
     */
+    #[cfg(any(feature = "cli", test))]
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let json_bytes = serde_json::to_vec(self)?;
         let mut bytes = Vec::new();
