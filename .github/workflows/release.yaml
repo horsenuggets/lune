@@ -26,28 +26,11 @@ jobs:
 
       - name: Get version from VERSION file
         id: get_version
-        run: |
-          VERSION=$(cat VERSION | tr -d '[:space:]')
-          echo "value=${VERSION}" >> $GITHUB_OUTPUT
+        run: bash --noprofile --norc -e -o pipefail "$GITHUB_WORKSPACE/.github/workflows/helpers/get-version-from-version-file.sh"
 
       - name: Extract changelog for this version
         id: get_changelog
-        run: |
-          VERSION=$(cat VERSION | tr -d '[:space:]')
-          CHANGELOG=$(awk -v ver="\`$VERSION\`" '
-            /^## / {
-              if (found) exit
-              if (index($0, ver) > 0) found=1
-              next
-            }
-            found { print }
-          ' CHANGELOG.md | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | sed '/^$/N;/^\n$/d')
-
-          # Write to file for multi-line support
-          echo "$CHANGELOG" > /tmp/changelog.txt
-          echo "value<<EOF" >> $GITHUB_OUTPUT
-          echo "$CHANGELOG" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+        run: bash --noprofile --norc -e -o pipefail "$GITHUB_WORKSPACE/.github/workflows/helpers/extract-changelog-for-this-version.sh"
 
   dry-run:
     name: Dry-run
@@ -74,34 +57,34 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Windows x86_64
+          - name: Windows x64
             runner-os: windows-2022
-            artifact-name: lune-${{ needs.init.outputs.version }}-windows-x86_64
+            artifact-name: lune-${{ needs.init.outputs.version }}-windows-x64
             cargo-target: x86_64-pc-windows-msvc
 
-          - name: Windows aarch64
+          - name: Windows arm64
             runner-os: windows-11-arm
-            artifact-name: lune-${{ needs.init.outputs.version }}-windows-aarch64
+            artifact-name: lune-${{ needs.init.outputs.version }}-windows-arm64
             cargo-target: aarch64-pc-windows-msvc
 
-          - name: Linux x86_64
+          - name: Linux x64
             runner-os: ubuntu-22.04
-            artifact-name: lune-${{ needs.init.outputs.version }}-linux-x86_64
+            artifact-name: lune-${{ needs.init.outputs.version }}-linux-x64
             cargo-target: x86_64-unknown-linux-gnu
 
-          - name: Linux aarch64
+          - name: Linux arm64
             runner-os: ubuntu-22.04-arm
-            artifact-name: lune-${{ needs.init.outputs.version }}-linux-aarch64
+            artifact-name: lune-${{ needs.init.outputs.version }}-linux-arm64
             cargo-target: aarch64-unknown-linux-gnu
 
-          - name: macOS x86_64
+          - name: macOS x64
             runner-os: macos-15
-            artifact-name: lune-${{ needs.init.outputs.version }}-macos-x86_64
+            artifact-name: lune-${{ needs.init.outputs.version }}-macos-x64
             cargo-target: x86_64-apple-darwin
 
-          - name: macOS aarch64
+          - name: macOS arm64
             runner-os: macos-15
-            artifact-name: lune-${{ needs.init.outputs.version }}-macos-aarch64
+            artifact-name: lune-${{ needs.init.outputs.version }}-macos-arm64
             cargo-target: aarch64-apple-darwin
 
     name: Build - ${{ matrix.name }}
@@ -116,10 +99,9 @@ jobs:
           targets: ${{ matrix.cargo-target }}
 
       - name: Build binary
-        run: |
-          cargo build \
-          --locked --all-features \
-          --release --target ${{ matrix.cargo-target }}
+        env:
+          WORKFLOW_MATRIX_CARGO_TARGET: ${{ matrix.cargo-target }}
+        run: bash --noprofile --norc -e -o pipefail "$GITHUB_WORKSPACE/.github/workflows/helpers/build-binary.sh"
 
       - name: Create release archive
         run: ./scripts/zip-release.sh ${{ matrix.cargo-target }}
@@ -147,19 +129,15 @@ jobs:
         run: ./scripts/unpack-releases.sh "./releases"
 
       - name: Write changelog to file
-        run: |
-          cat << 'EOF' > /tmp/changelog.txt
-          ${{ needs.init.outputs.changelog }}
-          EOF
+        env:
+          WORKFLOW_NEEDS_INIT_OUTPUTS_CHANGELOG: ${{ needs.init.outputs.changelog }}
+        run: bash --noprofile --norc -e -o pipefail "$GITHUB_WORKSPACE/.github/workflows/helpers/write-changelog-to-file.sh"
 
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${{ needs.init.outputs.version }}" \
-            --title "${{ needs.init.outputs.version }}" \
-            --notes-file /tmp/changelog.txt \
-            ./releases/*.zip
+          WORKFLOW_NEEDS_INIT_OUTPUTS_VERSION: ${{ needs.init.outputs.version }}
+        run: bash --noprofile --norc -e -o pipefail "$GITHUB_WORKSPACE/.github/workflows/helpers/create-release.sh"
 
   release-crates:
     if: github.repository == 'lune-org/lune'

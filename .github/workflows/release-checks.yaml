@@ -10,19 +10,13 @@ jobs:
     name: Validate PR title
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout workflow helpers
+        uses: actions/checkout@v4
+
       - name: Check PR title format
         env:
           TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          echo "Checking PR title: $TITLE"
-
-          # Must be exactly "Release X.Y.Z" or "Release X.Y.Z-suffix"
-          if [[ ! "$TITLE" =~ ^Release\ [0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
-            echo "::error::PR title must be 'Release X.Y.Z' or 'Release X.Y.Z-suffix' (e.g., 'Release 0.10.4-horse.8.0')"
-            exit 1
-          fi
-
-          echo "PR title is valid."
+        run: bash -e "$GITHUB_WORKSPACE/.github/workflows/helpers/check-pr-title-format.sh"
 
   diff-check:
     name: Verify diff matches main
@@ -34,20 +28,7 @@ jobs:
           fetch-depth: 0
 
       - name: Check diff with main
-        run: |
-          git fetch origin main
-
-          # Get the diff between the PR branch and main
-          DIFF=$(git diff origin/main..HEAD)
-
-          if [ -n "$DIFF" ]; then
-            echo "::error::PR branch has changes that differ from main. The release branch must contain exactly what is in main."
-            echo "Diff:"
-            echo "$DIFF"
-            exit 1
-          fi
-
-          echo "PR branch matches main exactly."
+        run: bash -e "$GITHUB_WORKSPACE/.github/workflows/helpers/check-diff-with-main.sh"
 
   version:
     name: Validate version
@@ -59,66 +40,21 @@ jobs:
           fetch-depth: 0
 
       - name: Check version file exists
-        run: |
-          if [ ! -f "VERSION" ]; then
-            echo "::error::VERSION file not found"
-            exit 1
-          fi
-          echo "VERSION file exists."
+        run: bash -e "$GITHUB_WORKSPACE/.github/workflows/helpers/check-version-file-exists.sh"
 
       - name: Check version bump
-        run: |
-          git fetch origin release || true
-
-          VERSION=$(cat VERSION | tr -d '[:space:]')
-          echo "Current version: $VERSION"
-
-          # Check if this version tag already exists
-          if git rev-parse "$VERSION" >/dev/null 2>&1 || git rev-parse "v$VERSION" >/dev/null 2>&1; then
-            echo "::error::Version $VERSION already has a tag. Please bump the version."
-            exit 1
-          fi
-
-          echo "Version $VERSION is new."
+        run: bash -e "$GITHUB_WORKSPACE/.github/workflows/helpers/check-version-bump.sh"
 
       - name: Check changelog entry
-        run: |
-          VERSION=$(cat VERSION | tr -d '[:space:]')
-
-          # Check if changelog has an entry for this version
-          if ! grep -q "## \`$VERSION\`" CHANGELOG.md; then
-            echo "::error::CHANGELOG.md does not have an entry for version $VERSION"
-            echo "Expected to find: ## \`$VERSION\`"
-            exit 1
-          fi
-
-          echo "Changelog entry found for version $VERSION."
+        run: bash -e "$GITHUB_WORKSPACE/.github/workflows/helpers/check-changelog-entry.sh"
 
       - name: Verify PR title matches VERSION
         env:
           ACTUAL_TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          VERSION=$(cat VERSION | tr -d '[:space:]')
-          EXPECTED_TITLE="Release $VERSION"
-
-          if [ "$EXPECTED_TITLE" != "$ACTUAL_TITLE" ]; then
-            echo "::error::PR title '$ACTUAL_TITLE' does not match VERSION file. Expected '$EXPECTED_TITLE'"
-            exit 1
-          fi
-
-          echo "PR title matches VERSION file."
+        run: bash -e "$GITHUB_WORKSPACE/.github/workflows/helpers/verify-pr-title-matches-version.sh"
 
       - name: Check Cargo.toml version matches
-        run: |
-          VERSION=$(cat VERSION | tr -d '[:space:]')
-          CARGO_VERSION=$(./scripts/get-version.sh)
-
-          if [ "$VERSION" != "$CARGO_VERSION" ]; then
-            echo "::error::VERSION file ($VERSION) does not match Cargo.toml ($CARGO_VERSION)"
-            exit 1
-          fi
-
-          echo "VERSION file matches Cargo.toml."
+        run: bash -e "$GITHUB_WORKSPACE/.github/workflows/helpers/check-cargo-toml-version-matches.sh"
 
   build-test:
     name: Build test - ${{ matrix.name }}
@@ -127,27 +63,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Windows x86_64
+          - name: Windows x64
             runner-os: windows-2022
             cargo-target: x86_64-pc-windows-msvc
 
-          - name: Windows aarch64
+          - name: Windows arm64
             runner-os: windows-11-arm
             cargo-target: aarch64-pc-windows-msvc
 
-          - name: Linux x86_64
+          - name: Linux x64
             runner-os: ubuntu-22.04
             cargo-target: x86_64-unknown-linux-gnu
 
-          - name: Linux aarch64
+          - name: Linux arm64
             runner-os: ubuntu-22.04-arm
             cargo-target: aarch64-unknown-linux-gnu
 
-          - name: macOS x86_64
+          - name: macOS x64
             runner-os: macos-15
             cargo-target: x86_64-apple-darwin
 
-          - name: macOS aarch64
+          - name: macOS arm64
             runner-os: macos-15
             cargo-target: aarch64-apple-darwin
 
