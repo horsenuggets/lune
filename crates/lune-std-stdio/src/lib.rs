@@ -1,7 +1,7 @@
 #![allow(clippy::cargo_common_metadata)]
 
 use std::{
-    io::{Stdin, stderr, stdin, stdout},
+    io::{stderr, stdout},
     sync::{Arc, LazyLock},
 };
 
@@ -10,7 +10,7 @@ use mlua_luau_scheduler::LuaSpawnExt;
 
 use async_lock::Mutex as AsyncMutex;
 use blocking::Unblock;
-use futures_lite::{io::BufReader, prelude::*};
+use futures_lite::prelude::*;
 
 use lune_utils::{
     TableBuilder,
@@ -20,6 +20,9 @@ use lune_utils::{
 
 mod prompt;
 mod style_and_color;
+mod terminal;
+#[cfg(unix)]
+mod terminal_replies;
 
 use self::prompt::{PromptOptions, PromptResult, prompt};
 use self::style_and_color::{ColorKind, StyleKind};
@@ -28,11 +31,15 @@ const FORMAT_CONFIG: ValueFormatConfig = ValueFormatConfig::new()
     .with_max_depth(4)
     .with_colors_enabled(false);
 
-static STDIN: LazyLock<Arc<AsyncMutex<BufReader<Unblock<Stdin>>>>> = LazyLock::new(|| {
-    let stdin = Unblock::new(stdin());
-    let reader = BufReader::new(stdin);
-    Arc::new(AsyncMutex::new(reader))
-});
+static INPUT_GATE: LazyLock<Arc<AsyncMutex<()>>> = LazyLock::new(|| Arc::new(AsyncMutex::new(())));
+
+#[cfg(not(unix))]
+static STDIN: LazyLock<Arc<AsyncMutex<futures_lite::io::BufReader<Unblock<std::io::Stdin>>>>> =
+    LazyLock::new(|| {
+        Arc::new(AsyncMutex::new(futures_lite::io::BufReader::new(
+            Unblock::new(std::io::stdin()),
+        )))
+    });
 
 const TYPEDEFS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/types.d.luau"));
 
@@ -61,6 +68,7 @@ pub fn module(lua: Lua) -> LuaResult<LuaTable> {
         .with_async_function("readLine", stdio_read_line)?
         .with_async_function("readToEnd", stdio_read_to_end)?
         .with_async_function("prompt", stdio_prompt)?
+        .with_async_function("terminalCapabilities", stdio_terminal_capabilities)?
         .build_readonly()
 }
 
@@ -90,17 +98,72 @@ async fn stdio_ewrite(_: Lua, s: LuaString) -> LuaResult<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+async fn read_unix(lua: Lua, to_end: bool) -> LuaResult<LuaString> {
+    use std::sync::{Mutex, atomic::Ordering};
+
+    let input = INPUT_GATE.lock_arc().await;
+    let cancellation = terminal::ReadCancellation::default();
+    let cancelled = cancellation.token();
+    let delivery = Arc::new(Mutex::new(None));
+    let abandoned = Arc::clone(&delivery);
+    cancellation.monitor(&lua, move || {
+        abandoned
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    });
+    let worker_delivery = Arc::clone(&delivery);
+    lua.spawn_blocking(move || {
+        let mut transaction = terminal::input_transaction(Arc::clone(&cancelled));
+        let result = if to_end {
+            terminal::read_to_end(&mut transaction)
+        } else {
+            terminal::read_line(&mut transaction).map(String::into_bytes)
+        };
+        // Tuple fields drop in order, rolling back bytes before releasing ownership.
+        let completed = (transaction, result, input);
+        let mut delivery = worker_delivery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !cancelled.load(Ordering::Acquire) {
+            *delivery = Some(completed);
+        }
+    })
+    .await;
+    let mut completed = delivery
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .ok_or_else(|| LuaError::runtime("Standard input read was cancelled."))?;
+    let string = lua.create_string(completed.1.into_lua_err()?)?;
+    completed.0.commit();
+    Ok(string)
+}
+
+#[cfg(unix)]
 async fn stdio_read_line(lua: Lua, (): ()) -> LuaResult<LuaString> {
+    read_unix(lua, false).await
+}
+
+#[cfg(not(unix))]
+async fn stdio_read_line(lua: Lua, (): ()) -> LuaResult<LuaString> {
+    let _input = INPUT_GATE.lock_arc().await;
     let mut string = String::new();
-    let mut handle = STDIN.lock_arc().await;
-    handle.read_line(&mut string).await?;
+    STDIN.lock_arc().await.read_line(&mut string).await?;
     lua.create_string(&string)
 }
 
+#[cfg(unix)]
 async fn stdio_read_to_end(lua: Lua, (): ()) -> LuaResult<LuaString> {
+    read_unix(lua, true).await
+}
+
+#[cfg(not(unix))]
+async fn stdio_read_to_end(lua: Lua, (): ()) -> LuaResult<LuaString> {
+    let _input = INPUT_GATE.lock_arc().await;
     let mut buffer = Vec::new();
-    let mut handle = STDIN.lock_arc().await;
-    handle.read_to_end(&mut buffer).await?;
+    STDIN.lock_arc().await.read_to_end(&mut buffer).await?;
     lua.create_string(&buffer)
 }
 
@@ -111,7 +174,31 @@ async fn stdio_prompt(lua: Lua, options: PromptOptions) -> LuaResult<PromptResul
             "stdio.prompt is unavailable inside an actor, since actors cannot share the terminal.",
         ));
     }
-    lua.spawn_blocking(move || prompt(options))
+    let input = INPUT_GATE.lock_arc().await;
+    lua.spawn_blocking(move || {
+        // Keep ownership in the worker even if its awaiting Luau task is cancelled.
+        let _input = input;
+        prompt(options)
+    })
+    .await
+    .into_lua_err()
+}
+
+async fn stdio_terminal_capabilities(lua: Lua, (): ()) -> LuaResult<LuaTable> {
+    let supported = if is_actor_worker(&lua) {
+        false
+    } else if let Some(supported) = terminal::cached_foreground_opacity() {
+        supported
+    } else if let Some(input) = INPUT_GATE.try_lock_arc() {
+        lua.spawn_blocking(move || {
+            let _input = input;
+            terminal::foreground_opacity()
+        })
         .await
-        .into_lua_err()
+    } else {
+        false
+    };
+    TableBuilder::new(lua)?
+        .with_value("ForegroundOpacity", supported)?
+        .build_readonly()
 }
