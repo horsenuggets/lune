@@ -8,6 +8,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.11.1-horse.17.2` - November 24th, 2026
+
+### Added
+
+- Added opt-in `process.create(..., { ownedTree = true })` and asynchronous
+  `child:terminateTree()` for native Unix process-group and Windows Job Object ownership.
+  Ownership survives launcher exit without targeting a reused process-group identity.
+  Termination closes stdin, waits for direct-child reaping, and shares its completion
+  across repeated or concurrent callers. Canceling a waiter does not cancel cleanup.
+- Owned trees are cleaned up when their handles are collected, their runtime finishes or
+  is canceled, or their owner exits abruptly. Ordinary process handles retain their
+  behavior. Deliberately detached descendants remain outside the ownership boundary;
+  callers must continue draining stdout and stderr alongside status and termination.
+
+### Fixed
+
+- Task scheduling regressions now await observable completion instead of racing short
+  fixed delays, including nested tasks and delayed callbacks that yield.
+
 ## `0.11.1-horse.17.1` - November 23rd, 2026
 
 ### Changed
