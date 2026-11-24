@@ -7,7 +7,7 @@ use std::{
     ffi::OsString,
     path::PathBuf,
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
