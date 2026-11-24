@@ -1,7 +1,7 @@
 #![allow(clippy::cargo_common_metadata)]
 
 use std::{
-    io::{stderr, stdout},
+    io::{IsTerminal, stderr, stdout},
     sync::{Arc, LazyLock},
 };
 
@@ -32,7 +32,6 @@ const FORMAT_CONFIG: ValueFormatConfig = ValueFormatConfig::new()
     .with_colors_enabled(false);
 
 static INPUT_GATE: LazyLock<Arc<AsyncMutex<()>>> = LazyLock::new(|| Arc::new(AsyncMutex::new(())));
-#[cfg(unix)]
 static REDIRECTED_INPUT_GATE: LazyLock<Arc<AsyncMutex<()>>> =
     LazyLock::new(|| Arc::new(AsyncMutex::new(())));
 
@@ -101,6 +100,14 @@ async fn stdio_ewrite(_: Lua, s: LuaString) -> LuaResult<()> {
     Ok(())
 }
 
+fn input_gate(terminal: bool) -> &'static Arc<AsyncMutex<()>> {
+    if terminal {
+        &INPUT_GATE
+    } else {
+        &REDIRECTED_INPUT_GATE
+    }
+}
+
 async fn acquire_input(
     cancellation: &terminal::InputCancellation,
     gate: &'static Arc<AsyncMutex<()>>,
@@ -135,16 +142,9 @@ async fn acquire_input(
 
 #[cfg(unix)]
 async fn read_unix(lua: Lua, to_end: bool) -> LuaResult<LuaString> {
-    use std::{
-        io::IsTerminal,
-        sync::{Mutex, atomic::Ordering},
-    };
+    use std::sync::{Mutex, atomic::Ordering};
 
-    let gate: &'static Arc<AsyncMutex<()>> = if std::io::stdin().is_terminal() {
-        &INPUT_GATE
-    } else {
-        &REDIRECTED_INPUT_GATE
-    };
+    let gate = input_gate(std::io::stdin().is_terminal());
     let cancellation = terminal::InputCancellation::default();
     let cancelled = cancellation.token();
     let delivery = Arc::new(Mutex::new(None));
@@ -192,6 +192,9 @@ async fn stdio_read_line(lua: Lua, (): ()) -> LuaResult<LuaString> {
 
 #[cfg(not(unix))]
 async fn stdio_read_line(lua: Lua, (): ()) -> LuaResult<LuaString> {
+    let cancellation = terminal::InputCancellation::default();
+    let gate = input_gate(std::io::stdin().is_terminal());
+    let _input = acquire_input(&cancellation, gate, &lua, || {}).await?;
     let mut string = String::new();
     STDIN.lock_arc().await.read_line(&mut string).await?;
     lua.create_string(&string)
@@ -204,6 +207,9 @@ async fn stdio_read_to_end(lua: Lua, (): ()) -> LuaResult<LuaString> {
 
 #[cfg(not(unix))]
 async fn stdio_read_to_end(lua: Lua, (): ()) -> LuaResult<LuaString> {
+    let cancellation = terminal::InputCancellation::default();
+    let gate = input_gate(std::io::stdin().is_terminal());
+    let _input = acquire_input(&cancellation, gate, &lua, || {}).await?;
     let mut buffer = Vec::new();
     STDIN.lock_arc().await.read_to_end(&mut buffer).await?;
     lua.create_string(&buffer)
@@ -248,4 +254,45 @@ async fn stdio_terminal_capabilities(lua: Lua, (): ()) -> LuaResult<LuaTable> {
     TableBuilder::new(lua)?
         .with_value("ForegroundOpacity", supported)?
         .build_readonly()
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use mlua_luau_scheduler::Scheduler;
+
+    #[test]
+    fn input_sources_select_shared_console_or_redirected_ownership() {
+        assert!(Arc::ptr_eq(input_gate(true), &INPUT_GATE));
+        assert!(Arc::ptr_eq(input_gate(false), &REDIRECTED_INPUT_GATE));
+        assert!(!Arc::ptr_eq(input_gate(true), input_gate(false)));
+    }
+
+    #[test]
+    fn console_reads_exclude_prompts_but_redirected_reads_do_not() {
+        for console in [false, true] {
+            let lua = Lua::new();
+            let scheduler = Scheduler::new(lua.clone());
+            lua.globals().set("console", console).unwrap();
+            lua.globals()
+                .set(
+                    "read",
+                    lua.create_async_function(move |lua, ()| async move {
+                        let cancellation = terminal::InputCancellation::default();
+                        let _input =
+                            acquire_input(&cancellation, input_gate(console), &lua, || {}).await?;
+                        Ok(INPUT_GATE.try_lock_arc().is_none())
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            scheduler
+                .push_thread_front(lua.load("assert(read() == console); verified = true"), ())
+                .unwrap();
+            futures_lite::future::block_on(scheduler.run());
+            assert!(lua.globals().get::<bool>("verified").unwrap());
+            assert!(INPUT_GATE.try_lock_arc().is_some());
+            assert!(REDIRECTED_INPUT_GATE.try_lock_arc().is_some());
+        }
+    }
 }
