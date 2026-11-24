@@ -36,6 +36,9 @@ jobs:
       - name: Check Formatting
         run: ./scripts/format-check.sh
 
+      - name: Test workflow helpers
+        run: bash .github/workflows/helpers/test-helpers.sh
+
   analyze:
     needs: ["fmt"]
     name: Analyze and lint Luau files
@@ -56,27 +59,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Windows x86_64
+          - name: Windows x64
             runner-os: windows-2022
             cargo-target: x86_64-pc-windows-msvc
 
-          - name: Windows aarch64
+          - name: Windows arm64
             runner-os: windows-11-arm
             cargo-target: aarch64-pc-windows-msvc
 
-          - name: Linux x86_64
+          - name: Linux x64
             runner-os: ubuntu-22.04
             cargo-target: x86_64-unknown-linux-gnu
 
-          - name: Linux aarch64
+          - name: Linux arm64
             runner-os: ubuntu-22.04-arm
             cargo-target: aarch64-unknown-linux-gnu
 
-          - name: macOS x86_64
+          - name: macOS x64
             runner-os: macos-15
             cargo-target: x86_64-apple-darwin
 
-          - name: macOS aarch64
+          - name: macOS arm64
             runner-os: macos-15
             cargo-target: aarch64-apple-darwin
 
@@ -101,20 +104,17 @@ jobs:
         run: cargo binstall cargo-nextest --locked
 
       - name: Build
-        run: |
-          cargo build --workspace \
-          --locked --all-features \
-          --target ${{ matrix.cargo-target }}
+        env:
+          WORKFLOW_MATRIX_CARGO_TARGET: ${{ matrix.cargo-target }}
+        run: bash --noprofile --norc -e -o pipefail "$GITHUB_WORKSPACE/.github/workflows/helpers/build.sh"
 
       - name: Lint
         if: github.repository == 'lune-org/lune'
-        run: |
-          cargo clippy --workspace \
-          --locked --all-features \
-          --target ${{ matrix.cargo-target }}
+        env:
+          WORKFLOW_MATRIX_CARGO_TARGET: ${{ matrix.cargo-target }}
+        run: bash --noprofile --norc -e -o pipefail "$GITHUB_WORKSPACE/.github/workflows/helpers/lint.sh"
 
       - name: Test
-        run: |
-          cargo nextest run --workspace --no-fail-fast \
-          --locked --all-features \
-          --target ${{ matrix.cargo-target }}
+        env:
+          WORKFLOW_MATRIX_CARGO_TARGET: ${{ matrix.cargo-target }}
+        run: bash --noprofile --norc -e -o pipefail "$GITHUB_WORKSPACE/.github/workflows/helpers/test.sh"
