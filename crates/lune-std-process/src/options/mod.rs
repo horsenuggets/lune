@@ -21,6 +21,7 @@ pub(super) use stdio::*;
 pub(super) struct ProcessSpawnOptions {
     pub cwd: Option<PathBuf>,
     pub envs: HashMap<String, String>,
+    pub inherit_stdin: bool,
     pub shell: Option<String>,
     pub owned_tree: bool,
     pub stdio: ProcessSpawnOptionsStdio,
@@ -126,6 +127,16 @@ impl FromLua for ProcessSpawnOptions {
             This may optionally contain configuration for any or all of: stdin, stdout, stderr
         */
         this.stdio = value.get("stdio")?;
+        this.inherit_stdin = match value.get("inheritStdin")? {
+            LuaValue::Nil => false,
+            LuaValue::Boolean(value) => value,
+            value => {
+                return Err(LuaError::runtime(format!(
+                    "Invalid type for option 'inheritStdin' - expected boolean, got '{}'",
+                    value.type_name()
+                )));
+            }
+        };
         this.owned_tree = match value.get("ownedTree")? {
             LuaValue::Nil => false,
             LuaValue::Boolean(value) => value,
@@ -178,5 +189,57 @@ impl ProcessSpawnOptions {
         }
 
         cmd
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inherit_stdin_defaults_to_false() -> LuaResult<()> {
+        let lua = Lua::new();
+        for source in ["return nil", "return {}"] {
+            let options = lua.load(source).eval::<ProcessSpawnOptions>()?;
+            assert!(!options.inherit_stdin);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn inherit_stdin_accepts_booleans() -> LuaResult<()> {
+        let lua = Lua::new();
+        for expected in [false, true] {
+            let options = lua
+                .load(format!("return {{ inheritStdin = {expected} }}"))
+                .eval::<ProcessSpawnOptions>()?;
+            assert_eq!(options.inherit_stdin, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn inherit_stdin_rejects_non_booleans() {
+        let lua = Lua::new();
+        for value in [
+            "0",
+            "1",
+            "'true'",
+            "'false'",
+            "'inherit'",
+            "{}",
+            "function() end",
+            "buffer.create(0)",
+        ] {
+            let error = lua
+                .load(format!("return {{ inheritStdin = {value} }}"))
+                .eval::<ProcessSpawnOptions>()
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("Invalid type for option 'inheritStdin' - expected boolean"),
+                "Unexpected error for {value}. {error}"
+            );
+        }
     }
 }

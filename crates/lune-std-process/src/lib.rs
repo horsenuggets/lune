@@ -103,7 +103,14 @@ async fn process_exec(
     let stdout = options.stdio.stdout;
     let stderr = options.stdio.stderr;
 
-    let stdin_stdio = if stdin.is_some() {
+    let stdin_stdio = if options.inherit_stdin {
+        if stdin.is_some() {
+            return Err(LuaError::runtime(
+                "inheritStdin cannot be combined with stdio.stdin",
+            ));
+        }
+        Stdio::inherit()
+    } else if stdin.is_some() {
         Stdio::piped()
     } else {
         Stdio::null()
@@ -123,6 +130,11 @@ fn process_create(
     lua: &Lua,
     (program, args, options): (String, ProcessArgs, ProcessSpawnOptions),
 ) -> LuaResult<LuaValue> {
+    if options.inherit_stdin {
+        return Err(LuaError::runtime(
+            "inheritStdin is only supported by process.exec",
+        ));
+    }
     if options.owned_tree {
         return create::Child::new_owned(lua, options.into_std_command(program, args))?
             .into_lua(lua);
