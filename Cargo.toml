@@ -19,6 +19,7 @@ members = [
     "crates/lune-std-task",
     "crates/lune-utils",
     "crates/mlua-luau-scheduler",
+    "vendor/console",
 ]
 
 # Profile for building the release binary, with the following options set:
@@ -71,6 +72,8 @@ needless_pass_by_value = { level = "allow", priority = 1 }
 wildcard_imports = { level = "allow", priority = 1 }
 
 [patch.crates-io]
+# Preserve terminal-query typeahead in every interactive prompt.
+console = { path = "vendor/console" }
 # Build reviewed Luau 742 sources with instruction-boundary coverage collection.
 luau0-src = { git = "https://github.com/horsenuggets/luau", rev = "366410e9034b9d074fcafad83d8a039eaaa8f62d" }
 # Shares identical property maps between parsed documents while keeping published
