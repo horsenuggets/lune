@@ -44,6 +44,10 @@ impl<T: Clone> Completion<T> {
         }
     }
 
+    fn succeeded(&self) -> bool {
+        matches!(self.result.lock().unwrap().as_ref(), Some(Ok(_)))
+    }
+
     async fn wait(&self) -> io::Result<T> {
         // Closing, not sending, broadcasts to every current and future waiter.
         let _ = self.rx.recv().await;
@@ -127,9 +131,7 @@ impl OwnedProcess {
             lua.set_app_data(Registry::default());
         }
         let registry = lua.app_data_ref::<Registry>().unwrap();
-        let mut owners = registry.0.lock().unwrap();
-        owners.retain(|entry| !entry.terminated.tx.is_closed());
-        owners.push(Registration {
+        registry.register(Registration {
             owner: Arc::downgrade(&self.0),
             terminated: Arc::clone(&self.0.terminated),
         });
@@ -215,6 +217,15 @@ struct Registration {
 #[derive(Clone, Default)]
 struct Registry(Arc<Mutex<Vec<Registration>>>);
 
+impl Registry {
+    fn register(&self, registration: Registration) {
+        let mut owners = self.0.lock().unwrap();
+        // Failed completions remain pending until shutdown reports them.
+        owners.retain(|entry| !entry.terminated.succeeded());
+        owners.push(registration);
+    }
+}
+
 /// A runtime run's cancellation guard. Dropping it requests cleanup without waiting
 /// on the executor that is being destroyed. Normal completion can await shutdown.
 pub struct OwnedProcessScope(Registry);
@@ -228,6 +239,9 @@ impl OwnedProcessScope {
     ///
     /// # Errors
     /// Returns the first native termination or monitoring error, after all cleanups finish.
+    ///
+    /// # Panics
+    /// Panics if the owned-process registry mutex was poisoned.
     pub async fn shutdown(&self) -> io::Result<()> {
         let registrations = self.registrations();
         for entry in &registrations {
@@ -238,11 +252,18 @@ impl OwnedProcessScope {
         let mut result = Ok(());
         // Include handles already collected by Lua. Their drop requested cleanup,
         // but a runtime must still wait for their worker to finish reaping.
-        for entry in registrations {
+        for entry in &registrations {
             if let Err(error) = entry.terminated.wait().await {
                 result = result.and(Err(error));
             }
         }
+        // Retire only after every result is collected, with no intervening await.
+        // A canceled shutdown must leave unreported errors for its successor.
+        self.0.0.lock().unwrap().retain(|entry| {
+            !registrations
+                .iter()
+                .any(|reported| Arc::ptr_eq(&entry.terminated, &reported.terminated))
+        });
         result
     }
 }
@@ -372,19 +393,15 @@ enum GroupState {
 #[cfg(unix)]
 impl Group {
     fn spawn() -> io::Result<Self> {
+        Self::spawn_with_closer(close_inherited_fds)
+    }
+
+    fn spawn_with_closer(close: unsafe fn(libc::c_int) -> bool) -> io::Result<Self> {
         use std::os::fd::AsRawFd;
         use std::os::unix::net::UnixStream;
         let (reader, writer) = UnixStream::pair()?;
         let control = reader.as_raw_fd();
-        // Determine the descriptor ceiling before fork. The child must not retain
-        // another process's pipes, nor call an allocator or a Rust lock after fork.
-        let max_fd = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
-        if max_fd <= 0 || max_fd > libc::c_long::from(i32::MAX) {
-            return Err(io::Error::other(
-                "Could not determine the descriptor ceiling",
-            ));
-        }
-        let pid = fork_supervisor(control, max_fd as libc::c_int)?;
+        let pid = fork_supervisor(control, close)?;
         drop(reader);
         let mut group = Self {
             pid,
@@ -503,7 +520,10 @@ impl Drop for Group {
 }
 
 #[cfg(unix)]
-fn fork_supervisor(control: libc::c_int, max_fd: libc::c_int) -> io::Result<libc::pid_t> {
+fn fork_supervisor(
+    control: libc::c_int,
+    close: unsafe fn(libc::c_int) -> bool,
+) -> io::Result<libc::pid_t> {
     // Block before fork, not afterwards. Otherwise a signal could run an inherited
     // application handler in the child in the interval before it blocks signals.
     // SAFETY: valid sigset_t storage and pthread_sigmask only changes this thread.
@@ -521,7 +541,7 @@ fn fork_supervisor(control: libc::c_int, max_fd: libc::c_int) -> io::Result<libc
     // Rust destructors, allocation, logging, synchronization, or inherited handlers.
     let pid = unsafe { libc::fork() };
     if pid == 0 {
-        unsafe { supervisor(control, max_fd) }
+        unsafe { supervisor(control, close) }
     }
     let spawn_error = (pid == -1).then(io::Error::last_os_error);
     let error = unsafe {
@@ -544,16 +564,145 @@ fn fork_supervisor(control: libc::c_int, max_fd: libc::c_int) -> io::Result<libc
     Ok(pid)
 }
 
+// These native calls do not consult RLIMIT_NOFILE and do not allocate or take
+// user-space locks after fork. Failure prevents the readiness acknowledgment.
+#[cfg(target_os = "linux")]
+unsafe fn close_inherited_fds(control: libc::c_int) -> bool {
+    unsafe {
+        let lower = control == 0
+            || libc::syscall(libc::SYS_close_range, 0_u32, control as u32 - 1, 0_u32) == 0;
+        let upper = libc::syscall(libc::SYS_close_range, control as u32 + 1, u32::MAX, 0_u32) == 0;
+        if lower && upper {
+            return true;
+        }
+        close_procfs_fds(control)
+    }
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn close_procfs_fds(control: libc::c_int) -> bool {
+    unsafe {
+        // Older kernels can enumerate their actual descriptor table through procfs.
+        let directory = libc::open(
+            c"/proc/self/fd".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        );
+        if directory < 0 {
+            return false;
+        }
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let bytes = libc::syscall(
+                libc::SYS_getdents64,
+                directory,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+            );
+            if bytes < 0 {
+                if errno::errno().0 == libc::EINTR {
+                    continue;
+                }
+                libc::close(directory);
+                return false;
+            }
+            if bytes == 0 {
+                libc::close(directory);
+                return true;
+            }
+            let mut offset = 0;
+            while offset < bytes as usize {
+                let length = usize::from(u16::from_ne_bytes([
+                    buffer[offset + 16],
+                    buffer[offset + 17],
+                ]));
+                let mut fd = 0_i32;
+                let mut numeric = false;
+                for &byte in &buffer[offset + 19..offset + length] {
+                    if byte == 0 {
+                        break;
+                    }
+                    if !byte.is_ascii_digit() {
+                        numeric = false;
+                        break;
+                    }
+                    numeric = true;
+                    fd *= 10;
+                    fd += i32::from(byte - b'0');
+                }
+                if numeric && fd != control && fd != directory {
+                    libc::close(fd);
+                }
+                offset += length;
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn close_inherited_fds(control: libc::c_int) -> bool {
+    unsafe {
+        let mut descriptors: [libc::proc_fdinfo; 64] = std::mem::zeroed();
+        loop {
+            // proc_pidinfo is a thin wrapper around the proc_info system call.
+            // Repeated bounded batches cover descriptors above lowered soft limits.
+            let bytes = libc::proc_pidinfo(
+                libc::getpid(),
+                libc::PROC_PIDLISTFDS,
+                0,
+                descriptors.as_mut_ptr().cast(),
+                std::mem::size_of_val(&descriptors) as libc::c_int,
+            );
+            if bytes <= 0 {
+                return false;
+            }
+            let count = bytes as usize / std::mem::size_of::<libc::proc_fdinfo>();
+            for descriptor in &descriptors[..count] {
+                if descriptor.proc_fd != control {
+                    libc::close(descriptor.proc_fd);
+                }
+            }
+            if count < descriptors.len() {
+                return true;
+            }
+        }
+    }
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+unsafe fn close_inherited_fds(control: libc::c_int) -> bool {
+    #[cfg(any(
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ))]
+    unsafe {
+        for fd in 0..control {
+            libc::close(fd);
+        }
+        libc::closefrom(control + 1);
+        true
+    }
+    #[cfg(not(any(
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    )))]
+    {
+        let _ = control;
+        false
+    }
+}
+
 #[cfg(unix)]
-unsafe fn supervisor(control: libc::c_int, max_fd: libc::c_int) -> ! {
+unsafe fn supervisor(control: libc::c_int, close: unsafe fn(libc::c_int) -> bool) -> ! {
     unsafe {
         if libc::setpgid(0, 0) == -1 {
             libc::_exit(1);
         }
-        for fd in 0..max_fd {
-            if fd != control {
-                libc::close(fd);
-            }
+        if !close(control) {
+            libc::_exit(3);
         }
         let mut byte = 0_u8;
         // Notify the parent that inherited descriptors have all been closed.
@@ -699,6 +848,46 @@ mod tests {
     }
 
     #[test]
+    fn registration_keeps_failures_until_shutdown_reports_them() {
+        futures_lite::future::block_on(async {
+            let registry = Registry::default();
+            let failed = Arc::new(Completion::new());
+            failed.publish(Err(io::Error::other("unreported cleanup failure")));
+            let successful = Arc::new(Completion::new());
+            successful.publish(Ok(()));
+            let pending = Arc::new(Completion::new());
+            for terminated in [&failed, &successful, &pending] {
+                registry.register(Registration {
+                    owner: Weak::new(),
+                    terminated: Arc::clone(terminated),
+                });
+            }
+            assert_eq!(registry.0.lock().unwrap().len(), 2);
+            let scope = OwnedProcessScope(registry.clone());
+            {
+                let shutdown = scope.shutdown();
+                futures_lite::pin!(shutdown);
+                assert!(
+                    futures_lite::future::poll_once(shutdown.as_mut())
+                        .await
+                        .is_none()
+                );
+            }
+            // Cancellation after collecting the first error must not consume it.
+            assert_eq!(registry.0.lock().unwrap().len(), 2);
+            pending.publish(Ok(()));
+            assert_eq!(
+                scope.shutdown().await.unwrap_err().to_string(),
+                "unreported cleanup failure"
+            );
+            assert!(registry.0.lock().unwrap().is_empty());
+            assert!(scope.shutdown().await.is_ok());
+            // Explicit handle-style completion reads still retain the original error.
+            assert!(failed.wait().await.is_err());
+        });
+    }
+
+    #[test]
     fn completion_broadcasts_and_caches_errors() {
         futures_lite::future::block_on(async {
             let completion = Completion::<()>::new();
@@ -713,6 +902,86 @@ mod tests {
                 assert_eq!(error.to_string(), "controlled error");
             }
         });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_lowered_descriptor_limit_fixture() {
+        use std::io::Read;
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        use std::os::unix::net::UnixStream;
+        if std::env::var_os("LUNE_OWNED_LOWERED_LIMIT_FIXTURE").is_none() {
+            return;
+        }
+        thread::spawn(|| {
+            thread::sleep(Duration::from_secs(5));
+            std::process::exit(79);
+        });
+        let (mut reader, writer) = UnixStream::pair().unwrap();
+        reader
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let descriptor = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 128) };
+        assert!(descriptor >= 128);
+        let inherited = unsafe { OwnedFd::from_raw_fd(descriptor) };
+        let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) },
+            0
+        );
+        limit.rlim_cur = 64;
+        assert_eq!(
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) },
+            0
+        );
+        #[cfg(target_os = "linux")]
+        let group = if std::env::var_os("LUNE_OWNED_PROCFS_FIXTURE").is_some() {
+            Group::spawn_with_closer(close_procfs_fds).unwrap()
+        } else {
+            Group::spawn().unwrap()
+        };
+        #[cfg(not(target_os = "linux"))]
+        let group = Group::spawn().unwrap();
+        drop(writer);
+        drop(inherited);
+        let result = reader.read(&mut [0_u8]);
+        drop(group);
+        assert_eq!(
+            result.unwrap(),
+            0,
+            "the supervisor retained a high pipe writer"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn supervisor_closes_descriptors_above_a_lowered_soft_limit() {
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "create::owned::tests::owned_lowered_descriptor_limit_fixture",
+                "--nocapture",
+            ])
+            .env("LUNE_OWNED_LOWERED_LIMIT_FIXTURE", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn procfs_fallback_closes_descriptors_above_a_lowered_soft_limit() {
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "create::owned::tests::owned_lowered_descriptor_limit_fixture",
+                "--nocapture",
+            ])
+            .env("LUNE_OWNED_LOWERED_LIMIT_FIXTURE", "1")
+            .env("LUNE_OWNED_PROCFS_FIXTURE", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
 
     #[cfg(unix)]
