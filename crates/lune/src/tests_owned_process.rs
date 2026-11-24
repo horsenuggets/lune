@@ -85,18 +85,7 @@ fn process_owned_fixture() -> Result<()> {
         return Ok(());
     }
     if role == "stdin" {
-        let expected = b"owned stdin payload\0\n".repeat(8192);
-        let mut received = vec![0_u8; expected.len()];
-        io::stdin().read_exact(&mut received)?;
-        assert_eq!(received, expected);
-        io::stdout().write_all(b"Owned stdin payload received.\n")?;
-        io::stdout().flush()?;
-        let mut trailing = Vec::new();
-        io::stdin().read_to_end(&mut trailing)?;
-        assert!(trailing.is_empty());
-        io::stdout().write_all(&received)?;
-        io::stderr().write_all(b"Owned stdin EOF received.")?;
-        return Ok(());
+        return stdin_fixture();
     }
     if role == "launcher" || role == "early" {
         Command::new(std::env::current_exe()?)
@@ -117,10 +106,9 @@ fn process_owned_fixture() -> Result<()> {
     let mut iteration = 0_u64;
     while start.elapsed() < Duration::from_secs(25) {
         if role == "grandchild" || role == "unrelated" {
-            fs::write(
-                directory.join(format!("{role}-heartbeat")),
-                iteration.to_string(),
-            )?;
+            let staged = directory.join(format!("{role}-heartbeat.tmp"));
+            fs::write(&staged, iteration.to_string())?;
+            fs::rename(staged, directory.join(format!("{role}-heartbeat")))?;
             iteration += 1;
         } else if role == "output" {
             io::stdout().write_all(&[b'O'; 4096])?;
@@ -130,6 +118,21 @@ fn process_owned_fixture() -> Result<()> {
         // In particular, blocked-stdin never reads its input.
         thread::sleep(Duration::from_millis(10));
     }
+    Ok(())
+}
+
+fn stdin_fixture() -> Result<()> {
+    let expected = b"owned stdin payload\0\n".repeat(8192);
+    let mut received = vec![0_u8; expected.len()];
+    io::stdin().read_exact(&mut received)?;
+    assert_eq!(received, expected);
+    io::stdout().write_all(b"Owned stdin payload received.\n")?;
+    io::stdout().flush()?;
+    let mut trailing = Vec::new();
+    io::stdin().read_to_end(&mut trailing)?;
+    assert!(trailing.is_empty());
+    io::stdout().write_all(&received)?;
+    io::stderr().write_all(b"Owned stdin EOF received.")?;
     Ok(())
 }
 
@@ -200,7 +203,13 @@ fn process_owned_owner_shutdown() -> Result<()> {
     for ending in ["return", "exit", "error"] {
         let directory = tempfile::tempdir()?;
         async_io::block_on(async {
-            let mut runtime = runtime(directory.path())?;
+            let mut lua = None;
+            let mut runtime =
+                runtime(directory.path())?.with_lib("@test/retained-handle", |state| {
+                    lua = Some(state.clone());
+                    Ok(LuaValue::Nil)
+                })?;
+            let lua = lua.unwrap();
             let source = format!(
                 r#"
                 const process = require("@lune/process")
@@ -214,6 +223,7 @@ fn process_owned_owner_shutdown() -> Result<()> {
                     assert(os.clock() < deadline)
                     task.wait(0.01)
                 end
+                assert(_G.AbandonedOwnedProcess:status().ok)
                 {}
             "#,
                 match ending {
@@ -226,16 +236,22 @@ fn process_owned_owner_shutdown() -> Result<()> {
             assert_eq!(result.success(), ending != "error");
             // The global deliberately retains the handle, ruling out incidental GC.
             assert_heartbeat_stopped(directory.path(), "grandchild")?;
-            let result = runtime
-                .run_custom(
-                    "owned-after-shutdown",
-                    r"
+            // An exited scheduler retains its exit event. Await the cached methods
+            // directly so process.exit cannot silently skip these assertions.
+            lua.load(
+                r"
                 _G.AbandonedOwnedProcess:terminateTree()
                 assert(_G.AbandonedOwnedProcess:status().ok)
-            ",
-                )
-                .await?;
-            assert!(result.success());
+                _G.CheckedRetainedHandle = true
+                ",
+            )
+            .exec_async()
+            .await?;
+            assert!(
+                lua.globals()
+                    .get::<LuaTable>("_G")?
+                    .get::<bool>("CheckedRetainedHandle")?
+            );
             Ok::<_, anyhow::Error>(())
         })?;
     }
