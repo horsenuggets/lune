@@ -15,6 +15,8 @@ enum ChildReaderInner {
     None,
     Stdout(AsyncChildStdout),
     Stderr(AsyncChildStderr),
+    OwnedStdout(blocking::Unblock<std::process::ChildStdout>),
+    OwnedStderr(blocking::Unblock<std::process::ChildStderr>),
 }
 
 impl ChildReaderInner {
@@ -29,6 +31,8 @@ impl ChildReaderInner {
             ChildReaderInner::None => unreachable!(),
             ChildReaderInner::Stdout(stdout) => stdout.read(&mut buf).await?,
             ChildReaderInner::Stderr(stderr) => stderr.read(&mut buf).await?,
+            ChildReaderInner::OwnedStdout(stdout) => stdout.read(&mut buf).await?,
+            ChildReaderInner::OwnedStderr(stderr) => stderr.read(&mut buf).await?,
         };
 
         buf.truncate(read);
@@ -46,6 +50,12 @@ impl ChildReaderInner {
                 io::copy(stdout, &mut buf).await?;
             }
             ChildReaderInner::Stderr(stderr) => {
+                io::copy(stderr, &mut buf).await?;
+            }
+            ChildReaderInner::OwnedStdout(stdout) => {
+                io::copy(stdout, &mut buf).await?;
+            }
+            ChildReaderInner::OwnedStderr(stderr) => {
                 io::copy(stderr, &mut buf).await?;
             }
         }
@@ -75,6 +85,18 @@ impl From<Option<AsyncChildStdout>> for ChildReaderInner {
 impl From<Option<AsyncChildStderr>> for ChildReaderInner {
     fn from(stderr: Option<AsyncChildStderr>) -> Self {
         stderr.map_or(Self::None, Into::into)
+    }
+}
+
+impl From<std::process::ChildStdout> for ChildReaderInner {
+    fn from(stdout: std::process::ChildStdout) -> Self {
+        Self::OwnedStdout(blocking::Unblock::with_capacity(8192, stdout))
+    }
+}
+
+impl From<std::process::ChildStderr> for ChildReaderInner {
+    fn from(stderr: std::process::ChildStderr) -> Self {
+        Self::OwnedStderr(blocking::Unblock::with_capacity(8192, stderr))
     }
 }
 

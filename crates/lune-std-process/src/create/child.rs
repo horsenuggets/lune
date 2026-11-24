@@ -2,22 +2,30 @@ use std::process::ExitStatus;
 
 use async_channel::{Receiver, Sender, unbounded};
 use async_process::Child as AsyncChild;
-use futures_util::{FutureExt, select};
+use futures_util::{FutureExt, future::Either, select};
 
 use mlua::prelude::*;
 use mlua_luau_scheduler::LuaSpawnExt;
 
 use lune_utils::TableBuilder;
 
-use super::{ChildReader, ChildWriter};
+use super::{ChildReader, ChildWriter, owned::OwnedProcess};
 
 #[derive(Debug, Clone)]
 pub struct Child {
     stdin: ChildWriter,
     stdout: ChildReader,
     stderr: ChildReader,
-    kill_tx: Sender<()>,
-    status_rx: Receiver<Option<ExitStatus>>,
+    backend: Backend,
+}
+
+#[derive(Debug, Clone)]
+enum Backend {
+    Ordinary {
+        kill_tx: Sender<()>,
+        status_rx: Receiver<Option<ExitStatus>>,
+    },
+    Owned(OwnedProcess),
 }
 
 impl Child {
@@ -36,9 +44,19 @@ impl Child {
             stdin,
             stdout,
             stderr,
-            kill_tx,
-            status_rx,
+            backend: Backend::Ordinary { kill_tx, status_rx },
         }
+    }
+
+    pub fn new_owned(lua: &Lua, command: std::process::Command) -> std::io::Result<Self> {
+        let (owned, stdin, stdout, stderr) = OwnedProcess::spawn(command)?;
+        owned.register(lua);
+        Ok(Self {
+            stdin,
+            stdout,
+            stderr,
+            backend: Backend::Owned(owned),
+        })
     }
 }
 
@@ -51,13 +69,35 @@ impl LuaUserData for Child {
 
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("kill", |_, this, (): ()| {
-            let _ = this.kill_tx.try_send(());
+            match &this.backend {
+                Backend::Ordinary { kill_tx, .. } => {
+                    let _ = kill_tx.try_send(());
+                }
+                Backend::Owned(owned) => owned.kill(),
+            }
             Ok(())
         });
-        methods.add_async_method("status", |lua, this, (): ()| {
-            let rx = this.status_rx.clone();
+        methods.add_async_method("terminateTree", |_, this, (): ()| {
+            let backend = this.backend.clone();
             async move {
-                let status = rx.recv().await.ok().flatten();
+                match backend {
+                    Backend::Owned(owned) => owned.terminate().await.into_lua_err(),
+                    Backend::Ordinary { .. } => Err(LuaError::runtime(
+                        "terminateTree requires process.create with ownedTree set to true",
+                    )),
+                }
+            }
+        });
+        methods.add_async_method("status", |lua, this, (): ()| {
+            let source = match &this.backend {
+                Backend::Ordinary { status_rx, .. } => Either::Left(status_rx.clone()),
+                Backend::Owned(owned) => Either::Right(owned.clone()),
+            };
+            async move {
+                let status = match source {
+                    Either::Left(status_rx) => status_rx.recv().await.ok().flatten(),
+                    Either::Right(owned) => Some(owned.status().await.into_lua_err()?),
+                };
                 let code = status.and_then(|c| c.code()).unwrap_or(9);
                 TableBuilder::new(lua.clone())?
                     .with_value("ok", code == 0)?

@@ -59,11 +59,17 @@ export type ExecOptions = {
 
 	* `cwd` - The current working directory for the process
 	* `env` - Extra environment variables to give to the process
+	* `ownedTree` - Opt in to a private Unix process group or Windows Job Object.
+	  Ownership remains valid when a launcher exits before its descendants. Descendants
+	  that deliberately detach from the group or escape the job are outside this boundary.
+	  The known direct child is still terminated if it moves out of its Unix group.
+	  Dropping the child handle or ending its runtime run terminates the owned tree.
 	* `shell` - Whether to run in a shell or not - set to `true` to run using the default shell, or a string to run using a specific shell
 ]=]
 export type CreateOptions = {
 	cwd: string?,
 	env: { [string]: string }?,
+	ownedTree: boolean?,
 	shell: (boolean | string)?,
 }
 
@@ -143,13 +149,23 @@ end
 	* `stdout` - A reader to read from the child process' stdout - see `ChildProcessReader` for more info
 	* `stderr` - A reader to read from the child process' stderr - see `ChildProcessReader` for more info
 	* `kill` - A method that kills the child process
-	* `status` - A method that yields and returns the exit status of the child process
+	* `status` - A method that yields and returns the exit status of the child process.
+	  Owned handles cache this result for concurrent and repeated calls. A tiny native
+	  Unix supervisor reserves the group identity independently of the direct child.
+	  Native monitoring errors are propagated.
+	* `terminateTree` - Requires `ownedTree = true`. Forcibly terminates the entire owned
+	  group or job, closes stdin, and yields until the direct child is actually reaped.
+	  Concurrent and repeated calls share the same completion, including native errors.
+	  Canceling a waiter does not cancel cleanup. Ordinary handles reject this method.
+	  This method does not consume stdout or stderr. Keep both readers draining alongside
+	  status and termination, then await both readers before returning from cancellation.
 ]=]
 export type ChildProcess = {
 	stdin: typeof(ChildProcessWriter),
 	stdout: typeof(ChildProcessReader),
 	stderr: typeof(ChildProcessReader),
 	kill: (self: ChildProcess) -> (),
+	terminateTree: (self: ChildProcess) -> (),
 	status: (self: ChildProcess) -> {
 		ok: boolean,
 		code: number,
