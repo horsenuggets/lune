@@ -1,3 +1,4 @@
+const CoverageFixture = require("../luau/coverage_fixture")
 const actor = require("@lune/actor")
 
 -- Actors return their raw coverage data, so owners can merge it exactly
@@ -6,8 +7,10 @@ if not debug.iscoverageenabled() then
 	return
 end
 
-const ok, entries = actor.spawn("./workers/coverage.luau"):join()
-assert(ok, entries)
+const ok, result = actor.spawn("./workers/coverage.luau"):join()
+assert(ok, result)
+CoverageFixture.assertSnapshots(result.Snapshots)
+const entries = result.Measured
 assert(#entries > 0, "Coverage entries should be returned")
 
 local hits = 0
