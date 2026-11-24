@@ -23,6 +23,7 @@ pub async fn exec(
     if let Some(stdin) = stdin {
         let mut child_stdin = child.stdin.take().unwrap();
         child_stdin.write_all(&stdin).await.into_lua_err()?;
+        child_stdin.close().await.into_lua_err()?;
     }
 
     let res = wait_for_child(child, stdout, stderr).await?;
