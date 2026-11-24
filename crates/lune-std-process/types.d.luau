@@ -41,12 +41,16 @@ export type ExecStdioOptions = {
 
 	* `cwd` - The current working directory for the process
 	* `env` - Extra environment variables to give to the process
+	* `inheritStdin` - Inherit the parent's native stdin handle instead of providing EOF.
+	  Defaults to `false`. Cannot be combined with `stdio.stdin`, even an empty string or
+	  buffer. Only supported by `process.exec`, not `process.create`.
 	* `shell` - Whether to run in a shell or not - set to `true` to run using the default shell, or a string to run using a specific shell
 	* `stdio` - How to treat output and error streams from the child process - see `StdioKind` and `StdioOptions` for more info
 ]=]
 export type ExecOptions = {
 	cwd: string?,
 	env: { [string]: string }?,
+	inheritStdin: boolean?,
 	shell: (boolean | string)?,
 	stdio: (ExecStdioKind | ExecStdioOptions)?,
 }
