@@ -14,7 +14,6 @@ workspace = true
 
 [dependencies]
 async-io = "2.4"
-futures = { version = "0.3", default-features = false, features = ["std"] }
 futures-lite = "2.6"
 mlua = { version = "0.12.2", features = ["luau", "async"] }
 mlua-luau-scheduler = { version = "0.4.0", path = "../mlua-luau-scheduler" }

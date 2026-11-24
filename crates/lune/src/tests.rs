@@ -121,7 +121,7 @@ create_tests! {
 
 // Actor coverage runs serially like the other coverage tests, so that no test changes
 // LUNE_COVERAGE while the actor's runtime reads it.
-#[cfg(feature = "std-actor")]
+#[cfg(all(feature = "std-actor", feature = "std-luau"))]
 #[test]
 #[serial_test::serial]
 fn actor_coverage() -> Result<ExitCode> {
@@ -737,6 +737,13 @@ create_tests! {
     luau_load: "luau/load",
     luau_options: "luau/options",
     luau_safeenv: "luau/safeenv",
+}
+
+#[cfg(feature = "std-luau")]
+#[test]
+#[serial_test::serial]
+fn luau_coverage() -> Result<ExitCode> {
+    run_test_with_jit("luau/coverage", false)
 }
 
 #[cfg(feature = "std-net")]

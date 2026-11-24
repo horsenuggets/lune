@@ -67,7 +67,7 @@ fn expanded_names(workflow: &str) -> Vec<String> {
     for line in workflow.lines() {
         if let Some(name) = line.strip_prefix("    name: ") {
             if name.contains("${{ matrix.name }}") {
-                assert!(!rows.is_empty());
+                assert_ne!(rows, [] as [Vec<(&str, &str)>; 0]);
                 for row in &rows {
                     names.push(name.replace("${{ matrix.name }}", row[0].1));
                 }
