@@ -69,6 +69,41 @@ shellChild:terminateTree()
 shellChild.stdout:readToEnd()
 shellChild.stderr:readToEnd()
 
+-- Successful writes must reach the child before close, and close must deliver EOF.
+const input = spawn("stdin", true)
+const payload = string.rep("owned stdin payload\0\n", 8192)
+const acknowledgment = "Owned stdin payload received.\n"
+local echoed = ""
+local outputFinished = false
+local inputError = nil
+task.spawn(function()
+	while true do
+		const chunk = input.stdout:read()
+		if chunk == nil then
+			break
+		end
+		echoed ..= chunk
+	end
+	outputFinished = true
+end)
+task.spawn(function()
+	inputError = input.stderr:readToEnd()
+end)
+input.stdin:write(string.sub(payload, 1, 4097))
+input.stdin:write(string.sub(payload, 4098))
+waitUntil(function()
+	return string.find(echoed, acknowledgment, 1, true) ~= nil
+end)
+input.stdin:close()
+input.stdin:close()
+assert(input:status().ok)
+input:terminateTree()
+waitUntil(function()
+	return outputFinished and inputError ~= nil
+end)
+assert(string.find(echoed, acknowledgment .. payload, 1, true))
+assert(inputError == "Owned stdin EOF received.")
+
 for _, role in { "direct", "launcher", "early", "output", "blocked-stdin" } do
 	const previousHeartbeat = fixture.Read("grandchild-heartbeat")
 	const child = spawn(role, true)

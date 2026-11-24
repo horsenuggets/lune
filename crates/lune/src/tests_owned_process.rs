@@ -2,7 +2,7 @@
 
 use std::{
     fs,
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -69,6 +69,20 @@ fn process_owned_fixture() -> Result<()> {
             fs::canonicalize(std::env::current_dir()?)?,
             fs::canonicalize(directory)?
         );
+        return Ok(());
+    }
+    if role == "stdin" {
+        let expected = b"owned stdin payload\0\n".repeat(8192);
+        let mut received = vec![0_u8; expected.len()];
+        io::stdin().read_exact(&mut received)?;
+        assert_eq!(received, expected);
+        io::stdout().write_all(b"Owned stdin payload received.\n")?;
+        io::stdout().flush()?;
+        let mut trailing = Vec::new();
+        io::stdin().read_to_end(&mut trailing)?;
+        assert!(trailing.is_empty());
+        io::stdout().write_all(&received)?;
+        io::stderr().write_all(b"Owned stdin EOF received.")?;
         return Ok(());
     }
     if role == "launcher" || role == "early" {
