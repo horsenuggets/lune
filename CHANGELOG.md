@@ -8,6 +8,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.11.1-horse.17.1` - November 23rd, 2026
+
+### Changed
+
+- Release archives and workflow checks now use `x64` and `arm64` architecture names.
+  Compiler target triples, accepted build-target aliases and cached executable names
+  remain unchanged. Cross-build downloads also support historical `x86_64` and `aarch64`
+  archives, retrying those names only when the new-style archive returns HTTP 404.
+- Extracted workflow shell programs into tested helpers, retaining unprefixed release
+  tags, full-workspace tests and quoted output paths. Required checks stay synchronized
+  with the workflow names through Terraform.
+- Updated development tooling to the published Lune actor release and newer analyzer,
+  preserving the existing Wally version.
+
+### Fixed
+
+- Release tags now explicitly target the commit that built the published artifacts,
+  rather than whichever commit the default branch points to when publication finishes.
+
 ## `0.11.1-horse.17.0` - November 23rd, 2026
 
 ### Added
