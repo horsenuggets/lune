@@ -38,30 +38,30 @@ locals {
     main_checks = [
         "Analyze and lint Luau files",
         "Check formatting",
-        "CI - Linux aarch64",
-        "CI - Linux x86_64",
-        "CI - macOS aarch64",
-        "CI - macOS x86_64",
-        "CI - Windows aarch64",
-        "CI - Windows x86_64"
+        "CI - Linux arm64",
+        "CI - Linux x64",
+        "CI - macOS arm64",
+        "CI - macOS x64",
+        "CI - Windows arm64",
+        "CI - Windows x64"
     ]
 
     # Must match the job `name:` fields of every workflow that runs on PRs to release.
     release_checks = [
         "Analyze and lint Luau files",
-        "Build test - Linux aarch64",
-        "Build test - Linux x86_64",
-        "Build test - macOS aarch64",
-        "Build test - macOS x86_64",
-        "Build test - Windows aarch64",
-        "Build test - Windows x86_64",
+        "Build test - Linux arm64",
+        "Build test - Linux x64",
+        "Build test - macOS arm64",
+        "Build test - macOS x64",
+        "Build test - Windows arm64",
+        "Build test - Windows x64",
         "Check formatting",
-        "CI - Linux aarch64",
-        "CI - Linux x86_64",
-        "CI - macOS aarch64",
-        "CI - macOS x86_64",
-        "CI - Windows aarch64",
-        "CI - Windows x86_64",
+        "CI - Linux arm64",
+        "CI - Linux x64",
+        "CI - macOS arm64",
+        "CI - macOS x64",
+        "CI - Windows arm64",
+        "CI - Windows x64",
         "Validate PR title",
         "Validate version",
         "Verify diff matches main"
