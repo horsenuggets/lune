@@ -8,6 +8,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.11.1-horse.17.4` - November 24th, 2026
+
+### Added
+
+- Add opt-in `process.exec(..., { inheritStdin = true })` for interactive child tools
+  that need the parent's native stdin handle. Preserve default EOF and buffered input,
+  and reject conflicting input options before spawning.
+
+### Changed
+
+- Use the maintained StyLuau formatter and extension recommendations, including matching
+  ignore controls in the CFrame tests.
+
+### Fixed
+
+- Drain buffered child stdin before closing its writer, preventing lost input on Windows.
+  Consume child output concurrently with input writes to prevent full-duplex pipe
+  deadlocks. Cover native inheritance, binary input and large concurrent streams with
+  cross-platform, shell-free regression tests.
+
 ## `0.11.1-horse.17.3` - November 24th, 2026
 
 ### Changed
