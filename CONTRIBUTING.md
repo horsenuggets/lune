@@ -27,7 +27,7 @@
 3. Familiarize yourself with the codebase and the tools you will be using. Some important parts include:
    - The [mlua](https://crates.io/crates/mlua) library, which we use to interface with Luau.
    - Any [built-in libraries](https://github.com/lune-org/lune/tree/main/src/lune/builtins) that are relevant for your new feature. If you are making a new built-in library, refer to existing ones for structure and implementation details.
-   - Our toolchain, notably [StyLua](https://github.com/JohnnyMorganz/StyLua), [rustfmt](https://github.com/rust-lang/rustfmt), and [clippy](https://github.com/rust-lang/rust-clippy). If you do not use these tools there is a decent chance CI will fail on your pull request, blocking it from getting approved.
+   - Our toolchain, notably [StyLuau](https://github.com/horsenuggets/styluau), [rustfmt](https://github.com/rust-lang/rustfmt), and [clippy](https://github.com/rust-lang/rust-clippy). If you do not use these tools there is a decent chance CI will fail on your pull request, blocking it from getting approved.
 4. Write some code!
 5. Open a new GitHub pull request. A pull request for a feature must include:
    - A clear and concise description of the new feature or changes to the feature.

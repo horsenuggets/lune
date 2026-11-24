@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-stylua .lune crates scripts tests \
+styluau .lune crates scripts tests \
 	--glob "tests/**/*.luau" \
 	--glob "!tests/roblox/rbx-test-files/**" \
 	--check
