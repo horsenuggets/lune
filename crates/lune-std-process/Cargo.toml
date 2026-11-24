@@ -30,3 +30,14 @@ futures-lite = "2.6"
 futures-util = "0.3" # Needed for select! macro...
 
 lune-utils = { version = "0.4.0", path = "../lune-utils" }
+
+[target.'cfg(unix)'.dependencies]
+errno = { version = "0.3", default-features = false }
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+process-wrap = { version = "=11.0.0", default-features = false, features = [
+    "job-object",
+    "kill-on-drop",
+    "std",
+] }

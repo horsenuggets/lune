@@ -645,6 +645,10 @@ impl Runtime {
             chunk_cache.set(chunk_name.as_ref(), main_func.clone())?;
         }
 
+        // Also requests cleanup if this run future is canceled while the scheduler runs.
+        #[cfg(feature = "std-process")]
+        let owned_processes = lune_std::owned_process_scope(&self.lua);
+
         // Run it on our scheduler until it and any other spawned threads complete
         let main_thread_id = self.sched.push_thread_back(main_func, ())?;
         self.sched.run().await;
@@ -652,6 +656,12 @@ impl Runtime {
         // No actor may outlive the script that started it
         #[cfg(feature = "std-actor")]
         lune_std_actor::shutdown(&self.lua);
+
+        #[cfg(feature = "std-process")]
+        owned_processes
+            .shutdown()
+            .await
+            .map_err(LuaError::external)?;
 
         let main_thread_result = self.sched.get_thread_result(main_thread_id);
         let finished = main_thread_result.is_some();
