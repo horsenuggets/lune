@@ -17,6 +17,9 @@ pub use self::globals::script::{
 pub use self::globals::version::set_global_version;
 pub use self::library::LuneStandardLibrary;
 
+#[cfg(feature = "process")]
+pub use lune_std_process::owned_process_scope;
+
 /**
     Injects all standard globals into the given Lua state / VM.
 

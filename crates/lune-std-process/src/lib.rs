@@ -21,6 +21,8 @@ mod options;
 
 use self::options::ProcessSpawnOptions;
 
+pub use self::create::{OwnedProcessScope, owned_process_scope};
+
 const TYPEDEFS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/types.d.luau"));
 
 /**
@@ -92,6 +94,11 @@ async fn process_exec(
     lua: Lua,
     (program, args, mut options): (String, ProcessArgs, ProcessSpawnOptions),
 ) -> LuaResult<LuaTable> {
+    if options.owned_tree {
+        return Err(LuaError::runtime(
+            "ownedTree is only supported by process.create",
+        ));
+    }
     let stdin = options.stdio.stdin.take();
     let stdout = options.stdio.stdout;
     let stderr = options.stdio.stderr;
@@ -116,6 +123,10 @@ fn process_create(
     lua: &Lua,
     (program, args, options): (String, ProcessArgs, ProcessSpawnOptions),
 ) -> LuaResult<LuaValue> {
+    if options.owned_tree {
+        return create::Child::new_owned(lua, options.into_std_command(program, args))?
+            .into_lua(lua);
+    }
     let child = options
         .into_command(program, args)
         .stdin(Stdio::piped())

@@ -22,6 +22,7 @@ pub(super) struct ProcessSpawnOptions {
     pub cwd: Option<PathBuf>,
     pub envs: HashMap<String, String>,
     pub shell: Option<String>,
+    pub owned_tree: bool,
     pub stdio: ProcessSpawnOptionsStdio,
 }
 
@@ -125,6 +126,16 @@ impl FromLua for ProcessSpawnOptions {
             This may optionally contain configuration for any or all of: stdin, stdout, stderr
         */
         this.stdio = value.get("stdio")?;
+        this.owned_tree = match value.get("ownedTree")? {
+            LuaValue::Nil => false,
+            LuaValue::Boolean(value) => value,
+            value => {
+                return Err(LuaError::runtime(format!(
+                    "Invalid type for option 'ownedTree' - expected boolean, got '{}'",
+                    value.type_name()
+                )));
+            }
+        };
 
         Ok(this)
     }
@@ -132,6 +143,14 @@ impl FromLua for ProcessSpawnOptions {
 
 impl ProcessSpawnOptions {
     pub fn into_command(self, program: impl Into<OsString>, args: ProcessArgs) -> Command {
+        self.into_std_command(program, args).into()
+    }
+
+    pub fn into_std_command(
+        self,
+        program: impl Into<OsString>,
+        args: ProcessArgs,
+    ) -> std::process::Command {
         let mut program: OsString = program.into();
         let mut args = args.into_iter().collect::<Vec<_>>();
 
@@ -147,7 +166,7 @@ impl ProcessSpawnOptions {
         }
 
         // Create command with the wanted options
-        let mut cmd = Command::new(program);
+        let mut cmd = std::process::Command::new(program);
         cmd.args(args);
 
         // Set dir to run in and env variables

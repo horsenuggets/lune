@@ -857,6 +857,10 @@ fn process_exec_async() -> Result<()> {
     })
 }
 
+#[cfg(all(feature = "std-process", feature = "std-task"))]
+#[path = "tests_owned_process.rs"]
+mod owned_process;
+
 #[cfg(feature = "std-regex")]
 create_tests! {
     regex_general: "regex/general",
