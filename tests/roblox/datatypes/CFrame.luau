@@ -141,7 +141,7 @@ assert(CFrame.lookAt(lookFrom, lookFrom + lookDir, lookUp).LookVector:FuzzyEq(lo
 
 -- Angles
 
--- stylua: ignore start
+-- [styluau] ignore start
 assertEq(
 	CFrame.Angles(math.pi / 2, math.pi / 4, math.pi / 4),
 	CFrame.new(
@@ -151,7 +151,7 @@ assertEq(
 		0.707106769, 0.707106769, 0
 	)
 )
--- stylua: ignore end
+-- [styluau] ignore end
 
 -- TODO: More methods
 
