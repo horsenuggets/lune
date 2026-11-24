@@ -30,6 +30,19 @@ fn process_owned_fixture() -> Result<()> {
         std::process::exit(78);
     });
     let role = role.to_str().unwrap();
+    if role == "owner-pool" {
+        async_io::block_on(async {
+            let result = runtime(&directory)?
+                .run_custom(
+                    "owned-small-blocking-pool",
+                    include_str!("../../../tests/process/create/owned_tree.luau"),
+                )
+                .await?;
+            anyhow::ensure!(result.success(), "{}", result.errors.join("\n"));
+            Ok::<_, anyhow::Error>(())
+        })?;
+        return Ok(());
+    }
     if role == "owner-abrupt" {
         async_io::block_on(async {
             let mut runtime = runtime(&directory)?.with_lib("@test/native-exit", |lua| {
@@ -226,6 +239,25 @@ fn process_owned_owner_shutdown() -> Result<()> {
             Ok::<_, anyhow::Error>(())
         })?;
     }
+    Ok(())
+}
+
+#[test]
+fn process_owned_io_with_small_blocking_pool() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let status = Command::new(std::env::current_exe()?)
+        .args(["--exact", FIXTURE, "--nocapture"])
+        .env(DIRECTORY_ENV, directory.path())
+        .env(ROLE_ENV, "owner-pool")
+        .env("BLOCKING_MAX_THREADS", "2")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()?;
+    assert!(
+        status.success(),
+        "owned pipe I/O exhausted the shared blocking pool"
+    );
     Ok(())
 }
 

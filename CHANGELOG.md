@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Owned pipe readers and writers use dedicated, lazily started workers with bounded
+  channels, avoiding shared blocking-executor starvation while preserving backpressure.
 - Owned-process cleanup failures remain available until runtime shutdown reports them,
   without replaying old failures in later runs. Unix supervisors close inherited file
   descriptors even when their numbers exceed a subsequently lowered descriptor limit.
