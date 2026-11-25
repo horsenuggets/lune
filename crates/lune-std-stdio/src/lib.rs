@@ -1,7 +1,7 @@
 #![allow(clippy::cargo_common_metadata)]
 
 use std::{
-    io::{Stdin, stderr, stdin, stdout},
+    io::{IsTerminal, stderr, stdout},
     sync::{Arc, LazyLock},
 };
 
@@ -10,7 +10,7 @@ use mlua_luau_scheduler::LuaSpawnExt;
 
 use async_lock::Mutex as AsyncMutex;
 use blocking::Unblock;
-use futures_lite::{io::BufReader, prelude::*};
+use futures_lite::prelude::*;
 
 use lune_utils::{
     TableBuilder,
@@ -20,6 +20,9 @@ use lune_utils::{
 
 mod prompt;
 mod style_and_color;
+mod terminal;
+#[cfg(unix)]
+mod terminal_replies;
 
 use self::prompt::{PromptOptions, PromptResult, prompt};
 use self::style_and_color::{ColorKind, StyleKind};
@@ -28,11 +31,17 @@ const FORMAT_CONFIG: ValueFormatConfig = ValueFormatConfig::new()
     .with_max_depth(4)
     .with_colors_enabled(false);
 
-static STDIN: LazyLock<Arc<AsyncMutex<BufReader<Unblock<Stdin>>>>> = LazyLock::new(|| {
-    let stdin = Unblock::new(stdin());
-    let reader = BufReader::new(stdin);
-    Arc::new(AsyncMutex::new(reader))
-});
+static INPUT_GATE: LazyLock<Arc<AsyncMutex<()>>> = LazyLock::new(|| Arc::new(AsyncMutex::new(())));
+static REDIRECTED_INPUT_GATE: LazyLock<Arc<AsyncMutex<()>>> =
+    LazyLock::new(|| Arc::new(AsyncMutex::new(())));
+
+#[cfg(not(unix))]
+static STDIN: LazyLock<Arc<AsyncMutex<futures_lite::io::BufReader<Unblock<std::io::Stdin>>>>> =
+    LazyLock::new(|| {
+        Arc::new(AsyncMutex::new(futures_lite::io::BufReader::new(
+            Unblock::new(std::io::stdin()),
+        )))
+    });
 
 const TYPEDEFS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/types.d.luau"));
 
@@ -61,6 +70,7 @@ pub fn module(lua: Lua) -> LuaResult<LuaTable> {
         .with_async_function("readLine", stdio_read_line)?
         .with_async_function("readToEnd", stdio_read_to_end)?
         .with_async_function("prompt", stdio_prompt)?
+        .with_async_function("terminalCapabilities", stdio_terminal_capabilities)?
         .build_readonly()
 }
 
@@ -90,18 +100,144 @@ async fn stdio_ewrite(_: Lua, s: LuaString) -> LuaResult<()> {
     Ok(())
 }
 
-async fn stdio_read_line(lua: Lua, (): ()) -> LuaResult<LuaString> {
-    let mut string = String::new();
-    let mut handle = STDIN.lock_arc().await;
-    handle.read_line(&mut string).await?;
-    lua.create_string(&string)
+fn input_gate(terminal: bool) -> &'static Arc<AsyncMutex<()>> {
+    if terminal {
+        &INPUT_GATE
+    } else {
+        &REDIRECTED_INPUT_GATE
+    }
 }
 
+async fn acquire_input(
+    cancellation: &terminal::InputCancellation,
+    gate: &'static Arc<AsyncMutex<()>>,
+    lua: &Lua,
+    on_cancel: impl FnOnce() + 'static,
+) -> LuaResult<async_lock::MutexGuardArc<()>> {
+    use std::{cell::RefCell, rc::Rc, task::Poll};
+
+    let acquisition = Rc::new(RefCell::new(Some(Box::pin(gate.lock_arc()))));
+    let waiting = Rc::clone(&acquisition);
+    cancellation.monitor(lua, move || {
+        // A closed coroutine can retain its mutex waiter. Drop it independently,
+        // but leave any already-running worker's input ownership untouched.
+        waiting.borrow_mut().take();
+        on_cancel();
+    });
+    std::future::poll_fn(|context| {
+        let mut acquisition = acquisition.borrow_mut();
+        let Some(waiting) = acquisition.as_mut() else {
+            return Poll::Ready(Err(LuaError::runtime(
+                "Standard input operation was cancelled.",
+            )));
+        };
+        let result = waiting.as_mut().poll(context);
+        if result.is_ready() {
+            acquisition.take();
+        }
+        result.map(Ok)
+    })
+    .await
+}
+
+#[cfg(unix)]
+async fn read_unix(lua: Lua, to_end: bool) -> LuaResult<LuaString> {
+    use std::sync::{Mutex, atomic::Ordering};
+
+    let gate = input_gate(std::io::stdin().is_terminal());
+    let cancellation = terminal::InputCancellation::default();
+    let cancelled = cancellation.token();
+    let delivery = Arc::new(Mutex::new(None));
+    let abandoned = Arc::clone(&delivery);
+    let input = acquire_input(&cancellation, gate, &lua, move || {
+        abandoned
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    })
+    .await?;
+    let worker_delivery = Arc::clone(&delivery);
+    lua.spawn_blocking(move || {
+        let mut transaction = terminal::input_transaction(Arc::clone(&cancelled));
+        let result = if to_end {
+            terminal::read_to_end(&mut transaction)
+        } else {
+            terminal::read_line(&mut transaction).map(String::into_bytes)
+        };
+        // Tuple fields drop in order, rolling back bytes before releasing ownership.
+        let completed = (transaction, result, input);
+        let mut delivery = worker_delivery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !cancelled.load(Ordering::Acquire) {
+            *delivery = Some(completed);
+        }
+    })
+    .await;
+    let mut completed = delivery
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .ok_or_else(|| LuaError::runtime("Standard input read was cancelled."))?;
+    // Both successful input and errors are now delivered to the resumed caller.
+    // Only abandoned results should restore bytes for a subsequent read.
+    completed.0.commit();
+    lua.create_string(completed.1.into_lua_err()?)
+}
+
+#[cfg(unix)]
+async fn stdio_read_line(lua: Lua, (): ()) -> LuaResult<LuaString> {
+    read_unix(lua, false).await
+}
+
+#[cfg(any(not(unix), test))]
+async fn run_buffered_read(
+    lua: &Lua,
+    input: async_lock::MutexGuardArc<()>,
+    read: impl Future<Output = std::io::Result<Vec<u8>>> + 'static,
+) -> LuaResult<Vec<u8>> {
+    let (sender, receiver) = async_channel::bounded(1);
+    lua.spawn_local(async move {
+        // A closed coroutine can retain its native future. Keep ownership with the
+        // actual reader, and release it before delivering only the bytes or error.
+        let result = read.await;
+        drop(input);
+        let _ = sender.try_send(result);
+    });
+    receiver.recv().await.into_lua_err()?.into_lua_err()
+}
+
+#[cfg(not(unix))]
+async fn stdio_read_line(lua: Lua, (): ()) -> LuaResult<LuaString> {
+    let cancellation = terminal::InputCancellation::default();
+    let gate = input_gate(std::io::stdin().is_terminal());
+    let input = acquire_input(&cancellation, gate, &lua, || {}).await?;
+    let bytes = run_buffered_read(&lua, input, async {
+        let mut string = String::new();
+        STDIN.lock_arc().await.read_line(&mut string).await?;
+        Ok(string.into_bytes())
+    })
+    .await?;
+    lua.create_string(&bytes)
+}
+
+#[cfg(unix)]
 async fn stdio_read_to_end(lua: Lua, (): ()) -> LuaResult<LuaString> {
-    let mut buffer = Vec::new();
-    let mut handle = STDIN.lock_arc().await;
-    handle.read_to_end(&mut buffer).await?;
-    lua.create_string(&buffer)
+    read_unix(lua, true).await
+}
+
+#[cfg(not(unix))]
+async fn stdio_read_to_end(lua: Lua, (): ()) -> LuaResult<LuaString> {
+    let cancellation = terminal::InputCancellation::default();
+    let gate = input_gate(std::io::stdin().is_terminal());
+    let input = acquire_input(&cancellation, gate, &lua, || {}).await?;
+    let bytes = run_buffered_read(&lua, input, async {
+        let mut buffer = Vec::new();
+        STDIN.lock_arc().await.read_to_end(&mut buffer).await?;
+        Ok(buffer)
+    })
+    .await?;
+    lua.create_string(&bytes)
 }
 
 async fn stdio_prompt(lua: Lua, options: PromptOptions) -> LuaResult<PromptResult> {
@@ -111,7 +247,218 @@ async fn stdio_prompt(lua: Lua, options: PromptOptions) -> LuaResult<PromptResul
             "stdio.prompt is unavailable inside an actor, since actors cannot share the terminal.",
         ));
     }
-    lua.spawn_blocking(move || prompt(options))
+    let cancellation = terminal::InputCancellation::default();
+    let cancelled = cancellation.token();
+    let input = acquire_input(&cancellation, &INPUT_GATE, &lua, || {}).await?;
+    lua.spawn_blocking(move || {
+        // Keep ownership in the worker even if its awaiting Luau task is cancelled.
+        let _input = input;
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(LuaError::runtime("Standard input prompt was cancelled."));
+        }
+        prompt(options)
+    })
+    .await
+    .into_lua_err()
+}
+
+async fn stdio_terminal_capabilities(lua: Lua, (): ()) -> LuaResult<LuaTable> {
+    let supported = if is_actor_worker(&lua) {
+        false
+    } else if let Some(supported) = terminal::cached_foreground_opacity() {
+        supported
+    } else if let Some(input) = INPUT_GATE.try_lock_arc() {
+        lua.spawn_blocking(move || {
+            let _input = input;
+            terminal::foreground_opacity()
+        })
         .await
-        .into_lua_err()
+    } else {
+        false
+    };
+    TableBuilder::new(lua)?
+        .with_value("ForegroundOpacity", supported)?
+        .build_readonly()
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use mlua_luau_scheduler::Scheduler;
+
+    fn buffered_read_fixture(lua: &Lua, fail: bool) -> Arc<AsyncMutex<()>> {
+        let gate = Arc::new(AsyncMutex::new(()));
+        let (started, waiting) = async_channel::bounded(1);
+        let (finish, completion) = async_channel::bounded(1);
+        let reading_gate = Arc::clone(&gate);
+        lua.globals()
+            .set(
+                "read",
+                lua.create_async_function(move |lua, ()| {
+                    let gate = Arc::clone(&reading_gate);
+                    let started = started.clone();
+                    let completion = completion.clone();
+                    async move {
+                        let input = gate.lock_arc().await;
+                        let bytes = run_buffered_read(&lua, input, async move {
+                            started.send(()).await.unwrap();
+                            completion.recv().await.unwrap()
+                        })
+                        .await?;
+                        lua.create_string(bytes)
+                    }
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        lua.globals()
+            .set(
+                "waitStarted",
+                lua.create_async_function(move |_, ()| {
+                    let waiting = waiting.clone();
+                    async move { waiting.recv().await.into_lua_err() }
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let checking_gate = Arc::clone(&gate);
+        lua.globals()
+            .set(
+                "busy",
+                lua.create_function(move |_, ()| Ok(checking_gate.try_lock_arc().is_none()))
+                    .unwrap(),
+            )
+            .unwrap();
+        lua.globals()
+            .set(
+                "finish",
+                lua.create_function(move |_, ()| {
+                    let result = if fail {
+                        Err(std::io::Error::other("Expected buffered read failure."))
+                    } else {
+                        Ok("héllo\n".as_bytes().to_vec())
+                    };
+                    finish.try_send(result).unwrap();
+                    Ok(())
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        let released_gate = Arc::clone(&gate);
+        lua.globals()
+            .set(
+                "waitReleased",
+                lua.create_async_function(move |_, ()| {
+                    let gate = Arc::clone(&released_gate);
+                    async move {
+                        let _input = gate.lock_arc().await;
+                        Ok(())
+                    }
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        gate
+    }
+
+    #[test]
+    fn buffered_reads_release_ownership_after_io_without_collecting_closed_callers() {
+        use mlua_luau_scheduler::Functions;
+
+        for cancellation in ["none", "cancel", "close"] {
+            for fail in [false, true] {
+                let lua = Lua::new();
+                lua.gc_stop();
+                let scheduler = Scheduler::new(lua.clone());
+                let functions = Functions::new(lua.clone()).unwrap();
+                let gate = buffered_read_fixture(&lua, fail);
+                lua.globals().set("spawn", functions.spawn).unwrap();
+                lua.globals().set("cancel", functions.cancel).unwrap();
+                lua.globals().set("cancellation", cancellation).unwrap();
+                lua.globals().set("fail", fail).unwrap();
+                scheduler
+                    .push_thread_front(
+                        lua.load(
+                            r#"
+worker = spawn(function()
+    const ok, result = pcall(read)
+    assert(ok == not fail)
+    if ok then
+        assert(result == "héllo\n")
+    else
+        assert(string.find(tostring(result), "Expected buffered read failure.", 1, true))
+    end
+    delivered = true
+end)
+waitStarted()
+assert(busy())
+if cancellation == "cancel" then
+    cancel(worker)
+elseif cancellation == "close" then
+    assert(coroutine.close(worker))
+end
+assert(busy())
+finish()
+waitReleased()
+assert(not busy())
+verified = true
+"#,
+                        ),
+                        (),
+                    )
+                    .unwrap();
+                futures_lite::future::block_on(futures_lite::future::race(
+                    scheduler.run(),
+                    async {
+                        blocking::unblock(|| {
+                            std::thread::sleep(std::time::Duration::from_secs(5));
+                        })
+                        .await;
+                        panic!("Buffered read ownership timed out.");
+                    },
+                ));
+                assert!(lua.globals().get::<bool>("verified").unwrap());
+                assert_eq!(
+                    lua.globals().get::<Option<bool>>("delivered").unwrap(),
+                    (cancellation == "none").then_some(true)
+                );
+                assert!(gate.try_lock_arc().is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn input_sources_select_shared_console_or_redirected_ownership() {
+        assert!(Arc::ptr_eq(input_gate(true), &INPUT_GATE));
+        assert!(Arc::ptr_eq(input_gate(false), &REDIRECTED_INPUT_GATE));
+        assert!(!Arc::ptr_eq(input_gate(true), input_gate(false)));
+    }
+
+    #[test]
+    fn console_reads_exclude_prompts_but_redirected_reads_do_not() {
+        for console in [false, true] {
+            let lua = Lua::new();
+            let scheduler = Scheduler::new(lua.clone());
+            lua.globals().set("console", console).unwrap();
+            lua.globals()
+                .set(
+                    "read",
+                    lua.create_async_function(move |lua, ()| async move {
+                        let cancellation = terminal::InputCancellation::default();
+                        let _input =
+                            acquire_input(&cancellation, input_gate(console), &lua, || {}).await?;
+                        Ok(INPUT_GATE.try_lock_arc().is_none())
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            scheduler
+                .push_thread_front(lua.load("assert(read() == console); verified = true"), ())
+                .unwrap();
+            futures_lite::future::block_on(scheduler.run());
+            assert!(lua.globals().get::<bool>("verified").unwrap());
+            assert!(INPUT_GATE.try_lock_arc().is_some());
+            assert!(REDIRECTED_INPUT_GATE.try_lock_arc().is_some());
+        }
+    }
 }

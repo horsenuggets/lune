@@ -984,6 +984,7 @@ create_tests! {
     stdio_format: "stdio/format",
     stdio_color: "stdio/color",
     stdio_style: "stdio/style",
+    stdio_terminal_capabilities: "stdio/terminalCapabilities",
     stdio_write: "stdio/write",
     stdio_ewrite: "stdio/ewrite",
 }

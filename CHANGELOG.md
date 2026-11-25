@@ -8,6 +8,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.11.1-horse.17.5` - November 24th, 2026
+
+### Added
+
+- Add `stdio.terminalCapabilities()` with a read-only `ForegroundOpacity` result. Confirm
+  Unix terminal RGBA support through bounded native queries rather than terminal names
+  or truecolor hints. Unsupported platforms and unconfirmed responses return false.
+- Accept an optional fourth `stdio.prompt` argument containing semantic RGB colors and
+  an explicit styling decision, while retaining the native theme when omitted.
+
+### Fixed
+
+- Preserve ordinary input across capability probes, line reads, and every prompt kind,
+  including Unicode, arrow keys, passwords, and subsequent input. Filter late responses
+  and recover from truncated or oversized replies without permanently swallowing keys.
+- Cancel Unix stdin reads without requiring EOF, restore consumed input in order, and
+  release cancelled input-gate waiters independently of retained coroutine futures.
+  Restore terminal mode and rendition before delivering deferred termination signals.
+- Keep redirected stdin buffering and ownership separate from controlling-terminal
+  prompts. Consume delivered read errors so invalid UTF-8 does not replay indefinitely.
+
 ## `0.11.1-horse.17.4` - November 24th, 2026
 
 ### Added

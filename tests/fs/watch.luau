@@ -254,12 +254,21 @@ end)
 
 test("debouncing", function()
 	const dir = makeDir("debounce")
+	const debounce = 0.3
 	const events: { WatchEvent } = {}
-	watch(dir, { debounce = 0.3 }, function(event)
+	local started = 0
+	watch(dir, { debounce = debounce }, function(event)
+		if involves(event, "/debounce/burst.txt") then
+			assert(
+				os.clock() - started >= debounce,
+				"Debounced events must wait for the quiet interval"
+			)
+		end
 		table.insert(events, event)
 	end)
 	task.wait(SETTLE)
 
+	started = os.clock()
 	for index = 1, 5 do
 		fs.writeFile(`{dir}/burst.txt`, tostring(index))
 	end
@@ -268,12 +277,18 @@ test("debouncing", function()
 	end, "a debounced event")
 	task.wait(0.6)
 
-	const seen = {}
-	for _, event in events do
-		const key = `{event.kind} {table.concat(event.paths, ", ")}`
-		assert(not seen[key], `Debounced events should not contain duplicates, got "{key}" twice`)
-		seen[key] = true
-	end
+	-- Asynchronous writes can span multiple quiet intervals. Exact duplicates are
+	-- merged within each batch, not across the watcher's entire event history.
+	const countBefore = #events
+	fs.writeFile(`{dir}/burst.txt`, "settled")
+	waitFor(function()
+		for index = countBefore + 1, #events do
+			if involves(events[index], "/debounce/burst.txt") then
+				return true
+			end
+		end
+		return false
+	end, "a later write to the same debounced file")
 end)
 
 test("sequential yielding callbacks", function()

@@ -1,0 +1,4 @@
+# Keep the throughput deadline independent of concurrent CPU-heavy property tests.
+[[profile.default.overrides]]
+filter = 'binary(=lune) & test(=tests::net_serve_requests)'
+threads-required = "num-test-threads"
