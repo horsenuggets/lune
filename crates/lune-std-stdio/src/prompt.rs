@@ -6,6 +6,14 @@ use dialoguer::{
 };
 use mlua::prelude::*;
 
+#[path = "prompt_theme.rs"]
+mod prompt_theme;
+#[cfg(all(test, unix))]
+#[path = "prompt_tests.rs"]
+mod tests;
+
+use self::prompt_theme::PromptColors;
+
 struct PasswordTheme {
     inner: ColorfulTheme,
 }
@@ -117,6 +125,7 @@ pub struct PromptOptions {
     pub default_string: Option<String>,
     pub default_bool: Option<bool>,
     pub options: Option<Vec<String>>,
+    pub colors: Option<PromptColors>,
 }
 
 impl FromLuaMulti for PromptOptions {
@@ -128,10 +137,10 @@ impl FromLuaMulti for PromptOptions {
             .transpose()?
             .unwrap_or_default();
         // Argument #2 - prompt text (optional)
-        let text = values
-            .pop_front()
-            .map(|text| String::from_lua(text, lua))
-            .transpose()?;
+        let text = match values.pop_front() {
+            None | Some(LuaValue::Nil) => None,
+            Some(text) => Some(String::from_lua(text, lua)?),
+        };
         // Argument #3 - default value / options,
         // this is different per each prompt kind
         let (default_bool, default_string, options) = match values.pop_front() {
@@ -153,10 +162,17 @@ impl FromLuaMulti for PromptOptions {
                     return Err(LuaError::FromLuaConversionError {
                         from: value.type_name(),
                         to: "PromptOptions".to_string(),
-                        message: Some("Argument #3 must be a boolean, table, or nil".to_string()),
+                        message: Some(
+                            "Argument #3 must be a boolean, string, table, or nil".to_string(),
+                        ),
                     });
                 }
             },
+        };
+        // Argument #4 optionally replaces the prompt renderer's colors.
+        let colors = match values.pop_front() {
+            None | Some(LuaValue::Nil) => None,
+            Some(colors) => Some(PromptColors::from_lua(colors, lua)?),
         };
         /*
             Make sure we got the required values for the specific prompt kind:
@@ -185,6 +201,7 @@ impl FromLuaMulti for PromptOptions {
             default_string,
             default_bool,
             options,
+            colors,
         })
     }
 }
@@ -211,14 +228,21 @@ impl IntoLua for PromptResult {
 }
 
 pub fn prompt(options: PromptOptions) -> LuaResult<PromptResult> {
-    let theme = ColorfulTheme::default();
+    prompt_on(options, &super::terminal::prompt_terminal())
+}
+
+fn prompt_on(options: PromptOptions, terminal: &console::Term) -> LuaResult<PromptResult> {
+    let theme = options
+        .colors
+        .as_ref()
+        .map_or_else(ColorfulTheme::default, PromptColors::theme);
     match options.kind {
         PromptKind::Text => {
             let input: String = Input::with_theme(&theme)
                 .allow_empty(true)
                 .with_prompt(options.text.unwrap_or_default())
                 .with_initial_text(options.default_string.unwrap_or_default())
-                .interact_text()
+                .interact_text_on(terminal)
                 .into_lua_err()?;
             Ok(PromptResult::String(input))
         }
@@ -227,7 +251,7 @@ pub fn prompt(options: PromptOptions) -> LuaResult<PromptResult> {
             let input = Password::with_theme(&password_theme)
                 .allow_empty_password(true)
                 .with_prompt(options.text.unwrap_or_default())
-                .interact()
+                .interact_on(terminal)
                 .into_lua_err()?;
             Ok(PromptResult::String(input))
         }
@@ -238,7 +262,7 @@ pub fn prompt(options: PromptOptions) -> LuaResult<PromptResult> {
             }
             let result = prompt
                 .with_prompt(options.text.expect("Missing text in prompt options"))
-                .interact()
+                .interact_on(terminal)
                 .into_lua_err()?;
             Ok(PromptResult::Boolean(result))
         }
@@ -246,7 +270,7 @@ pub fn prompt(options: PromptOptions) -> LuaResult<PromptResult> {
             let chosen = Select::with_theme(&theme)
                 .with_prompt(options.text.unwrap_or_default())
                 .items(options.options.expect("Missing options in prompt options"))
-                .interact_opt()
+                .interact_on_opt(terminal)
                 .into_lua_err()?;
             Ok(match chosen {
                 Some(idx) => PromptResult::Index(idx + 1),
@@ -257,7 +281,7 @@ pub fn prompt(options: PromptOptions) -> LuaResult<PromptResult> {
             let chosen = MultiSelect::with_theme(&theme)
                 .with_prompt(options.text.unwrap_or_default())
                 .items(options.options.expect("Missing options in prompt options"))
-                .interact_opt()
+                .interact_on_opt(terminal)
                 .into_lua_err()?;
             Ok(match chosen {
                 None => PromptResult::None,

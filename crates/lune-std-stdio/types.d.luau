@@ -10,14 +10,42 @@ export type Color =
 	| "white"
 export type Style = "reset" | "bold" | "dim"
 
-type PromptFn = (
-	(() -> string)
-	& ((kind: "text", message: string?, defaultOrOptions: string?) -> string)
-	& ((kind: "password", message: string?) -> string)
-	& ((kind: "confirm", message: string, defaultOrOptions: boolean?) -> boolean)
-	& ((kind: "select", message: string?, defaultOrOptions: { string }) -> number?)
-	& ((kind: "multiselect", message: string?, defaultOrOptions: { string }) -> { number }?)
-)
+export type PromptColors = {
+	Accent: string,
+	Color: boolean,
+	Error: string,
+	Muted: string,
+	Success: string,
+	Text: string,
+	Warning: string,
+}
+
+type PromptFn = (() -> string) & ((
+	kind: "text",
+	message: string?,
+	defaultOrOptions: string?,
+	colors: PromptColors?
+) -> string) & ((
+	kind: "password",
+	message: string?,
+	defaultOrOptions: nil,
+	colors: PromptColors?
+) -> string) & ((
+	kind: "confirm",
+	message: string,
+	defaultOrOptions: boolean?,
+	colors: PromptColors?
+) -> boolean) & ((
+	kind: "select",
+	message: string?,
+	defaultOrOptions: { string },
+	colors: PromptColors?
+) -> number?) & ((
+	kind: "multiselect",
+	message: string?,
+	defaultOrOptions: { string },
+	colors: PromptColors?
+) -> { number }?)
 
 --[=[
 	@within Stdio
@@ -33,11 +61,21 @@ type PromptFn = (
 	* `"multiselect"` - Prompts the user to select *one or more* values from a list
 	* `nil` - Equivalent to `"text"` with no extra arguments
 
+	The optional colors table supplies every semantic foreground as "#RRGGBB", or an
+	empty string to leave that foreground unset. Color controls styling without changing
+	global terminal settings. Omitting the table retains the native prompt theme.
+
 	@param kind The kind of prompt to use
 	@param message The message to show the user
 	@param defaultOrOptions The default value for the prompt, or options to choose from for selection prompts
+	@param colors Explicit RGB prompt colors and whether styling is enabled
 ]=]
-local prompt: PromptFn = function(kind: any, message: any, defaultOrOptions: any)
+local prompt: PromptFn = function(
+	kind: any,
+	message: any,
+	defaultOrOptions: any,
+	colors: PromptColors?
+)
 	return nil :: any
 end
 
@@ -174,6 +212,26 @@ end
     @return The input from stdin
 ]=]
 function stdio.readToEnd(): string
+	return nil :: any
+end
+
+--[=[
+    @within Stdio
+    @tag must_use
+
+    Returns a read-only table of terminal capabilities confirmed by a bounded native
+    query. ForegroundOpacity is true only when the terminal reports SGR RGBA foreground
+    support. Unsupported platforms, redirected streams, and unconfirmed replies return
+    false. Terminal input and rendition are preserved.
+
+    A query is never started inside an actor or while another task owns terminal input.
+    Calls after an earlier read or prompt can query once that input operation completes.
+    Results are cached for this process only; terminal names and truecolor environment
+    hints are not proof of foreground-opacity support.
+
+    @return The confirmed terminal capabilities
+]=]
+function stdio.terminalCapabilities(): { ForegroundOpacity: boolean }
 	return nil :: any
 end
 
