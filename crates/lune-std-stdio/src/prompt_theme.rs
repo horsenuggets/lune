@@ -1,4 +1,6 @@
-use console::{Style, StyledObject, strip_ansi_codes};
+use console::{Color, Style, StyledObject, strip_ansi_codes};
+
+use crate::style_and_color::ColorKind;
 use dialoguer::theme::ColorfulTheme;
 use mlua::prelude::*;
 
@@ -6,41 +8,62 @@ const FIELDS: [&str; 7] = [
     "Accent", "Color", "Error", "Muted", "Success", "Text", "Warning",
 ];
 
-type Rgb = Option<[u8; 3]>;
+type Foreground = Option<(Color, bool)>;
 
 #[derive(Debug, Clone)]
 pub struct PromptColors {
-    accent: Rgb,
+    accent: Foreground,
     color: bool,
-    error: Rgb,
-    muted: Rgb,
-    success: Rgb,
-    text: Rgb,
-    warning: Rgb,
+    error: Foreground,
+    muted: Foreground,
+    success: Foreground,
+    text: Foreground,
+    warning: Foreground,
 }
 
-fn rgb(table: &LuaTable, field: &str) -> LuaResult<Rgb> {
+fn foreground(table: &LuaTable, field: &str) -> LuaResult<Foreground> {
     let value = table.get::<LuaValue>(field)?;
     let LuaValue::String(value) = value else {
         return Err(LuaError::runtime(format!(
-            "Prompt color field \"{field}\" must be a hex string or an empty string."
+            "Prompt color field \"{field}\" must be a color string."
         )));
     };
     let value = value.to_str()?;
     if value.is_empty() {
         return Ok(None);
     }
-    let bytes = value.as_bytes();
-    if bytes.len() != 7 || bytes[0] != b'#' || !bytes[1..].iter().all(u8::is_ascii_hexdigit) {
-        return Err(LuaError::runtime(format!(
-            "Prompt color field \"{field}\" must use \"#RRGGBB\" or an empty string."
-        )));
+    let invalid = || {
+        LuaError::runtime(format!(
+            "Prompt color field \"{field}\" must use \"#RRGGBB\", a color name, or an empty string."
+        ))
+    };
+    if !value.starts_with('#') {
+        let name = value.trim().to_ascii_lowercase();
+        if name == "gray" {
+            return Ok(Some((Color::Black, true)));
+        }
+        let (base, bright) = name
+            .strip_suffix("bright")
+            .map_or((name.as_str(), false), |base| (base, true));
+        let kind = base.parse::<ColorKind>().map_err(|()| invalid())?;
+        return match (kind.console_color(), bright) {
+            (Some(color), bright) => Ok(Some((color, bright))),
+            (None, false) => Ok(None),
+            (None, true) => Err(invalid()),
+        };
     }
-    Ok(Some([
-        u8::from_str_radix(&value[1..3], 16).expect("Hex digits were validated."),
-        u8::from_str_radix(&value[3..5], 16).expect("Hex digits were validated."),
-        u8::from_str_radix(&value[5..7], 16).expect("Hex digits were validated."),
-    ]))
+    let bytes = value.as_bytes();
+    if bytes.len() != 7 || !bytes[1..].iter().all(u8::is_ascii_hexdigit) {
+        return Err(invalid());
+    }
+    Ok(Some((
+        Color::TrueColor(
+            u8::from_str_radix(&value[1..3], 16).expect("Hex digits were validated."),
+            u8::from_str_radix(&value[3..5], 16).expect("Hex digits were validated."),
+            u8::from_str_radix(&value[5..7], 16).expect("Hex digits were validated."),
+        ),
+        false,
+    )))
 }
 
 impl FromLua for PromptColors {
@@ -68,24 +91,24 @@ impl FromLua for PromptColors {
             ));
         };
         Ok(Self {
-            accent: rgb(&table, "Accent")?,
+            accent: foreground(&table, "Accent")?,
             color,
-            error: rgb(&table, "Error")?,
-            muted: rgb(&table, "Muted")?,
-            success: rgb(&table, "Success")?,
-            text: rgb(&table, "Text")?,
-            warning: rgb(&table, "Warning")?,
+            error: foreground(&table, "Error")?,
+            muted: foreground(&table, "Muted")?,
+            success: foreground(&table, "Success")?,
+            text: foreground(&table, "Text")?,
+            warning: foreground(&table, "Warning")?,
         })
     }
 }
 
 impl PromptColors {
-    fn style(&self, rgb: Rgb) -> Style {
+    fn style(&self, foreground: Foreground) -> Style {
         let style = Style::new().for_stderr().force_styling(self.color);
-        if let Some([red, green, blue]) = rgb {
-            style.true_color(red, green, blue)
-        } else {
-            style
+        match foreground {
+            Some((color, true)) => style.fg(color).bright(),
+            Some((color, false)) => style.fg(color),
+            None => style,
         }
     }
 
@@ -154,7 +177,15 @@ mod tests {
             assert!(PromptColors::from_lua(LuaValue::Table(table), &lua).is_err());
         }
         for field in FIELDS.into_iter().filter(|field| *field != "Color") {
-            for invalid in ["red", "#12345", "#1234567", "#1122zz", "#é1122"] {
+            for invalid in [
+                "unknown",
+                "resetBright",
+                "grayBright",
+                "#12345",
+                "#1234567",
+                "#1122zz",
+                "#é1122",
+            ] {
                 let table = palette(&lua, true);
                 table.set(field, invalid).unwrap();
                 assert!(PromptColors::from_lua(LuaValue::Table(table), &lua).is_err());
@@ -177,6 +208,62 @@ mod tests {
         let table = palette(&lua, true);
         table.set(1, "#112233").unwrap();
         assert!(PromptColors::from_lua(LuaValue::Table(table), &lua).is_err());
+    }
+
+    #[test]
+    fn named_foregrounds_preserve_palette_indices_in_every_slot_and_color_mode() {
+        let lua = Lua::new();
+        for (name, code) in [
+            ("black", "30"),
+            ("blackBright", "38;5;8"),
+            ("blue", "34"),
+            ("blueBright", "38;5;12"),
+            ("cyan", "36"),
+            ("cyanBright", "38;5;14"),
+            ("gray", "38;5;8"),
+            ("green", "32"),
+            ("greenBright", "38;5;10"),
+            ("magenta", "35"),
+            ("magentaBright", "38;5;13"),
+            ("purple", "35"),
+            ("purpleBright", "38;5;13"),
+            ("red", "31"),
+            ("redBright", "38;5;9"),
+            ("white", "37"),
+            ("whiteBright", "38;5;15"),
+            ("yellow", "33"),
+            ("yellowBright", "38;5;11"),
+            (" RED ", "31"),
+            ("reset", ""),
+        ] {
+            for field in FIELDS.into_iter().filter(|field| *field != "Color") {
+                for enabled in [false, true] {
+                    let table = palette(&lua, enabled);
+                    table.set(field, name).unwrap();
+                    let theme = PromptColors::from_lua(LuaValue::Table(table), &lua)
+                        .unwrap()
+                        .theme();
+                    let rendered = match field {
+                        "Accent" => theme.defaults_style.apply_to("sample").to_string(),
+                        "Error" => theme.error_style.apply_to("sample").to_string(),
+                        "Muted" => theme.hint_style.apply_to("sample").to_string(),
+                        "Success" => theme.values_style.apply_to("sample").to_string(),
+                        "Text" => theme.inactive_item_style.apply_to("sample").to_string(),
+                        "Warning" => theme.prompt_prefix.to_string(),
+                        _ => unreachable!(),
+                    };
+                    if enabled && !code.is_empty() {
+                        assert!(
+                            rendered.contains(&format!("\x1b[{code}m")),
+                            "{field} {name} {rendered:?}"
+                        );
+                        assert!(!rendered.contains("38;2"), "{rendered:?}");
+                    } else {
+                        assert!(!rendered.contains('\x1b'), "{field} {name} {rendered:?}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

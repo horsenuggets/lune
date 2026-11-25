@@ -8,6 +8,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.11.1-horse.17.6` - November 24th, 2026
+
+### Fixed
+
+- Accept explicit named and bright palette colors in semantic prompt themes, preserving
+  terminal palette indices alongside existing RGB and unset foregrounds. Keep disabled
+  styling free of escape sequences without changing global terminal settings.
+- Include the existing `magenta` color name in the stdio type definitions.
+
 ## `0.11.1-horse.17.5` - November 24th, 2026
 
 ### Added

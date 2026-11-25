@@ -5,6 +5,7 @@ export type Color =
 	| "green"
 	| "yellow"
 	| "blue"
+	| "magenta"
 	| "purple"
 	| "cyan"
 	| "white"
@@ -20,32 +21,38 @@ export type PromptColors = {
 	Warning: string,
 }
 
-type PromptFn = (() -> string) & ((
-	kind: "text",
-	message: string?,
-	defaultOrOptions: string?,
-	colors: PromptColors?
-) -> string) & ((
-	kind: "password",
-	message: string?,
-	defaultOrOptions: nil,
-	colors: PromptColors?
-) -> string) & ((
-	kind: "confirm",
-	message: string,
-	defaultOrOptions: boolean?,
-	colors: PromptColors?
-) -> boolean) & ((
-	kind: "select",
-	message: string?,
-	defaultOrOptions: { string },
-	colors: PromptColors?
-) -> number?) & ((
-	kind: "multiselect",
-	message: string?,
-	defaultOrOptions: { string },
-	colors: PromptColors?
-) -> { number }?)
+type PromptFn =
+	(() -> string)
+	& ((
+		kind: "text",
+		message: string?,
+		defaultOrOptions: string?,
+		colors: PromptColors?
+	) -> string)
+	& ((
+		kind: "password",
+		message: string?,
+		defaultOrOptions: nil,
+		colors: PromptColors?
+	) -> string)
+	& ((
+		kind: "confirm",
+		message: string,
+		defaultOrOptions: boolean?,
+		colors: PromptColors?
+	) -> boolean)
+	& ((
+		kind: "select",
+		message: string?,
+		defaultOrOptions: { string },
+		colors: PromptColors?
+	) -> number?)
+	& ((
+		kind: "multiselect",
+		message: string?,
+		defaultOrOptions: { string },
+		colors: PromptColors?
+	) -> { number }?)
 
 --[=[
 	@within Stdio
@@ -61,14 +68,17 @@ type PromptFn = (() -> string) & ((
 	* `"multiselect"` - Prompts the user to select *one or more* values from a list
 	* `nil` - Equivalent to `"text"` with no extra arguments
 
-	The optional colors table supplies every semantic foreground as "#RRGGBB", or an
-	empty string to leave that foreground unset. Color controls styling without changing
-	global terminal settings. Omitting the table retains the native prompt theme.
+	The optional colors table supplies every semantic foreground as "#RRGGBB" or a
+	named palette color. Names supported by stdio.color are accepted, as are "gray" and
+	standard color names with a "Bright" suffix such as "cyanBright". Names preserve
+	the terminal's palette indices rather than guessing RGB values. An empty string or
+	"reset" leaves that foreground unset. Color controls styling without changing global
+	terminal settings. Omitting the table retains the native prompt theme.
 
 	@param kind The kind of prompt to use
 	@param message The message to show the user
 	@param defaultOrOptions The default value for the prompt, or options to choose from for selection prompts
-	@param colors Explicit RGB prompt colors and whether styling is enabled
+	@param colors Explicit RGB or named prompt colors and whether styling is enabled
 ]=]
 local prompt: PromptFn = function(
 	kind: any,
