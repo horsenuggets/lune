@@ -51,6 +51,23 @@ impl ColorKind {
     }
 
     /**
+        Returns the console foreground, leaving it unset for reset.
+    */
+    pub fn console_color(self) -> Option<console::Color> {
+        Some(match self {
+            Self::Reset => return None,
+            Self::Black => console::Color::Black,
+            Self::Red => console::Color::Red,
+            Self::Green => console::Color::Green,
+            Self::Yellow => console::Color::Yellow,
+            Self::Blue => console::Color::Blue,
+            Self::Magenta => console::Color::Magenta,
+            Self::Cyan => console::Color::Cyan,
+            Self::White => console::Color::White,
+        })
+    }
+
+    /**
         Returns the ANSI escape sequence for the color kind.
     */
     pub fn ansi_escape_sequence(self) -> &'static str {
