@@ -58,13 +58,12 @@ mod tests {
     use super::*;
     use std::process::Stdio;
 
-    fn shell_result(
-        script: &str,
+    fn command_result(
+        mut command: async_process::Command,
         stdout: ProcessSpawnOptionsStdioKind,
         stderr: ProcessSpawnOptionsStdioKind,
     ) -> (bool, i32) {
-        let child = async_process::Command::new("/bin/sh")
-            .args(["-c", script])
+        let child = command
             .stdin(Stdio::null())
             .stdout(stdout.as_stdio())
             .stderr(stderr.as_stdio())
@@ -77,13 +76,45 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "invoked as a subprocess by signal status tests"]
+    fn signal_fixture() {
+        let signal = std::env::var("LUNE_EXEC_TEST_SIGNAL")
+            .unwrap()
+            .parse()
+            .unwrap();
+        if std::env::var("LUNE_EXEC_TEST_DIAGNOSTIC").unwrap() == "true" {
+            eprintln!("Child diagnostic.");
+        }
+        unsafe {
+            let limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            assert_eq!(libc::setrlimit(libc::RLIMIT_CORE, &limit), 0);
+            assert_ne!(libc::signal(signal, libc::SIG_DFL), libc::SIG_ERR);
+            assert_eq!(libc::raise(signal), 0);
+        }
+        panic!("The fixture survived its terminating signal.");
+    }
+
+    #[test]
     fn signal_failure_does_not_depend_on_output_or_stdio_mode() {
         for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGQUIT, libc::SIGTERM] {
-            for output in ["", "printf 'Child diagnostic.\\n' >&2;"] {
+            for diagnostic in [false, true] {
                 for &stdout in ProcessSpawnOptionsStdioKind::all() {
                     for &stderr in ProcessSpawnOptionsStdioKind::all() {
-                        let script = format!("ulimit -c 0; {output} kill -{signal} $$");
-                        let result = shell_result(&script, stdout, stderr);
+                        let mut command =
+                            async_process::Command::new(std::env::current_exe().unwrap());
+                        command
+                            .args([
+                                "--exact",
+                                "exec::tests::signal_fixture",
+                                "--ignored",
+                                "--nocapture",
+                            ])
+                            .env("LUNE_EXEC_TEST_SIGNAL", signal.to_string())
+                            .env("LUNE_EXEC_TEST_DIAGNOSTIC", diagnostic.to_string());
+                        let result = command_result(command, stdout, stderr);
                         assert!(!result.0, "{signal}, {stdout}, {stderr}");
                         assert_eq!(result.1, 128 + signal, "{stdout}, {stderr}");
                     }
@@ -98,7 +129,9 @@ mod tests {
             for output in ["", "printf 'Child diagnostic.\\n' >&2;"] {
                 for &stdout in ProcessSpawnOptionsStdioKind::all() {
                     for &stderr in ProcessSpawnOptionsStdioKind::all() {
-                        let result = shell_result(&format!("{output} exit {code}"), stdout, stderr);
+                        let mut command = async_process::Command::new("/bin/sh");
+                        command.args(["-c", &format!("{output} exit {code}")]);
+                        let result = command_result(command, stdout, stderr);
                         assert_eq!(result, (code == 0, code));
                     }
                 }
