@@ -8,6 +8,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.11.1-horse.17.8` - November 26th, 2026
+
+### Fixed
+
+- Retain completed coroutines until their unread scheduler results are consumed, preventing
+  garbage collection from recycling identities and overwriting results with unrelated
+  coroutine completions. Release retained handles when results are consumed or discarded.
+- Cover allocation pressure, single result consumption, coroutine lifetime and release,
+  and synchronous resume/spawn success and error paths with regression tests.
+
 ## `0.11.1-horse.17.7` - November 25th, 2026
 
 ### Fixed
