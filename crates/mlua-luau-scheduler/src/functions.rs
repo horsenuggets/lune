@@ -122,7 +122,7 @@ impl Functions {
                             if thread.status() != LuaThreadStatus::Resumable {
                                 let id = ThreadId::from(&thread);
                                 if resume_map.is_tracked(id) {
-                                    resume_map.insert(id, Ok(v.clone()));
+                                    resume_map.insert(&thread, Ok(v.clone()));
                                 }
                             }
                             (true, v).into_lua_multi(lua)
@@ -132,7 +132,7 @@ impl Functions {
                         // Not pending, store the error
                         let id = ThreadId::from(&thread);
                         if resume_map.is_tracked(id) {
-                            resume_map.insert(id, Err(e.clone()));
+                            resume_map.insert(&thread, Err(e.clone()));
                         }
                         (false, e.to_string()).into_lua_multi(lua)
                     }
@@ -174,7 +174,7 @@ impl Functions {
                                 if thread.status() != LuaThreadStatus::Resumable {
                                     let id = ThreadId::from(&thread);
                                     if spawn_map.is_tracked(id) {
-                                        spawn_map.insert(id, Ok(v));
+                                        spawn_map.insert(&thread, Ok(v));
                                     }
                                 }
                             }
@@ -184,7 +184,7 @@ impl Functions {
                             // Not pending, store the error
                             let id = ThreadId::from(&thread);
                             if spawn_map.is_tracked(id) {
-                                spawn_map.insert(id, Err(e));
+                                spawn_map.insert(&thread, Err(e));
                             }
                         }
                     }
