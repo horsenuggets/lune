@@ -8,6 +8,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## `0.11.1-horse.17.7` - November 25th, 2026
+
+### Fixed
+
+- Derive `process.exec` success from the native exit status rather than captured stderr.
+  Signal-terminated Unix children now return `128 + signal` even with silent or natively
+  forwarded output. Preserve ordinary exit codes and Windows native status handling.
+- Exercise signal termination with isolated subprocesses that restore the default signal
+  disposition, keeping HUP, INT, QUIT, and TERM regressions independent of shell defaults.
+
 ## `0.11.1-horse.17.6` - November 24th, 2026
 
 ### Fixed
