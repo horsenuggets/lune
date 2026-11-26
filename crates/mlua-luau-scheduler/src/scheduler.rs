@@ -375,7 +375,7 @@ impl Scheduler {
                                 if thread.status() != LuaThreadStatus::Resumable
                                     && result_map.is_tracked(id)
                                 {
-                                    result_map.insert(id, res);
+                                    result_map.insert(&thread, res);
                                 }
                             }
                         } else {
