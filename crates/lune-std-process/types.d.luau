@@ -184,8 +184,9 @@ export type ChildProcess = {
 
 	This is a dictionary containing the following values:
 
-	* `ok` - If the child process exited successfully or not, meaning the exit code was zero or not set
-	* `code` - The exit code set by the child process, or 0 if one was not set
+	* `ok` - Whether the child process exited normally with exit code zero
+	* `code` - The child exit code, 128 plus its terminating signal on Unix,
+	  or 1 if no status code is available
 	* `stdout` - The full contents written to stdout by the child process, or an empty string if nothing was written
 	* `stderr` - The full contents written to stderr by the child process, or an empty string if nothing was written
 ]=]
